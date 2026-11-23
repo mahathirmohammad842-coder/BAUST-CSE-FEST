@@ -720,7 +720,7 @@ export function UserInboxPage({
         </div>
 
         <aside
-          className={`rounded-xl border border-emerald-200/70 bg-white p-4 sm:p-5 lg:sticky lg:top-18 lg:col-span-7 dark:border-emerald-800/60 dark:bg-[#061D15] ${
+          className={`rounded-xl border border-emerald-200/70 bg-white p-4 sm:p-5 lg:sticky lg:top-4 lg:col-span-7 dark:border-emerald-800/60 dark:bg-[#061D15] ${
             mobileReaderOpen ? 'block' : 'hidden lg:block'
           }`}
         >

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, X } from 'lucide-react';
 import { Sidebar, type OrganizerRoute } from './components/Sidebar';
 import { TopHeader, type WorkspaceMode } from './components/TopHeader';
@@ -44,10 +44,14 @@ import {
   hashRegistrationPassword,
   loadRegistrationRequests,
   loadDeletedDemoUserIds,
+  loadTemporaryUserBlocks,
   REGISTRATION_STORAGE_KEY,
   DELETED_DEMO_USERS_STORAGE_KEY,
+  TEMPORARY_USER_BLOCKS_STORAGE_KEY,
   saveDeletedDemoUserIds,
   saveRegistrationRequests,
+  saveTemporaryUserBlocks,
+  type TemporaryUserBlock,
   verifyRegistrationPassword,
 } from './utils/registrationStore';
 
@@ -100,6 +104,23 @@ function loadOrganizerProfile(): OrganizerProfile {
   return createDefaultOrganizerProfile();
 }
 
+function getUserBlockMessage(
+  blocks: TemporaryUserBlock[],
+  userId: string
+): string | null {
+  const block = blocks.find(
+    (entry) =>
+      entry.userId === userId && Date.parse(entry.expiresAt) > Date.now()
+  );
+  if (!block) return null;
+  const expiresAt = new Intl.DateTimeFormat('en-BD', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    timeZone: 'Asia/Dhaka',
+  }).format(new Date(block.expiresAt));
+  return `This account is temporarily blocked until ${expiresAt}.`;
+}
+
 export default function App() {
   const [showLoginPage, setShowLoginPage] = useState(false);
   const [mode, setMode] = useState<WorkspaceMode>('organizer');
@@ -110,9 +131,13 @@ export default function App() {
   const [deletedDemoUserIds, setDeletedDemoUserIds] = useState<string[]>(
     loadDeletedDemoUserIds
   );
+  const [temporaryUserBlocks, setTemporaryUserBlocks] = useState<
+    TemporaryUserBlock[]
+  >(loadTemporaryUserBlocks);
   const [lastAttendeeRole, setLastAttendeeRole] =
     useState<WorkspaceRole>('Participant');
   const [activeRoute, setActiveRoute] = useState<OrganizerRoute>('dashboard');
+  const mainContentRef = useRef<HTMLElement>(null);
   const [settingsSection, setSettingsSection] =
     useState<SettingsSection>('account');
   const [organizerProfile, setOrganizerProfile] =
@@ -127,6 +152,10 @@ export default function App() {
     sessionTimeoutEnabled: true,
   });
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  useLayoutEffect(() => {
+    mainContentRef.current?.scrollTo(0, 0);
+  }, [activeRoute, mode]);
+
   const [darkMode, setDarkMode] = useState<boolean>(() => {
     try {
       const saved = window.localStorage.getItem('baust_theme');
@@ -196,11 +225,35 @@ export default function App() {
       ) {
         setDeletedDemoUserIds(loadDeletedDemoUserIds());
       }
+      if (
+        event.key === TEMPORARY_USER_BLOCKS_STORAGE_KEY ||
+        event.key === null
+      ) {
+        setTemporaryUserBlocks(loadTemporaryUserBlocks());
+      }
     };
     window.addEventListener('storage', handleRegistrationStorage);
     return () =>
       window.removeEventListener('storage', handleRegistrationStorage);
   }, []);
+
+  useEffect(() => {
+    const timers = temporaryUserBlocks.map((block) =>
+      window.setTimeout(() => {
+        const remainingBlocks = temporaryUserBlocks.filter(
+          (entry) => Date.parse(entry.expiresAt) > Date.now()
+        );
+        if (remainingBlocks.length === temporaryUserBlocks.length) return;
+        try {
+          saveTemporaryUserBlocks(remainingBlocks);
+        } catch {
+          showToast('An expired user block could not be cleared from storage.');
+        }
+        setTemporaryUserBlocks(remainingBlocks);
+      }, Math.max(0, Date.parse(block.expiresAt) - Date.now()))
+    );
+    return () => timers.forEach((timer) => window.clearTimeout(timer));
+  }, [temporaryUserBlocks]);
 
   const availableDemoUsers = useMemo(
     () =>
@@ -300,6 +353,11 @@ export default function App() {
     });
 
     if (matchedUser) {
+      const blockMessage = getUserBlockMessage(
+        temporaryUserBlocks,
+        matchedUser.id
+      );
+      if (blockMessage) return blockMessage;
       handleQuickDemoAccess(matchedUser.role);
       return null;
     }
@@ -310,6 +368,11 @@ export default function App() {
       return digitsOnly.length >= 8 && phoneDigits === digitsOnly;
     });
     if (!registration) return 'Email/phone or password is incorrect.';
+    const blockMessage = getUserBlockMessage(
+      temporaryUserBlocks,
+      registration.id
+    );
+    if (blockMessage) return blockMessage;
     if (registration.status === 'Pending Approval') {
       return 'Your registration is awaiting organizer approval. You can sign in after your request is approved.';
     }
@@ -454,6 +517,59 @@ export default function App() {
     showToast(`${demoUser.fullName} and their account were deleted.`);
   };
 
+  const handleBlockUser = (userId: string) => {
+    if (activeRole !== 'Organizer' || userId === DEMO_USERS.Organizer.id) {
+      return;
+    }
+    const registration = registrationRequests.find(
+      (request) => request.id === userId && request.status === 'Approved'
+    );
+    const demoUser = availableDemoUsers.find(
+      (user) => user.id === userId && user.role !== 'Organizer'
+    );
+    const userName = registration?.fullName ?? demoUser?.fullName;
+    if (!userName) return;
+
+    const now = new Date();
+    const block: TemporaryUserBlock = {
+      userId,
+      blockedAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + 60 * 60 * 1000).toISOString(),
+    };
+    const updatedBlocks = [
+      ...temporaryUserBlocks.filter(
+        (entry) =>
+          entry.userId !== userId && Date.parse(entry.expiresAt) > now.getTime()
+      ),
+      block,
+    ];
+    try {
+      saveTemporaryUserBlocks(updatedBlocks);
+    } catch {
+      showToast('Could not block the user. Check browser storage.');
+      return;
+    }
+    setTemporaryUserBlocks(updatedBlocks);
+    showToast(`${userName} is blocked for 1 hour.`);
+  };
+
+  const handleUnblockUser = (userId: string) => {
+    if (activeRole !== 'Organizer' || userId === DEMO_USERS.Organizer.id) {
+      return;
+    }
+    const updatedBlocks = temporaryUserBlocks.filter(
+      (block) => block.userId !== userId
+    );
+    try {
+      saveTemporaryUserBlocks(updatedBlocks);
+    } catch {
+      showToast('Could not unblock the user. Check browser storage.');
+      return;
+    }
+    setTemporaryUserBlocks(updatedBlocks);
+    showToast('User access has been restored.');
+  };
+
   const pendingRequestCount = useMemo(
     () =>
       registrationRequests.filter(
@@ -468,6 +584,21 @@ export default function App() {
 
   const inboxRole: WorkspaceRole =
     activeRole === 'Organizer' ? lastAttendeeRole : activeRole;
+
+  useEffect(() => {
+    if (activeRole === 'Organizer') return;
+    const userId = registeredUser?.id ?? DEMO_USERS[inboxRole].id;
+    const blockMessage = getUserBlockMessage(temporaryUserBlocks, userId);
+    if (!blockMessage) return;
+
+    setShowLoginPage(true);
+    setRegisteredUser(null);
+    setActiveRole('Organizer');
+    setMode('organizer');
+    setActiveRoute('dashboard');
+    setMobileMenuOpen(false);
+    showToast(`${blockMessage} You have been signed out.`);
+  }, [activeRole, inboxRole, registeredUser, temporaryUserBlocks]);
 
   const unreadCount = useMemo(() => {
     return announcements.filter((a) => {
@@ -852,7 +983,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#F4F8F6] text-[#052E1F] dark:bg-[#02120C] dark:text-emerald-50 transition-colors duration-150">
+    <div className="app-shell flex min-w-0 flex-col overflow-hidden bg-[#F4F8F6] text-[#052E1F] dark:bg-[#02120C] dark:text-emerald-50 transition-colors duration-150">
       <TopHeader
         mode={mode}
         activeRole={activeRole}
@@ -871,141 +1002,154 @@ export default function App() {
         onNavigateSettings={handleNavigateSettings}
       />
 
-      {mode === 'organizer' && (
-        <Sidebar
-          activeRoute={activeRoute}
-          failedDeliveryCount={failedDeliveryCount}
-          pendingRequestCount={pendingRequestCount}
-          mobileOpen={mobileMenuOpen}
-          onCloseMobile={() => setMobileMenuOpen(false)}
-          onNavigate={(route) => setActiveRoute(route)}
-          onNavigateSettings={handleNavigateSettings}
-        />
-      )}
+      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+        {mode === 'organizer' && (
+          <Sidebar
+            activeRoute={activeRoute}
+            failedDeliveryCount={failedDeliveryCount}
+            pendingRequestCount={pendingRequestCount}
+            mobileOpen={mobileMenuOpen}
+            onCloseMobile={() => setMobileMenuOpen(false)}
+            onNavigate={(route) => setActiveRoute(route)}
+            onNavigateSettings={handleNavigateSettings}
+          />
+        )}
 
-      <div className={mode === 'organizer' ? 'lg:pl-56' : ''}>
-        <main className="mx-auto w-full max-w-[1440px] px-4 py-5 sm:px-6">
-          <div key={`${mode}-${activeRoute}`} className="page-enter">
-          {mode === 'organizer' ? (
-            <>
-              {activeRoute === 'dashboard' && (
-                <DashboardPage
+        <main
+          ref={mainContentRef}
+          className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain"
+        >
+          <div className="mx-auto w-full max-w-[1440px] px-4 py-5 sm:px-6">
+            <div key={`${mode}-${activeRoute}`} className="page-enter min-w-0">
+              {mode === 'organizer' ? (
+                <>
+                  {activeRoute === 'dashboard' && (
+                    <DashboardPage
+                      announcements={announcements}
+                      activityFeed={activityFeed}
+                      failedCount={failedDeliveryCount}
+                      onCreateAnnouncement={handleCreateNew}
+                      onInspectAnnouncement={handleInspectAnnouncement}
+                      onViewAllAnnouncements={() =>
+                        setActiveRoute('announcements')
+                      }
+                    />
+                  )}
+
+                  {activeRoute === 'announcements' && (
+                    <AnnouncementsPage
+                      announcements={announcements}
+                      onInspectAnnouncement={handleInspectAnnouncement}
+                      onEditAnnouncement={handleEditAnnouncement}
+                      onDuplicateAnnouncement={handleDuplicateAnnouncement}
+                      onDeleteAnnouncement={handleDeleteAnnouncement}
+                      onCreateNew={handleCreateNew}
+                    />
+                  )}
+
+                  {activeRoute === 'composer' && (
+                    <ComposerPage
+                      key={editingAnnouncement?.id ?? 'new-notice'}
+                      editingAnnouncement={editingAnnouncement}
+                      onSaveAnnouncement={handleSaveAnnouncement}
+                      onCancel={() => {
+                        setEditingAnnouncement(null);
+                        setActiveRoute('announcements');
+                      }}
+                    />
+                  )}
+
+                  {activeRoute === 'delivery-detail' &&
+                    selectedAnnouncement && (
+                      <DeliveryDetailPage
+                        announcements={announcements}
+                        selectedAnnouncement={selectedAnnouncement}
+                        deliveries={deliveries}
+                        onSelectAnnouncement={(id) =>
+                          setSelectedAnnouncementId(id)
+                        }
+                        onBackToList={() => setActiveRoute('announcements')}
+                        onEditAnnouncement={handleEditAnnouncement}
+                        onRetryDelivery={handleRetryDelivery}
+                        onRetryAllFailedForAnnouncement={
+                          handleRetryAllFailedForAnnouncement
+                        }
+                        onPublishScheduledNow={handlePublishScheduledNow}
+                      />
+                    )}
+
+                  {activeRoute === 'analytics' && (
+                    <AnalyticsPage announcements={announcements} />
+                  )}
+
+                  {activeRoute === 'user-approvals' &&
+                    activeRole === 'Organizer' && (
+                      <UserApprovalsPage
+                        requests={registrationRequests}
+                        demoUserCount={availableDemoUsers.length}
+                        onUpdateStatus={handleUpdateRegistrationStatus}
+                      />
+                    )}
+
+                  {activeRoute === 'users' && activeRole === 'Organizer' && (
+                    <UsersPage
+                      organizer={DEMO_USERS.Organizer}
+                      demoUsers={availableDemoUsers}
+                      requests={registrationRequests}
+                      blocks={temporaryUserBlocks}
+                      onBlockUser={handleBlockUser}
+                      onUnblockUser={handleUnblockUser}
+                      onDeleteUser={handleDeleteUser}
+                    />
+                  )}
+
+                  {activeRoute === 'profile' && (
+                    <ProfilePage
+                      profile={organizerProfile}
+                      onEditProfile={() => handleNavigateSettings('account')}
+                    />
+                  )}
+
+                  {activeRoute === 'settings' && (
+                    <SettingsPage
+                      profile={organizerProfile}
+                      settings={organizerSettings}
+                      section={settingsSection}
+                      isDark={darkMode}
+                      hasPassword={organizerPassword !== null}
+                      onSaveProfile={handleSaveOrganizerProfile}
+                      onUpdateSettings={setOrganizerSettings}
+                      onChangeSection={setSettingsSection}
+                      onToggleTheme={() => setDarkMode((prev) => !prev)}
+                      onPasswordUpdated={handlePasswordUpdated}
+                    />
+                  )}
+                </>
+              ) : (
+                <UserInboxPage
+                  activeRole={inboxRole}
+                  activeUser={registeredUser ?? DEMO_USERS[inboxRole]}
                   announcements={announcements}
-                  activityFeed={activityFeed}
-                  failedCount={failedDeliveryCount}
-                  onCreateAnnouncement={handleCreateNew}
-                  onInspectAnnouncement={handleInspectAnnouncement}
-                  onViewAllAnnouncements={() => setActiveRoute('announcements')}
-                />
-              )}
-
-              {activeRoute === 'announcements' && (
-                <AnnouncementsPage
-                  announcements={announcements}
-                  onInspectAnnouncement={handleInspectAnnouncement}
-                  onEditAnnouncement={handleEditAnnouncement}
-                  onDuplicateAnnouncement={handleDuplicateAnnouncement}
-                  onDeleteAnnouncement={handleDeleteAnnouncement}
-                  onCreateNew={handleCreateNew}
-                />
-              )}
-
-              {activeRoute === 'composer' && (
-                <ComposerPage
-                  key={editingAnnouncement?.id ?? 'new-notice'}
-                  editingAnnouncement={editingAnnouncement}
-                  onSaveAnnouncement={handleSaveAnnouncement}
-                  onCancel={() => {
-                    setEditingAnnouncement(null);
-                    setActiveRoute('announcements');
+                  preferences={preferencesByRole[inboxRole]}
+                  onUpdatePreferences={(next) => {
+                    setPreferencesByRole((prev) => ({
+                      ...prev,
+                      [inboxRole]: next,
+                    }));
                   }}
+                  onResetPreferences={() => {
+                    setPreferencesByRole((prev) => ({
+                      ...prev,
+                      [inboxRole]: createDefaultPreferencesForRole(inboxRole),
+                    }));
+                    showToast(`Reset notification preferences for ${inboxRole}.`);
+                  }}
+                  onToggleRead={handleToggleRead}
+                  onMarkAllRead={handleMarkAllRead}
+                  onTrackClick={handleTrackClick}
                 />
               )}
-
-              {activeRoute === 'delivery-detail' && selectedAnnouncement && (
-                <DeliveryDetailPage
-                  announcements={announcements}
-                  selectedAnnouncement={selectedAnnouncement}
-                  deliveries={deliveries}
-                  onSelectAnnouncement={(id) => setSelectedAnnouncementId(id)}
-                  onBackToList={() => setActiveRoute('announcements')}
-                  onEditAnnouncement={handleEditAnnouncement}
-                  onRetryDelivery={handleRetryDelivery}
-                  onRetryAllFailedForAnnouncement={
-                    handleRetryAllFailedForAnnouncement
-                  }
-                  onPublishScheduledNow={handlePublishScheduledNow}
-                />
-              )}
-
-              {activeRoute === 'analytics' && (
-                <AnalyticsPage announcements={announcements} />
-              )}
-
-              {activeRoute === 'user-approvals' &&
-                activeRole === 'Organizer' && (
-                  <UserApprovalsPage
-                    requests={registrationRequests}
-                    demoUserCount={availableDemoUsers.length}
-                    onUpdateStatus={handleUpdateRegistrationStatus}
-                  />
-                )}
-
-              {activeRoute === 'users' && activeRole === 'Organizer' && (
-                <UsersPage
-                  organizer={DEMO_USERS.Organizer}
-                  demoUsers={availableDemoUsers}
-                  requests={registrationRequests}
-                  onDeleteUser={handleDeleteUser}
-                />
-              )}
-
-              {activeRoute === 'profile' && (
-                <ProfilePage
-                  profile={organizerProfile}
-                  onEditProfile={() => handleNavigateSettings('account')}
-                />
-              )}
-
-              {activeRoute === 'settings' && (
-                <SettingsPage
-                  profile={organizerProfile}
-                  settings={organizerSettings}
-                  section={settingsSection}
-                  isDark={darkMode}
-                  hasPassword={organizerPassword !== null}
-                  onSaveProfile={handleSaveOrganizerProfile}
-                  onUpdateSettings={setOrganizerSettings}
-                  onChangeSection={setSettingsSection}
-                  onToggleTheme={() => setDarkMode((prev) => !prev)}
-                  onPasswordUpdated={handlePasswordUpdated}
-                />
-              )}
-            </>
-          ) : (
-            <UserInboxPage
-              activeRole={inboxRole}
-              activeUser={registeredUser ?? DEMO_USERS[inboxRole]}
-              announcements={announcements}
-              preferences={preferencesByRole[inboxRole]}
-              onUpdatePreferences={(next) => {
-                setPreferencesByRole((prev) => ({
-                  ...prev,
-                  [inboxRole]: next,
-                }));
-              }}
-              onResetPreferences={() => {
-                setPreferencesByRole((prev) => ({
-                  ...prev,
-                  [inboxRole]: createDefaultPreferencesForRole(inboxRole),
-                }));
-                showToast(`Reset notification preferences for ${inboxRole}.`);
-              }}
-              onToggleRead={handleToggleRead}
-              onMarkAllRead={handleMarkAllRead}
-              onTrackClick={handleTrackClick}
-            />
-          )}
+            </div>
           </div>
         </main>
       </div>

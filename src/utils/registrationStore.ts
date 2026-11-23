@@ -2,7 +2,50 @@ import type { RegistrationRequest } from '../types';
 
 export const REGISTRATION_STORAGE_KEY = 'baust_registration_requests';
 export const DELETED_DEMO_USERS_STORAGE_KEY = 'baust_deleted_demo_users';
+export const TEMPORARY_USER_BLOCKS_STORAGE_KEY = 'baust_temporary_user_blocks';
 const PASSWORD_ITERATIONS = 210_000;
+
+export interface TemporaryUserBlock {
+  userId: string;
+  blockedAt: string;
+  expiresAt: string;
+}
+
+function isTemporaryUserBlock(value: unknown): value is TemporaryUserBlock {
+  if (typeof value !== 'object' || value === null) return false;
+  const block = value as Partial<TemporaryUserBlock>;
+  return (
+    typeof block.userId === 'string' &&
+    typeof block.blockedAt === 'string' &&
+    !Number.isNaN(Date.parse(block.blockedAt)) &&
+    typeof block.expiresAt === 'string' &&
+    !Number.isNaN(Date.parse(block.expiresAt))
+  );
+}
+
+export function loadTemporaryUserBlocks(): TemporaryUserBlock[] {
+  try {
+    const stored = window.localStorage.getItem(
+      TEMPORARY_USER_BLOCKS_STORAGE_KEY
+    );
+    if (!stored) return [];
+    const parsed: unknown = JSON.parse(stored);
+    return Array.isArray(parsed)
+      ? parsed
+          .filter(isTemporaryUserBlock)
+          .filter((block) => Date.parse(block.expiresAt) > Date.now())
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveTemporaryUserBlocks(blocks: TemporaryUserBlock[]) {
+  window.localStorage.setItem(
+    TEMPORARY_USER_BLOCKS_STORAGE_KEY,
+    JSON.stringify(blocks)
+  );
+}
 
 function isRegistrationRequest(value: unknown): value is RegistrationRequest {
   if (typeof value !== 'object' || value === null) return false;

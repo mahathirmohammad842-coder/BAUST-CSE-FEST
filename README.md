@@ -21,4 +21,4 @@ View your app in AI Studio: https://ai.studio/apps/f6477fb1-e20d-471a-a45e-d0e5b
 
 ## Organizer user management
 
-The Organizer-only **Users** page lists demo accounts and registration requests, with search, role/status filters, and confirmed deletion. The Organizer administrator account is protected. In this frontend prototype, user records and deletion state are stored in the current browser's local storage; use a backend for shared, production account management.
+The Organizer-only **Users** page lists demo accounts and registration requests, with search, role/status filters, confirmed deletion, and temporary one-hour user blocks. Blocking signs the user out immediately, prevents sign-in until the block expires, and can be reversed early with **Unblock**. The Organizer administrator account is protected. In this frontend prototype, user records and access changes are stored in the current browser's local storage; use a backend for shared, production account management.

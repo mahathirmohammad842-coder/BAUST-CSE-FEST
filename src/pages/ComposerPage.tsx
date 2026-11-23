@@ -652,7 +652,7 @@ export function ComposerPage({
           </div>
         </div>
 
-        <aside className="rounded-xl border border-emerald-200/70 bg-white p-4 sm:p-5 space-y-4 lg:sticky lg:top-18 lg:col-span-5 dark:border-emerald-800/60 dark:bg-[#061D15]">
+        <aside className="rounded-xl border border-emerald-200/70 bg-white p-4 sm:p-5 space-y-4 lg:sticky lg:top-4 lg:col-span-5 dark:border-emerald-800/60 dark:bg-[#061D15]">
           <div className="flex items-center justify-between gap-2">
             <h2 className="font-display text-sm font-bold text-emerald-950 dark:text-emerald-50">
               Live Preview

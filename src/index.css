@@ -30,6 +30,11 @@
   .font-mono {
     font-family: var(--font-mono);
   }
+
+  .app-shell {
+    height: 100vh;
+    height: 100dvh;
+  }
 }
 
 .tabular-nums {

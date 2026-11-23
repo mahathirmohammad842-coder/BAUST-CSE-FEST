@@ -91,9 +91,9 @@ export function TopHeader({
   };
 
   return (
-    <header className="sticky top-0 z-30 border-b border-emerald-900/70 bg-[#042419] text-white transition-colors duration-150 dark:border-emerald-800/50 dark:bg-[#031A12]">
-      <div className="mx-auto flex h-14 max-w-[1440px] items-center justify-between gap-3 px-4 sm:px-6">
-        <div className="flex min-w-0 items-center gap-2.5">
+    <header className="sticky top-0 z-30 w-full shrink-0 border-b border-emerald-900/70 bg-[#042419] text-white transition-colors duration-150 dark:border-emerald-800/50 dark:bg-[#031A12]">
+      <div className="mx-auto flex h-14 max-w-[1440px] items-center justify-between gap-1.5 px-3 sm:gap-3 sm:px-6">
+        <div className="flex min-w-0 items-center gap-2">
           {mode === 'organizer' && (
             <button
               type="button"
@@ -109,13 +109,16 @@ export function TopHeader({
             <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-400 text-emerald-950">
               <Radio className="h-4 w-4" aria-hidden="true" />
             </span>
-            <span className="font-display text-sm font-extrabold tracking-tight text-white sm:text-base">
+            <span className="hidden font-display text-sm font-extrabold tracking-tight text-white min-[420px]:inline sm:text-base">
               BAUST CSE FEST
+            </span>
+            <span className="hidden font-display text-sm font-extrabold tracking-tight text-white min-[360px]:inline min-[420px]:hidden">
+              BAUST
             </span>
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center gap-2.5">
+        <div className="flex shrink-0 items-center gap-1.5 sm:gap-2.5">
           <div
             role="group"
             aria-label="Workspace View Toggle"
@@ -124,8 +127,9 @@ export function TopHeader({
             {activeRole === 'Organizer' && (
               <button
                 type="button"
+                aria-label="Organizer View"
                 onClick={() => onChangeMode('organizer')}
-                className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 py-1.5 text-xs font-semibold transition-colors sm:px-3 ${
+                className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-1.5 text-xs font-semibold transition-colors sm:gap-1.5 sm:px-3 ${
                   mode === 'organizer'
                     ? 'bg-emerald-400 text-emerald-950'
                     : 'text-emerald-100/80 hover:text-white'
@@ -133,14 +137,19 @@ export function TopHeader({
               >
                 <LayoutDashboard className="h-3.5 w-3.5" aria-hidden="true" />
                 <span className="hidden sm:inline">Organizer View</span>
-                <span className="sm:hidden">Organizer</span>
+                <span className="hidden min-[420px]:inline sm:hidden">Organizer</span>
               </button>
             )}
 
             <button
               type="button"
+              aria-label={
+                unreadCount > 0
+                  ? `Attendee Inbox, ${unreadCount} unread`
+                  : 'Attendee Inbox'
+              }
               onClick={() => onChangeMode('inbox')}
-              className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 py-1.5 text-xs font-semibold transition-colors sm:px-3 ${
+              className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-1.5 text-xs font-semibold transition-colors sm:gap-1.5 sm:px-3 ${
                 mode === 'inbox'
                   ? 'bg-emerald-400 text-emerald-950'
                   : 'text-emerald-100/80 hover:text-white'
@@ -148,7 +157,7 @@ export function TopHeader({
             >
               <Inbox className="h-3.5 w-3.5" aria-hidden="true" />
               <span className="hidden sm:inline">Attendee Inbox</span>
-              <span className="sm:hidden">Inbox</span>
+              <span className="hidden min-[420px]:inline sm:hidden">Inbox</span>
               {unreadCount > 0 && (
                 <span
                   className={`rounded px-1.5 py-0.2 font-mono text-[10px] font-bold tabular-nums ${

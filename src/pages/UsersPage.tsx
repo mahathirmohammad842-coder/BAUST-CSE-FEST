@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import {
   Building2,
+  Ban,
   CheckCircle2,
   Clock3,
   Search,
@@ -18,8 +19,9 @@ import type {
   SystemUser,
   WorkspaceRole,
 } from '../types';
+import type { TemporaryUserBlock } from '../utils/registrationStore';
 
-type UserStatus = RegistrationStatus | 'Active';
+type UserStatus = RegistrationStatus | 'Active' | 'Blocked';
 
 interface ManagedUser {
   id: string;
@@ -30,6 +32,7 @@ interface ManagedUser {
   affiliation: string;
   status: UserStatus;
   registeredAt?: string;
+  blockExpiresAt?: string;
   isAdministrator: boolean;
 }
 
@@ -37,6 +40,9 @@ interface UsersPageProps {
   organizer: SystemUser;
   demoUsers: SystemUser[];
   requests: RegistrationRequest[];
+  blocks: TemporaryUserBlock[];
+  onBlockUser: (userId: string) => void;
+  onUnblockUser: (userId: string) => void;
   onDeleteUser: (userId: string) => void;
 }
 
@@ -46,6 +52,9 @@ function statusStyle(status: UserStatus) {
   }
   if (status === 'Rejected') {
     return 'border-red-200 bg-red-50 text-red-700 dark:border-red-800/70 dark:bg-red-950/50 dark:text-red-300';
+  }
+  if (status === 'Blocked') {
+    return 'border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200';
   }
   return 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800/70 dark:bg-amber-950/40 dark:text-amber-300';
 }
@@ -60,7 +69,20 @@ function formatDate(value?: string) {
   }).format(date);
 }
 
-function getUserFromRequest(request: RegistrationRequest): ManagedUser {
+function formatBlockExpiry(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return new Intl.DateTimeFormat('en-BD', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    timeZone: 'Asia/Dhaka',
+  }).format(date);
+}
+
+function getUserFromRequest(
+  request: RegistrationRequest,
+  block?: TemporaryUserBlock
+): ManagedUser {
   return {
     id: request.id,
     fullName: request.fullName,
@@ -68,13 +90,18 @@ function getUserFromRequest(request: RegistrationRequest): ManagedUser {
     phone: request.phone,
     role: request.role,
     affiliation: request.affiliation,
-    status: request.status,
+    status: request.status === 'Approved' && block ? 'Blocked' : request.status,
     registeredAt: request.registeredAt,
+    blockExpiresAt: request.status === 'Approved' ? block?.expiresAt : undefined,
     isAdministrator: false,
   };
 }
 
-function getUserFromSystemUser(user: SystemUser): ManagedUser {
+function getUserFromSystemUser(
+  user: SystemUser,
+  block?: TemporaryUserBlock
+): ManagedUser {
+  const isAdministrator = user.role === 'Organizer' || user.role === 'Admin';
   return {
     id: user.id,
     fullName: user.fullName,
@@ -82,8 +109,9 @@ function getUserFromSystemUser(user: SystemUser): ManagedUser {
     phone: user.phone,
     role: user.role === 'Admin' ? 'Organizer' : user.role,
     affiliation: user.affiliation,
-    status: 'Active',
-    isAdministrator: user.role === 'Organizer' || user.role === 'Admin',
+    status: !isAdministrator && block ? 'Blocked' : 'Active',
+    blockExpiresAt: isAdministrator ? undefined : block?.expiresAt,
+    isAdministrator,
   };
 }
 
@@ -91,22 +119,33 @@ export function UsersPage({
   organizer,
   demoUsers,
   requests,
+  blocks,
+  onBlockUser,
+  onUnblockUser,
   onDeleteUser,
 }: UsersPageProps) {
   const [query, setQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState<WorkspaceRole | 'All'>('All');
   const [statusFilter, setStatusFilter] = useState<UserStatus | 'All'>('All');
   const [userToDelete, setUserToDelete] = useState<ManagedUser | null>(null);
+  const [userToBlock, setUserToBlock] = useState<ManagedUser | null>(null);
 
   const allUsers = useMemo(
-    () => [
-      getUserFromSystemUser(organizer),
-      ...demoUsers
-        .filter((user) => user.role !== 'Organizer')
-        .map(getUserFromSystemUser),
-      ...requests.map(getUserFromRequest),
-    ],
-    [demoUsers, organizer, requests]
+    () => {
+      const blocksByUserId = new Map(blocks.map((block) => [block.userId, block]));
+      return [
+        getUserFromSystemUser(organizer),
+        ...demoUsers
+          .filter((user) => user.role !== 'Organizer')
+          .map((user) =>
+            getUserFromSystemUser(user, blocksByUserId.get(user.id))
+          ),
+        ...requests.map((request) =>
+          getUserFromRequest(request, blocksByUserId.get(request.id))
+        ),
+      ];
+    },
+    [blocks, demoUsers, organizer, requests]
   );
   const filteredUsers = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -143,6 +182,18 @@ export function UsersPage({
     setUserToDelete(null);
   };
 
+  const confirmBlock = () => {
+    if (
+      !userToBlock ||
+      userToBlock.isAdministrator ||
+      !['Active', 'Approved'].includes(userToBlock.status)
+    ) {
+      return;
+    }
+    onBlockUser(userToBlock.id);
+    setUserToBlock(null);
+  };
+
   return (
     <div className="space-y-5">
       <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -176,7 +227,7 @@ export function UsersPage({
         <StatCard
           label="Active Users"
           value={counts.active.toLocaleString()}
-          sublabel="Approved and demo accounts"
+          sublabel="Eligible demo and approved accounts"
           icon={CheckCircle2}
           tone="success"
         />
@@ -261,9 +312,14 @@ export function UsersPage({
                 onChange={(event) => {
                   const status = event.target.value;
                   if (
-                    ['All', 'Active', 'Pending Approval', 'Approved', 'Rejected'].includes(
-                      status
-                    )
+                    [
+                      'All',
+                      'Active',
+                      'Pending Approval',
+                      'Approved',
+                      'Rejected',
+                      'Blocked',
+                    ].includes(status)
                   ) {
                     setStatusFilter(status as UserStatus | 'All');
                   }
@@ -275,6 +331,7 @@ export function UsersPage({
                 <option value="Pending Approval">Pending Approval</option>
                 <option value="Approved">Approved</option>
                 <option value="Rejected">Rejected</option>
+                <option value="Blocked">Blocked</option>
               </select>
             </label>
           </div>
@@ -339,11 +396,18 @@ export function UsersPage({
                       </span>
                     </td>
                     <td className="px-4 py-3.5">
-                      <span
-                        className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-semibold ${statusStyle(user.status)}`}
-                      >
-                        {user.status}
-                      </span>
+                      <div className="flex flex-col items-start gap-1">
+                        <span
+                          className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-semibold ${statusStyle(user.status)}`}
+                        >
+                          {user.status}
+                        </span>
+                        {user.blockExpiresAt && (
+                          <span className="whitespace-nowrap text-[10px] text-slate-500 dark:text-slate-400">
+                            Until {formatBlockExpiry(user.blockExpiresAt)}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-4 py-3.5 text-emerald-900/65 dark:text-emerald-300/70">
                       {formatDate(user.registeredAt)}
@@ -355,15 +419,38 @@ export function UsersPage({
                           Protected
                         </span>
                       ) : (
-                        <button
-                          type="button"
-                          onClick={() => setUserToDelete(user)}
-                          aria-label={`Delete ${user.fullName}`}
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 px-2.5 py-1.5 text-[11px] font-semibold text-red-700 transition-colors hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 dark:border-red-800/70 dark:text-red-300 dark:hover:bg-red-950/40"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                          Delete
-                        </button>
+                        <div className="inline-flex items-center gap-2 whitespace-nowrap">
+                          {user.status === 'Blocked' ? (
+                            <button
+                              type="button"
+                              onClick={() => onUnblockUser(user.id)}
+                              aria-label={`Unblock ${user.fullName}`}
+                              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-800 transition-colors hover:bg-emerald-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 dark:border-emerald-800/70 dark:text-emerald-300 dark:hover:bg-emerald-950/50"
+                            >
+                              <CheckCircle2 className="h-3.5 w-3.5" />
+                              Unblock
+                            </button>
+                          ) : ['Active', 'Approved'].includes(user.status) ? (
+                            <button
+                              type="button"
+                              onClick={() => setUserToBlock(user)}
+                              aria-label={`Block ${user.fullName} for 1 hour`}
+                              className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 px-2.5 py-1.5 text-[11px] font-semibold text-amber-800 transition-colors hover:bg-amber-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-600 dark:border-amber-800/70 dark:text-amber-300 dark:hover:bg-amber-950/40"
+                            >
+                              <Ban className="h-3.5 w-3.5" />
+                              Block
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            onClick={() => setUserToDelete(user)}
+                            aria-label={`Delete ${user.fullName}`}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 px-2.5 py-1.5 text-[11px] font-semibold text-red-700 transition-colors hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 dark:border-red-800/70 dark:text-red-300 dark:hover:bg-red-950/40"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                            Delete
+                          </button>
+                        </div>
                       )}
                     </td>
                   </tr>
@@ -405,6 +492,42 @@ export function UsersPage({
           <p className="text-sm leading-relaxed text-emerald-900/75 dark:text-emerald-200/80">
             Delete <strong className="text-emerald-950 dark:text-emerald-50">{userToDelete.fullName}</strong>{' '}
             ({userToDelete.email})? Their account and any associated registration request will be removed.
+          </p>
+        )}
+      </Modal>
+
+      <Modal
+        open={userToBlock !== null}
+        onClose={() => setUserToBlock(null)}
+        title="Temporarily block user?"
+        subtitle="They will be signed out immediately and blocked from signing in for 1 hour."
+        dangerHeader
+        maxWidthClass="max-w-md"
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => setUserToBlock(null)}
+              className="rounded-lg border border-emerald-200 px-3.5 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800/70 dark:text-emerald-100 dark:hover:bg-emerald-900/50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={confirmBlock}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-red-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-red-800 dark:bg-red-600 dark:hover:bg-red-500"
+            >
+              <Ban className="h-3.5 w-3.5" />
+              Block for 1 hour
+            </button>
+          </>
+        }
+      >
+        {userToBlock && (
+          <p className="text-sm leading-relaxed text-emerald-900/75 dark:text-emerald-200/80">
+            Block <strong className="text-emerald-950 dark:text-emerald-50">{userToBlock.fullName}</strong>{' '}
+            ({userToBlock.email})? Access will be restored automatically after
+            one hour, or you can unblock them sooner.
           </p>
         )}
       </Modal>

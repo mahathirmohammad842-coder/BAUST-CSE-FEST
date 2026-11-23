@@ -167,7 +167,7 @@ export function Sidebar({
 
   return (
     <>
-      <aside className="hidden lg:fixed lg:top-14 lg:bottom-0 lg:left-0 lg:z-20 lg:block lg:w-56">
+      <aside className="hidden h-full min-h-0 w-56 shrink-0 lg:block">
         {sidebarContent}
       </aside>
 
