@@ -15,6 +15,7 @@ import {
   Sun,
   UserRound,
 } from 'lucide-react';
+import { Modal } from './Modal';
 import type { SettingsSection, WorkspaceRole } from '../types';
 
 export type WorkspaceMode = 'organizer' | 'inbox';
@@ -47,6 +48,7 @@ export function TopHeader({
   onNavigateSettings,
 }: TopHeaderProps) {
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const accountMenuRef = useRef<HTMLDivElement>(null);
   const initials = userName
     .split(/\s+/)
@@ -260,7 +262,7 @@ export function TopHeader({
                   role="menuitem"
                   onClick={() => {
                     setAccountMenuOpen(false);
-                    onOpenLogin();
+                    setLogoutConfirmOpen(true);
                   }}
                   className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-[13px] font-medium text-red-700 transition-colors hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 dark:text-red-300 dark:hover:bg-red-950/40"
                 >
@@ -286,6 +288,40 @@ export function TopHeader({
           </div>
         </div>
       </div>
+      <Modal
+        open={logoutConfirmOpen}
+        onClose={() => setLogoutConfirmOpen(false)}
+        title="Sign out?"
+        subtitle="You will need to sign in again to access the fest portal."
+        maxWidthClass="max-w-sm"
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => setLogoutConfirmOpen(false)}
+              className="rounded-lg border border-emerald-200 px-3.5 py-2 text-xs font-semibold text-emerald-900 transition-colors hover:bg-emerald-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 dark:border-emerald-800/70 dark:text-emerald-100 dark:hover:bg-emerald-900/50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setLogoutConfirmOpen(false);
+                onOpenLogin();
+              }}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-red-700 px-3.5 py-2 text-xs font-semibold text-white transition-colors hover:bg-red-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2 dark:bg-red-600 dark:hover:bg-red-500"
+            >
+              <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
+              Sign Out
+            </button>
+          </>
+        }
+      >
+        <p className="text-sm leading-relaxed text-emerald-900/75 dark:text-emerald-200/80">
+          Are you sure you want to sign out of your {activeRole.toLowerCase()}{' '}
+          account?
+        </p>
+      </Modal>
     </header>
   );
 }
