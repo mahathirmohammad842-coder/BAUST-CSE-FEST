@@ -1,0 +1,6 @@
+{
+  "name": "BAUST CSE Fest — Notification & Announcement System",
+  "description": "Multi-channel event communication, announcement scheduling, delivery tracking, and attendee notification portal for BAUST CSE Fest.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
