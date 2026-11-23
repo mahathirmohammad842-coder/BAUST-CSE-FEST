@@ -178,7 +178,7 @@ export function Sidebar({
             onClick={onCloseMobile}
             aria-hidden="true"
           />
-          <aside className="relative z-50 w-64 max-w-[85vw]">{sidebarContent}</aside>
+          <aside className="sidebar-enter relative z-50 w-64 max-w-[85vw]">{sidebarContent}</aside>
         </div>
       )}
     </>

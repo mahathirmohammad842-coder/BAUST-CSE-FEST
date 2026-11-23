@@ -188,7 +188,7 @@ export function LoginPage({ demoUsers, onSignIn, onRegister }: LoginPageProps) {
   };
 
   return (
-    <main className="font-inter relative min-h-screen overflow-x-hidden overflow-y-auto bg-[#F5F8F6] px-4 py-6 sm:px-8 sm:py-10 lg:px-12 flex items-center justify-center dark:bg-[#02120C] transition-colors duration-150">
+    <main className="page-enter font-inter relative min-h-screen overflow-x-hidden overflow-y-auto bg-[#F5F8F6] px-4 py-6 sm:px-8 sm:py-10 lg:px-12 flex items-center justify-center dark:bg-[#02120C] transition-colors duration-150">
       {/* Subtle architectural canvas depth */}
       <div
         aria-hidden="true"
@@ -290,7 +290,7 @@ export function LoginPage({ demoUsers, onSignIn, onRegister }: LoginPageProps) {
                 {isRegistering ? (
                   <form
                     onSubmit={handleRegistrationSubmit}
-                    className="mt-6 space-y-4"
+                    className="form-enter mt-6 space-y-4"
                     noValidate
                   >
                     {errorMessage && (
@@ -412,7 +412,7 @@ export function LoginPage({ demoUsers, onSignIn, onRegister }: LoginPageProps) {
                     </button>
                   </form>
                 ) : (
-                <form onSubmit={handleSubmit} className="mt-8 space-y-5" noValidate>
+                <form onSubmit={handleSubmit} className="form-enter mt-8 space-y-5" noValidate>
                   {errorMessage && (
                     <div
                       role="alert"

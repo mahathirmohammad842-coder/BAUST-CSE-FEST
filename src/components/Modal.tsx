@@ -37,14 +37,14 @@ export function Modal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-[#02160F]/65 p-4 backdrop-blur-[2px] dark:bg-black/75"
+      className="modal-backdrop-enter fixed inset-0 z-50 flex items-center justify-center bg-[#02160F]/65 p-4 backdrop-blur-[2px] dark:bg-black/75"
       role="dialog"
       aria-modal="true"
       aria-labelledby="modal-title"
       onClick={onClose}
     >
       <div
-        className={`w-full ${maxWidthClass} rounded-xl border border-emerald-200/80 bg-white shadow-xl overflow-hidden dark:border-emerald-800/70 dark:bg-[#061D15]`}
+        className={`modal-content-enter w-full ${maxWidthClass} rounded-xl border border-emerald-200/80 bg-white shadow-xl overflow-hidden dark:border-emerald-800/70 dark:bg-[#061D15]`}
         onClick={(e) => e.stopPropagation()}
       >
         <div

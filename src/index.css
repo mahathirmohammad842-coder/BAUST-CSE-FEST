@@ -36,6 +36,45 @@
   font-variant-numeric: tabular-nums;
 }
 
+@keyframes ui-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes ui-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.page-enter,
+.form-enter {
+  animation: ui-rise-in 260ms cubic-bezier(0.2, 0.75, 0.25, 1) both;
+}
+
+.account-menu-enter,
+.toast-enter,
+.sidebar-enter {
+  animation: ui-rise-in 180ms cubic-bezier(0.2, 0.75, 0.25, 1) both;
+}
+
+.modal-backdrop-enter {
+  animation: ui-fade-in 160ms ease-out both;
+}
+
+.modal-content-enter {
+  animation: ui-rise-in 200ms cubic-bezier(0.2, 0.75, 0.25, 1) both;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;

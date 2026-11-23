@@ -30,7 +30,7 @@ export function StatCard({
   }[tone];
 
   return (
-    <div className="rounded-xl border border-emerald-200/70 bg-white p-4 transition-colors hover:border-emerald-300 dark:border-emerald-800/60 dark:bg-[#061D15] dark:hover:border-emerald-700">
+    <div className="rounded-xl border border-emerald-200/70 bg-white p-4 transition-[transform,border-color,box-shadow] duration-200 ease-out hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-[0_8px_24px_-16px_rgba(6,78,59,0.42)] motion-reduce:transform-none dark:border-emerald-800/60 dark:bg-[#061D15] dark:hover:border-emerald-700">
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs font-medium text-emerald-900/65 dark:text-emerald-200/75 truncate">{label}</span>
         <span

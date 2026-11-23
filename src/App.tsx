@@ -820,7 +820,7 @@ export default function App() {
   const toastBanner = toastMessage ? (
     <div
       role="status"
-      className="fixed bottom-5 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2.5 rounded-xl border border-emerald-800 bg-[#042419] dark:bg-[#06291D] dark:border-emerald-700/70 px-4 py-2.5 text-xs font-medium text-white shadow-xl whitespace-nowrap"
+      className="toast-enter fixed bottom-5 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2.5 rounded-xl border border-emerald-800 bg-[#042419] dark:bg-[#06291D] dark:border-emerald-700/70 px-4 py-2.5 text-xs font-medium text-white shadow-xl whitespace-nowrap"
     >
       <CheckCircle2
         className="h-4 w-4 text-emerald-400 shrink-0"
@@ -885,6 +885,7 @@ export default function App() {
 
       <div className={mode === 'organizer' ? 'lg:pl-56' : ''}>
         <main className="mx-auto w-full max-w-[1440px] px-4 py-5 sm:px-6">
+          <div key={`${mode}-${activeRoute}`} className="page-enter">
           {mode === 'organizer' ? (
             <>
               {activeRoute === 'dashboard' && (
@@ -1005,6 +1006,7 @@ export default function App() {
               onTrackClick={handleTrackClick}
             />
           )}
+          </div>
         </main>
       </div>
 

@@ -185,7 +185,7 @@ export function TopHeader({
               <div
                 role="menu"
                 aria-label="Account menu"
-                className="absolute right-0 top-[calc(100%+10px)] z-50 w-[min(19rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-slate-200 bg-white p-1.5 text-slate-800 shadow-[0_16px_48px_-16px_rgba(2,44,34,0.38)] dark:border-emerald-800/70 dark:bg-[#061D15] dark:text-emerald-50"
+                className="account-menu-enter absolute right-0 top-[calc(100%+10px)] z-50 w-[min(19rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-slate-200 bg-white p-1.5 text-slate-800 shadow-[0_16px_48px_-16px_rgba(2,44,34,0.38)] dark:border-emerald-800/70 dark:bg-[#061D15] dark:text-emerald-50"
               >
                 <div className="flex items-center gap-3 border-b border-slate-100 px-3 py-3 dark:border-emerald-900/70">
                   <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-xs font-bold text-emerald-900 dark:bg-emerald-900/70 dark:text-emerald-200">
