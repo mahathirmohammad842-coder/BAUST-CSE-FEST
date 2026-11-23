@@ -21,6 +21,7 @@ import { ProfilePage } from './pages/ProfilePage';
 import { SettingsPage } from './pages/SettingsPage';
 import { UserInboxPage } from './pages/UserInboxPage';
 import { UserApprovalsPage } from './pages/UserApprovalsPage';
+import { UsersPage } from './pages/UsersPage';
 import type {
   ActivityFeedEntry,
   Announcement,
@@ -42,7 +43,10 @@ import {
 import {
   hashRegistrationPassword,
   loadRegistrationRequests,
+  loadDeletedDemoUserIds,
   REGISTRATION_STORAGE_KEY,
+  DELETED_DEMO_USERS_STORAGE_KEY,
+  saveDeletedDemoUserIds,
   saveRegistrationRequests,
   verifyRegistrationPassword,
 } from './utils/registrationStore';
@@ -103,6 +107,9 @@ export default function App() {
   const [registeredUser, setRegisteredUser] = useState<SystemUser | null>(null);
   const [registrationRequests, setRegistrationRequests] =
     useState<RegistrationRequest[]>(loadRegistrationRequests);
+  const [deletedDemoUserIds, setDeletedDemoUserIds] = useState<string[]>(
+    loadDeletedDemoUserIds
+  );
   const [lastAttendeeRole, setLastAttendeeRole] =
     useState<WorkspaceRole>('Participant');
   const [activeRoute, setActiveRoute] = useState<OrganizerRoute>('dashboard');
@@ -180,14 +187,30 @@ export default function App() {
 
   useEffect(() => {
     const handleRegistrationStorage = (event: StorageEvent) => {
-      if (event.key === REGISTRATION_STORAGE_KEY) {
+      if (event.key === REGISTRATION_STORAGE_KEY || event.key === null) {
         setRegistrationRequests(loadRegistrationRequests());
+      }
+      if (
+        event.key === DELETED_DEMO_USERS_STORAGE_KEY ||
+        event.key === null
+      ) {
+        setDeletedDemoUserIds(loadDeletedDemoUserIds());
       }
     };
     window.addEventListener('storage', handleRegistrationStorage);
     return () =>
       window.removeEventListener('storage', handleRegistrationStorage);
   }, []);
+
+  const availableDemoUsers = useMemo(
+    () =>
+      DEMO_ACCESS_ROLES.map((role) => DEMO_USERS[role]).filter(
+        (user): user is SystemUser & { role: WorkspaceRole } =>
+          user.role !== 'Admin' &&
+          !deletedDemoUserIds.includes(user.id)
+      ),
+    [deletedDemoUserIds]
+  );
 
   const handleChangeMode = (nextMode: WorkspaceMode) => {
     setMode(nextMode);
@@ -267,8 +290,7 @@ export default function App() {
       return null;
     }
 
-    const matchedEntry = Object.entries(DEMO_USERS).find(([role, user]) => {
-      if (role === 'Organizer') return false;
+    const matchedUser = availableDemoUsers.find((user) => {
       if (user.email.toLowerCase() === normalized) return true;
       if (digitsOnly.length >= 6) {
         const userDigits = user.phone.replace(/\D/g, '');
@@ -277,12 +299,8 @@ export default function App() {
       return false;
     });
 
-    if (matchedEntry) {
-      if (matchedEntry[1].role === 'Admin') {
-        return 'Email/phone or password is incorrect.';
-      }
-      const role = matchedEntry[1].role;
-      handleQuickDemoAccess(role);
+    if (matchedUser) {
+      handleQuickDemoAccess(matchedUser.role);
       return null;
     }
 
@@ -398,6 +416,42 @@ export default function App() {
         ? 'User approved. They can now sign in and will see the approval notification.'
         : 'User rejected. The account remains inactive and the applicant will see the decision when signing in.'
     );
+  };
+
+  const handleDeleteUser = (userId: string) => {
+    if (activeRole !== 'Organizer' || userId === DEMO_USERS.Organizer.id) {
+      return;
+    }
+
+    const registration = registrationRequests.find(
+      (request) => request.id === userId
+    );
+    if (registration) {
+      const updatedRequests = registrationRequests.filter(
+        (request) => request.id !== userId
+      );
+      try {
+        saveRegistrationRequests(updatedRequests);
+      } catch {
+        showToast('Could not delete the user. Check browser storage.');
+        return;
+      }
+      setRegistrationRequests(updatedRequests);
+      showToast(`${registration.fullName} and their account were deleted.`);
+      return;
+    }
+
+    const demoUser = availableDemoUsers.find((user) => user.id === userId);
+    if (!demoUser || demoUser.role === 'Organizer') return;
+    const updatedDeletedIds = [...deletedDemoUserIds, demoUser.id];
+    try {
+      saveDeletedDemoUserIds(updatedDeletedIds);
+    } catch {
+      showToast('Could not delete the user. Check browser storage.');
+      return;
+    }
+    setDeletedDemoUserIds(updatedDeletedIds);
+    showToast(`${demoUser.fullName} and their account were deleted.`);
   };
 
   const pendingRequestCount = useMemo(
@@ -788,7 +842,7 @@ export default function App() {
     return (
       <>
         <LoginPage
-          demoUsers={DEMO_ACCESS_ROLES.map((role) => DEMO_USERS[role])}
+          demoUsers={availableDemoUsers}
           onSignIn={handleCredentialSignIn}
           onRegister={handleRegisterUser}
         />
@@ -891,10 +945,19 @@ export default function App() {
                 activeRole === 'Organizer' && (
                   <UserApprovalsPage
                     requests={registrationRequests}
-                    demoUserCount={DEMO_ACCESS_ROLES.length}
+                    demoUserCount={availableDemoUsers.length}
                     onUpdateStatus={handleUpdateRegistrationStatus}
                   />
                 )}
+
+              {activeRoute === 'users' && activeRole === 'Organizer' && (
+                <UsersPage
+                  organizer={DEMO_USERS.Organizer}
+                  demoUsers={availableDemoUsers}
+                  requests={registrationRequests}
+                  onDeleteUser={handleDeleteUser}
+                />
+              )}
 
               {activeRoute === 'profile' && (
                 <ProfilePage

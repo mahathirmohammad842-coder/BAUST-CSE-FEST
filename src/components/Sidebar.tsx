@@ -6,6 +6,7 @@ import {
   PenSquare,
   ShieldCheck,
   Settings,
+  UsersRound,
   X,
 } from 'lucide-react';
 import type { SettingsSection } from '../types';
@@ -17,6 +18,7 @@ export type OrganizerRoute =
   | 'delivery-detail'
   | 'analytics'
   | 'user-approvals'
+  | 'users'
   | 'profile'
   | 'settings';
 
@@ -60,6 +62,7 @@ export function Sidebar({
       icon: ShieldCheck,
       badge: pendingRequestCount > 0 ? pendingRequestCount : undefined,
     },
+    { id: 'users', label: 'Users', icon: UsersRound },
   ];
 
   const handleSelect = (route: OrganizerRoute) => {

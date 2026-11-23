@@ -1,6 +1,7 @@
 import type { RegistrationRequest } from '../types';
 
 export const REGISTRATION_STORAGE_KEY = 'baust_registration_requests';
+export const DELETED_DEMO_USERS_STORAGE_KEY = 'baust_deleted_demo_users';
 const PASSWORD_ITERATIONS = 210_000;
 
 function isRegistrationRequest(value: unknown): value is RegistrationRequest {
@@ -39,6 +40,23 @@ export function loadRegistrationRequests(): RegistrationRequest[] {
 
 export function saveRegistrationRequests(requests: RegistrationRequest[]) {
   window.localStorage.setItem(REGISTRATION_STORAGE_KEY, JSON.stringify(requests));
+}
+
+export function loadDeletedDemoUserIds(): string[] {
+  try {
+    const stored = window.localStorage.getItem(DELETED_DEMO_USERS_STORAGE_KEY);
+    if (!stored) return [];
+    const parsed: unknown = JSON.parse(stored);
+    return Array.isArray(parsed)
+      ? parsed.filter((id): id is string => typeof id === 'string')
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveDeletedDemoUserIds(ids: string[]) {
+  window.localStorage.setItem(DELETED_DEMO_USERS_STORAGE_KEY, JSON.stringify(ids));
 }
 
 function toHex(bytes: Uint8Array): string {

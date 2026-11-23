@@ -18,3 +18,7 @@ View your app in AI Studio: https://ai.studio/apps/f6477fb1-e20d-471a-a45e-d0e5b
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
+
+## Organizer user management
+
+The Organizer-only **Users** page lists demo accounts and registration requests, with search, role/status filters, and confirmed deletion. The Organizer administrator account is protected. In this frontend prototype, user records and deletion state are stored in the current browser's local storage; use a backend for shared, production account management.
