@@ -28,7 +28,10 @@ interface SettingsPageProps {
   onUpdateSettings: (settings: OrganizerSettings) => void;
   onChangeSection: (section: SettingsSection) => void;
   onToggleTheme: () => void;
-  onPasswordUpdated: (currentPassword: string, newPassword: string) => boolean;
+  onPasswordUpdated: (
+    currentPassword: string,
+    newPassword: string
+  ) => Promise<boolean>;
 }
 
 const settingsNavigation: {
@@ -103,6 +106,7 @@ export function SettingsPage({
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [savingPassword, setSavingPassword] = useState(false);
 
   const updatePreference = (key: keyof OrganizerSettings, value: boolean) => {
     onUpdateSettings({ ...settings, [key]: value });
@@ -113,7 +117,7 @@ export function SettingsPage({
     onSaveProfile(profileDraft);
   };
 
-  const handlePasswordSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const handlePasswordSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if ((hasPassword && !currentPassword) || !newPassword || !confirmPassword) {
       setPasswordError('Complete all password fields before continuing.');
@@ -127,14 +131,19 @@ export function SettingsPage({
       setPasswordError('The new passwords do not match.');
       return;
     }
-    if (!onPasswordUpdated(currentPassword, newPassword)) {
-      setPasswordError('The current password is incorrect.');
-      return;
+    setSavingPassword(true);
+    try {
+      if (!(await onPasswordUpdated(currentPassword, newPassword))) {
+        setPasswordError('The current password is incorrect.');
+        return;
+      }
+      setPasswordError(null);
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+    } finally {
+      setSavingPassword(false);
     }
-    setPasswordError(null);
-    setCurrentPassword('');
-    setNewPassword('');
-    setConfirmPassword('');
   };
 
   const activeSetting = settingsNavigation.find((item) => item.id === section);
@@ -318,8 +327,8 @@ export function SettingsPage({
                     <p className="mt-1 text-xs leading-relaxed text-slate-500 dark:text-emerald-300/60">
                       Sign in with {profile.email} or {profile.phone}.{' '}
                       {hasPassword
-                        ? 'Your password is checked for this app session only.'
-                        : 'No password is set yet; any non-empty password currently works. Set one to require it for later sign-ins in this app session.'}{' '}
+                        ? 'Your password is stored in this browser prototype and checked at sign-in.'
+                        : 'The demo password is demo1234. Set a new password to require it for later sign-ins in this browser.'}{' '}
                       Passwords are not sent to an identity provider.
                     </p>
                   </div>
@@ -367,9 +376,12 @@ export function SettingsPage({
                   </div>
                   <button
                     type="submit"
+                    disabled={savingPassword}
                     className="inline-flex min-h-10 items-center justify-center rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-800 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 dark:border-emerald-800/70 dark:text-emerald-100 dark:hover:bg-emerald-900/35"
                   >
-                    {hasPassword ? 'Update password' : 'Set password'}
+                    {savingPassword
+                      ? 'Saving…'
+                      : hasPassword ? 'Update password' : 'Set password'}
                   </button>
                 </form>
               </div>

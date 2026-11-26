@@ -6,6 +6,7 @@ import {
   Check,
   FileText,
   Mail,
+  Paperclip,
   Send,
   Smartphone,
   Sparkles,
@@ -13,6 +14,7 @@ import {
 import { PriorityBadge } from '../components/Badge';
 import { ChannelPill } from '../components/ChannelPill';
 import { Modal } from '../components/Modal';
+import { AttachmentManager } from '../components/AttachmentManager';
 import {
   ALL_CHANNELS,
   ALL_NOTIFICATION_TYPES,
@@ -22,6 +24,8 @@ import {
 import type {
   Announcement,
   AnnouncementCategory,
+  Attachment,
+  AttachmentDeliveryOptions,
   DeliveryStatus,
   NotificationChannel,
   NotificationPriority,
@@ -140,6 +144,17 @@ export function ComposerPage({
   const [channels, setChannels] = useState<NotificationChannel[]>(
     editingAnnouncement?.channels ?? ['In-App', 'Push Notification']
   );
+  const [attachments, setAttachments] = useState<Attachment[]>(
+    editingAnnouncement?.attachments ?? []
+  );
+  const [attachmentDelivery, setAttachmentDelivery] =
+    useState<AttachmentDeliveryOptions>(
+      editingAnnouncement?.attachmentDelivery ?? {
+        inApp: true,
+        email: false,
+        push: true,
+      }
+    );
   const [targeting, setTargeting] = useState<TargetingCriteria>(
     editingAnnouncement?.targeting ?? {
       everyoneAttending: false,
@@ -165,6 +180,7 @@ export function ComposerPage({
     'in-app'
   );
   const [formError, setFormError] = useState<string | null>(null);
+  const [isImportingAttachments, setIsImportingAttachments] = useState(false);
 
   const [emergencyModalOpen, setEmergencyModalOpen] = useState(false);
   const [pendingSubmitMode, setPendingSubmitMode] = useState<
@@ -187,6 +203,13 @@ export function ComposerPage({
   }, [targeting]);
 
   const smsSegments = Math.max(1, Math.ceil(Math.max(body.length, 1) / 160));
+  const includePreviewAttachments =
+    previewTab === 'in-app'
+      ? channels.includes('In-App') && attachmentDelivery.inApp
+      : previewTab === 'email'
+        ? channels.includes('Email') && attachmentDelivery.email
+        : channels.includes('Push Notification') && attachmentDelivery.push;
+  const previewAttachments = includePreviewAttachments ? attachments : [];
 
   const applyTemplate = (tpl: QuickTemplate) => {
     setTitle(tpl.title);
@@ -231,6 +254,10 @@ export function ComposerPage({
   };
 
   const validateBeforePublish = (mode: DeliveryStatus): boolean => {
+    if (isImportingAttachments) {
+      setFormError('Wait for attachments to finish importing before saving this notice.');
+      return false;
+    }
     if (!title.trim()) {
       setFormError('Please enter a notice title.');
       return false;
@@ -323,7 +350,11 @@ export function ComposerPage({
           ? `${scheduledDateTime}:00+06:00`
           : undefined,
       timezone: 'Asia/Dhaka',
-      attachments: editingAnnouncement?.attachments ?? [],
+      attachments: attachments.map((attachment) => ({
+        ...attachment,
+        announcementId: id,
+      })),
+      attachmentDelivery,
       totalRecipients: estimatedRecipients,
       deliveredCount: simulatedDelivered,
       failedCount: simulatedFailed,
@@ -446,6 +477,16 @@ export function ComposerPage({
               className="mt-1 w-full rounded-lg border border-emerald-200/80 bg-white px-3 py-2 text-sm leading-relaxed text-emerald-950 placeholder:text-emerald-900/40 focus:border-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-700/15 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50 dark:placeholder:text-emerald-400/45 dark:focus:border-emerald-400 dark:focus:ring-emerald-500/20"
             />
           </div>
+
+          <AttachmentManager
+            announcementId={editingAnnouncement?.id ?? 'new-notice'}
+            attachments={attachments}
+            deliveryOptions={attachmentDelivery}
+            channels={channels}
+            onChange={setAttachments}
+            onDeliveryOptionsChange={setAttachmentDelivery}
+            onProcessingChange={setIsImportingAttachments}
+          />
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
@@ -748,6 +789,25 @@ export function ComposerPage({
                 </p>
               </div>
             )}
+            {previewAttachments.length > 0 && (
+              <div className="mt-3 border-t border-emerald-200/70 pt-3 dark:border-emerald-800/60">
+                <p className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold text-emerald-900 dark:text-emerald-200">
+                  <Paperclip className="h-3.5 w-3.5" />
+                  {previewTab === 'mobile' ? 'Attachment links' : 'Attachments'}
+                </p>
+                <div className="space-y-1.5">
+                  {previewAttachments.map((attachment) => (
+                    <div key={attachment.id} className="flex items-center justify-between gap-2 rounded-md border border-emerald-200/70 bg-white/70 px-2.5 py-2 text-[10px] dark:border-emerald-800/60 dark:bg-[#061D15]">
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <Paperclip className="h-3 w-3 shrink-0 text-emerald-700 dark:text-emerald-400" />
+                        <span className="truncate text-emerald-950 dark:text-emerald-100">{attachment.fileName}</span>
+                      </span>
+                      <span className="shrink-0 text-emerald-900/55 dark:text-emerald-300/60">{attachment.fileSizeLabel}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="border-t border-emerald-100 pt-3 space-y-2 text-xs dark:border-emerald-800/60">
@@ -777,17 +837,19 @@ export function ComposerPage({
               <button
                 type="button"
                 onClick={onCancel}
-                className="rounded-lg border border-emerald-200/80 bg-white px-3 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-50/70 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-100 dark:hover:bg-[#09291E]"
+                disabled={isImportingAttachments}
+                className="rounded-lg border border-emerald-200/80 bg-white px-3 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-50/70 disabled:cursor-wait disabled:opacity-50 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-100 dark:hover:bg-[#09291E]"
               >
                 Cancel
               </button>
               <button
                 type="button"
+                disabled={isImportingAttachments}
                 onClick={() => {
                   if (!validateBeforePublish('Draft')) return;
                   commitAnnouncement('Draft');
                 }}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200/80 bg-white px-3 py-2 text-xs font-semibold text-emerald-950 hover:bg-emerald-50/70 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-100 dark:hover:bg-[#09291E]"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200/80 bg-white px-3 py-2 text-xs font-semibold text-emerald-950 hover:bg-emerald-50/70 disabled:cursor-wait disabled:opacity-50 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-100 dark:hover:bg-[#09291E]"
               >
                 <FileText
                   className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400"
@@ -800,11 +862,12 @@ export function ComposerPage({
             <button
               type="button"
               onClick={handlePrimarySubmit}
+              disabled={isImportingAttachments}
               className={`inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-xs font-bold transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 ${
                 priority === 'Emergency'
                   ? 'bg-red-600 text-white hover:bg-red-700 focus-visible:ring-red-600'
                   : 'bg-emerald-700 text-white hover:bg-emerald-600 focus-visible:ring-emerald-700 dark:bg-emerald-600 dark:hover:bg-emerald-500'
-              }`}
+              } disabled:cursor-wait disabled:opacity-60`}
             >
               {scheduleEnabled ? (
                 <>

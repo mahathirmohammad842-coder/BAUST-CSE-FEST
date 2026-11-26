@@ -26,11 +26,13 @@ interface TopHeaderProps {
   unreadCount: number;
   isDark: boolean;
   userName: string;
+  avatarUrl?: string;
   onToggleTheme: () => void;
   onChangeMode: (mode: WorkspaceMode) => void;
   onOpenLogin: () => void;
   onOpenMobileMenu: () => void;
   onNavigateProfile: () => void;
+  onManageProfiles: () => void;
   onNavigateSettings: (section: SettingsSection) => void;
 }
 
@@ -40,11 +42,13 @@ export function TopHeader({
   unreadCount,
   isDark,
   userName,
+  avatarUrl,
   onToggleTheme,
   onChangeMode,
   onOpenLogin,
   onOpenMobileMenu,
   onNavigateProfile,
+  onManageProfiles,
   onNavigateSettings,
 }: TopHeaderProps) {
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
@@ -89,16 +93,26 @@ export function TopHeader({
     setAccountMenuOpen(false);
     onNavigateSettings(section);
   };
+  const canOpenOrganizerWorkspace =
+    activeRole === 'Organizer' || activeRole === 'Super Admin';
+  const workspaceButtonLabel =
+    activeRole === 'Super Admin' ? 'Super Admin View' : 'Organizer View';
+  const workspaceButtonShortLabel =
+    activeRole === 'Super Admin' ? 'Admin' : 'Organizer';
 
   return (
-    <header className="sticky top-0 z-30 w-full shrink-0 border-b border-emerald-900/70 bg-[#042419] text-white transition-colors duration-150 dark:border-emerald-800/50 dark:bg-[#031A12]">
+    <header className="relative z-30 w-full shrink-0 border-b border-emerald-900/70 bg-[#042419] text-white transition-colors duration-150 dark:border-emerald-800/50 dark:bg-[#031A12]">
       <div className="mx-auto flex h-14 max-w-[1440px] items-center justify-between gap-1.5 px-3 sm:gap-3 sm:px-6">
         <div className="flex min-w-0 items-center gap-2">
           {mode === 'organizer' && (
             <button
               type="button"
               onClick={onOpenMobileMenu}
-              aria-label="Open organizer menu"
+              aria-label={
+                activeRole === 'Super Admin'
+                  ? 'Open admin workspace menu'
+                  : 'Open organizer menu'
+              }
               className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-emerald-800/80 text-emerald-100 hover:bg-emerald-900/50 lg:hidden"
             >
               <Menu className="h-4 w-4" />
@@ -124,10 +138,10 @@ export function TopHeader({
             aria-label="Workspace View Toggle"
             className="inline-flex items-center rounded-lg border border-emerald-800/80 bg-[#073626] p-1"
           >
-            {activeRole === 'Organizer' && (
+            {canOpenOrganizerWorkspace && (
               <button
                 type="button"
-                aria-label="Organizer View"
+                aria-label={workspaceButtonLabel}
                 onClick={() => onChangeMode('organizer')}
                 className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-1.5 text-xs font-semibold transition-colors sm:gap-1.5 sm:px-3 ${
                   mode === 'organizer'
@@ -136,8 +150,10 @@ export function TopHeader({
                 }`}
               >
                 <LayoutDashboard className="h-3.5 w-3.5" aria-hidden="true" />
-                <span className="hidden sm:inline">Organizer View</span>
-                <span className="hidden min-[420px]:inline sm:hidden">Organizer</span>
+                <span className="hidden sm:inline">{workspaceButtonLabel}</span>
+                <span className="hidden min-[420px]:inline sm:hidden">
+                  {workspaceButtonShortLabel}
+                </span>
               </button>
             )}
 
@@ -181,9 +197,17 @@ export function TopHeader({
               aria-haspopup="menu"
               className="inline-flex h-9 items-center gap-2 rounded-lg border border-emerald-800/80 bg-[#073626] px-1.5 text-emerald-100 transition-colors hover:border-emerald-400/70 hover:bg-emerald-900/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
             >
-              <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-emerald-300 text-[10px] font-bold text-emerald-950 ring-2 ring-emerald-100/15">
-                {initials}
-              </span>
+              {avatarUrl ? (
+                <img
+                  src={avatarUrl}
+                  alt=""
+                  className="h-7 w-7 rounded-full object-cover ring-2 ring-emerald-100/15"
+                />
+              ) : (
+                <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-emerald-300 text-[10px] font-bold text-emerald-950 ring-2 ring-emerald-100/15">
+                  {initials}
+                </span>
+              )}
               <span className="hidden max-w-24 truncate text-xs font-semibold text-emerald-100/80 sm:inline">
                 {activeRole}
               </span>
@@ -194,12 +218,20 @@ export function TopHeader({
               <div
                 role="menu"
                 aria-label="Account menu"
-                className="account-menu-enter absolute right-0 top-[calc(100%+10px)] z-50 w-[min(19rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-slate-200 bg-white p-1.5 text-slate-800 shadow-[0_16px_48px_-16px_rgba(2,44,34,0.38)] dark:border-emerald-800/70 dark:bg-[#061D15] dark:text-emerald-50"
+                className="account-menu-enter absolute right-0 top-[calc(100%+10px)] z-50 flex max-h-[calc(100vh-4.5rem)] w-[min(19rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white p-1.5 text-slate-800 shadow-[0_16px_48px_-16px_rgba(2,44,34,0.38)] dark:border-emerald-800/70 dark:bg-[#061D15] dark:text-emerald-50"
               >
-                <div className="flex items-center gap-3 border-b border-slate-100 px-3 py-3 dark:border-emerald-900/70">
-                  <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-xs font-bold text-emerald-900 dark:bg-emerald-900/70 dark:text-emerald-200">
-                    {initials}
-                  </span>
+                <div className="flex shrink-0 items-center gap-3 border-b border-slate-100 px-3 py-3 dark:border-emerald-900/70">
+                  {avatarUrl ? (
+                    <img
+                      src={avatarUrl}
+                      alt=""
+                      className="h-10 w-10 shrink-0 rounded-full object-cover"
+                    />
+                  ) : (
+                    <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-xs font-bold text-emerald-900 dark:bg-emerald-900/70 dark:text-emerald-200">
+                      {initials}
+                    </span>
+                  )}
                   <div className="min-w-0">
                     <p className="truncate text-sm font-semibold">{userName}</p>
                     <p className="mt-0.5 text-xs text-slate-500 dark:text-emerald-300/65">
@@ -207,8 +239,15 @@ export function TopHeader({
                     </p>
                   </div>
                 </div>
-                {activeRole === 'Organizer' && (
-                  <>
+                <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+                  <div
+                    role="group"
+                    aria-label="Account"
+                    className="border-b border-slate-100 py-1 dark:border-emerald-900/70"
+                  >
+                    <p className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400 dark:text-emerald-300/50">
+                      Account
+                    </p>
                     <button
                       type="button"
                       role="menuitem"
@@ -227,6 +266,38 @@ export function TopHeader({
                       <Settings className="h-4 w-4 text-slate-500 dark:text-emerald-300/75" />
                       Account Settings
                     </button>
+                  </div>
+                  {(activeRole === 'Admin' || activeRole === 'Super Admin') && (
+                    <div
+                      role="group"
+                      aria-label="Administration"
+                      className="border-b border-slate-100 py-1 dark:border-emerald-900/70"
+                    >
+                      <p className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400 dark:text-emerald-300/50">
+                        Administration
+                      </p>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setAccountMenuOpen(false);
+                          onManageProfiles();
+                        }}
+                        className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-[13px] transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 dark:hover:bg-emerald-900/40"
+                      >
+                        <ShieldCheck className="h-4 w-4 text-slate-500 dark:text-emerald-300/75" />
+                        Profile Management
+                      </button>
+                    </div>
+                  )}
+                  <div
+                    role="group"
+                    aria-label="Preferences"
+                    className="border-b border-slate-100 py-1 dark:border-emerald-900/70"
+                  >
+                    <p className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400 dark:text-emerald-300/50">
+                      Preferences
+                    </p>
                     <button
                       type="button"
                       role="menuitem"
@@ -239,21 +310,39 @@ export function TopHeader({
                     <button
                       type="button"
                       role="menuitem"
-                      onClick={() => openSettings('security')}
-                      className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-[13px] transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 dark:hover:bg-emerald-900/40"
-                    >
-                      <ShieldCheck className="h-4 w-4 text-slate-500 dark:text-emerald-300/75" />
-                      Security &amp; Password
-                    </button>
-                    <button
-                      type="button"
-                      role="menuitem"
                       onClick={() => openSettings('appearance')}
                       className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-[13px] transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 dark:hover:bg-emerald-900/40"
                     >
                       <Palette className="h-4 w-4 text-slate-500 dark:text-emerald-300/75" />
                       Appearance (Light/Dark Mode)
                     </button>
+                  </div>
+                  <div
+                    role="group"
+                    aria-label="Security"
+                    className="border-b border-slate-100 py-1 dark:border-emerald-900/70"
+                  >
+                    <p className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400 dark:text-emerald-300/50">
+                      Security
+                    </p>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => openSettings('security')}
+                      className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-[13px] transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 dark:hover:bg-emerald-900/40"
+                    >
+                      <ShieldCheck className="h-4 w-4 text-slate-500 dark:text-emerald-300/75" />
+                      Security &amp; Password
+                    </button>
+                  </div>
+                  <div
+                    role="group"
+                    aria-label="Support"
+                    className="border-b border-slate-100 py-1 dark:border-emerald-900/70"
+                  >
+                    <p className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400 dark:text-emerald-300/50">
+                      Support
+                    </p>
                     <button
                       type="button"
                       role="menuitem"
@@ -263,35 +352,38 @@ export function TopHeader({
                       <CircleHelp className="h-4 w-4 text-slate-500 dark:text-emerald-300/75" />
                       Help &amp; Support
                     </button>
-                    <div className="my-1 border-t border-slate-100 dark:border-emerald-900/70" />
-                  </>
-                )}
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setAccountMenuOpen(false);
-                    setLogoutConfirmOpen(true);
-                  }}
-                  className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-[13px] font-medium text-red-700 transition-colors hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 dark:text-red-300 dark:hover:bg-red-950/40"
-                >
-                  <LogOut className="h-4 w-4" />
-                  Sign Out
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAccountMenuOpen(false);
-                    onToggleTheme();
-                  }}
-                  className="mt-1 flex w-full items-center justify-between rounded-lg border-t border-slate-100 px-3 py-2.5 text-left text-xs text-slate-500 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 dark:border-emerald-900/70 dark:text-emerald-300/70 dark:hover:bg-emerald-900/40"
-                >
-                  <span className="inline-flex items-center gap-2">
-                    {isDark ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
-                    Switch to {isDark ? 'light' : 'dark'} mode
-                  </span>
-                  <span className="font-medium">{isDark ? 'Dark' : 'Light'}</span>
-                </button>
+                  </div>
+                </div>
+                <div className="shrink-0 border-t border-slate-100 bg-white pt-1 dark:border-emerald-900/70 dark:bg-[#061D15]">
+                  <div className="border-y border-slate-100 py-1 dark:border-emerald-900/70">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setAccountMenuOpen(false);
+                        setLogoutConfirmOpen(true);
+                      }}
+                      className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-[13px] font-medium text-red-700 transition-colors hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 dark:text-red-300 dark:hover:bg-red-950/40"
+                    >
+                      <LogOut className="h-4 w-4" />
+                      Sign Out
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAccountMenuOpen(false);
+                      onToggleTheme();
+                    }}
+                    className="mt-1 flex w-full items-center justify-between rounded-lg border-t border-slate-100 px-3 py-2.5 text-left text-xs text-slate-500 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 dark:border-emerald-900/70 dark:text-emerald-300/70 dark:hover:bg-emerald-900/40"
+                  >
+                    <span className="inline-flex items-center gap-2">
+                      {isDark ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
+                      Switch to {isDark ? 'light' : 'dark'} mode
+                    </span>
+                    <span className="font-medium">{isDark ? 'Dark' : 'Light'}</span>
+                  </button>
+                </div>
               </div>
             )}
           </div>

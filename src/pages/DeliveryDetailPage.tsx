@@ -1,17 +1,31 @@
 import {
+  Archive,
   AlertTriangle,
   ArrowLeft,
+  Bookmark,
   CheckCircle2,
+  Copy,
   Download,
   Edit3,
+  Eye,
+  FileDown,
   FileText,
+  Pin,
+  Printer,
   RefreshCw,
+  Share2,
   Send,
+  Star,
+  Trash2,
 } from 'lucide-react';
 import { PriorityBadge, RoleBadge, StatusBadge } from '../components/Badge';
 import { ChannelPill } from '../components/ChannelPill';
 import { EmptyState } from '../components/EmptyState';
 import type { Announcement, NotificationDelivery } from '../types';
+import type {
+  NotificationActionName,
+  PersonalNotificationState,
+} from '../utils/notificationActions';
 import {
   formatDhakaDateTime,
   formatPercent,
@@ -27,6 +41,13 @@ interface DeliveryDetailPageProps {
   onRetryDelivery: (deliveryId: string) => void;
   onRetryAllFailedForAnnouncement: (announcementId: string) => void;
   onPublishScheduledNow: (announcementId: string) => void;
+  personalStatus: PersonalNotificationState;
+  onToggleRead: (nextRead: boolean) => void;
+  onUpdatePersonalStatus: (
+    patch: Partial<PersonalNotificationState>,
+    action: NotificationActionName
+  ) => void;
+  onNotify: (message: string) => void;
 }
 
 export function DeliveryDetailPage({
@@ -39,6 +60,10 @@ export function DeliveryDetailPage({
   onRetryDelivery,
   onRetryAllFailedForAnnouncement,
   onPublishScheduledNow,
+  personalStatus,
+  onToggleRead,
+  onUpdatePersonalStatus,
+  onNotify,
 }: DeliveryDetailPageProps) {
   const announcementDeliveries = deliveries.filter(
     (d) => d.announcementId === selectedAnnouncement.id
@@ -49,6 +74,40 @@ export function DeliveryDetailPage({
   const retriedDeliveries = announcementDeliveries.filter(
     (d) => d.status === 'Delivered' && d.attemptCount > 1
   );
+
+  const copyText = async (text: string, successMessage: string) => {
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error('Clipboard access is unavailable in this browser.');
+      }
+      await navigator.clipboard.writeText(text);
+      onUpdatePersonalStatus({}, 'copied');
+      onNotify(successMessage);
+    } catch {
+      onNotify('Could not access the clipboard. Check browser permissions.');
+    }
+  };
+
+  const noticeText = `${selectedAnnouncement.title}\n${selectedAnnouncement.type} · ${selectedAnnouncement.category}\nFrom: ${selectedAnnouncement.senderName}\n\n${selectedAnnouncement.body}`;
+  const noticeLink = `${window.location.origin}${window.location.pathname}#notification=${encodeURIComponent(selectedAnnouncement.id)}`;
+  const shareNotice = async () => {
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: selectedAnnouncement.title,
+          text: noticeText,
+          url: noticeLink,
+        });
+        onUpdatePersonalStatus({}, 'shared');
+      } else {
+        await copyText(noticeLink, 'Notice link copied to clipboard.');
+        onUpdatePersonalStatus({}, 'shared');
+      }
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') return;
+      onNotify('Could not share this notice. Check browser permissions.');
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -176,7 +235,11 @@ export function DeliveryDetailPage({
                 <FileText className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
                 <span className="font-medium">{att.fileName}</span>
                 <span className="text-emerald-900/50 dark:text-emerald-300/60">({att.fileSizeLabel})</span>
-                <span className="inline-flex items-center gap-1 font-mono text-[11px] text-emerald-800 dark:text-emerald-300 tabular-nums">
+                <span className="inline-flex items-center gap-1 font-mono text-[11px] text-emerald-800 dark:text-emerald-300 tabular-nums" aria-label={`${att.viewCount ?? 0} views`}>
+                  <Eye className="h-3 w-3" aria-hidden="true" />
+                  {att.viewCount ?? 0}
+                </span>
+                <span className="inline-flex items-center gap-1 font-mono text-[11px] text-emerald-800 dark:text-emerald-300 tabular-nums" aria-label={`${att.downloadCount} downloads`}>
                   <Download className="h-3 w-3" aria-hidden="true" />
                   {att.downloadCount}
                 </span>
@@ -184,6 +247,130 @@ export function DeliveryDetailPage({
             ))}
           </div>
         )}
+
+        <div className="mt-5 flex flex-wrap items-center gap-2 border-t border-emerald-100 pt-4 dark:border-emerald-800/60">
+          <button
+            type="button"
+            aria-pressed={personalStatus.starred}
+            onClick={() =>
+              onUpdatePersonalStatus(
+                { starred: !personalStatus.starred },
+                personalStatus.starred ? 'unstarred' : 'starred'
+              )
+            }
+            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 px-3 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 aria-pressed:bg-amber-50 aria-pressed:text-amber-800 dark:border-emerald-800/70 dark:text-emerald-100 dark:hover:bg-[#09291E] dark:aria-pressed:bg-amber-950/30 dark:aria-pressed:text-amber-300"
+          >
+            <Star className={`h-3.5 w-3.5 ${personalStatus.starred ? 'fill-current' : ''}`} aria-hidden="true" />
+            {personalStatus.starred ? 'Unstar' : 'Star'}
+          </button>
+          <button
+            type="button"
+            aria-pressed={personalStatus.saved}
+            onClick={() =>
+              onUpdatePersonalStatus(
+                { saved: !personalStatus.saved },
+                personalStatus.saved ? 'unsaved' : 'saved'
+              )
+            }
+            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 px-3 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800/70 dark:text-emerald-100 dark:hover:bg-[#09291E]"
+          >
+            <Bookmark className={`h-3.5 w-3.5 ${personalStatus.saved ? 'fill-current' : ''}`} aria-hidden="true" />
+            {personalStatus.saved ? 'Unsave' : 'Save'}
+          </button>
+          <button
+            type="button"
+            aria-pressed={personalStatus.read}
+            onClick={() => onToggleRead(!personalStatus.read)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 px-3 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800/70 dark:text-emerald-100 dark:hover:bg-[#09291E]"
+          >
+            {personalStatus.read ? 'Mark unread' : 'Mark read'}
+          </button>
+          <button
+            type="button"
+            aria-pressed={personalStatus.pinned}
+            onClick={() =>
+              onUpdatePersonalStatus(
+                { pinned: !personalStatus.pinned },
+                personalStatus.pinned ? 'unpinned' : 'pinned'
+              )
+            }
+            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 px-3 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800/70 dark:text-emerald-100 dark:hover:bg-[#09291E]"
+          >
+            <Pin className="h-3.5 w-3.5" aria-hidden="true" />
+            {personalStatus.pinned ? 'Unpin' : 'Pin'}
+          </button>
+          <button
+            type="button"
+            aria-pressed={personalStatus.archived}
+            onClick={() =>
+              onUpdatePersonalStatus(
+                { archived: !personalStatus.archived },
+                personalStatus.archived ? 'unarchived' : 'archived'
+              )
+            }
+            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 px-3 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800/70 dark:text-emerald-100 dark:hover:bg-[#09291E]"
+          >
+            <Archive className="h-3.5 w-3.5" aria-hidden="true" />
+            {personalStatus.archived ? 'Unarchive' : 'Archive'}
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              onUpdatePersonalStatus({ deleted: true }, 'deleted')
+            }
+            className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-50 dark:border-red-900/60 dark:text-red-300 dark:hover:bg-red-950/30"
+          >
+            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+            Delete
+          </button>
+          <span className="mx-1 hidden h-5 w-px bg-emerald-200 sm:block dark:bg-emerald-800/70" />
+          <button
+            type="button"
+            onClick={() => void copyText(noticeLink, 'Notice link copied to clipboard.')}
+            className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-[#09291E]"
+          >
+            <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+            Copy link
+          </button>
+          <button
+            type="button"
+            onClick={() => void copyText(noticeText, 'Notice content copied to clipboard.')}
+            className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-[#09291E]"
+          >
+            <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+            Copy content
+          </button>
+          <button
+            type="button"
+            onClick={() => void shareNotice()}
+            className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-[#09291E]"
+          >
+            <Share2 className="h-3.5 w-3.5" aria-hidden="true" />
+            Share
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              onUpdatePersonalStatus({}, 'printed');
+              window.print();
+            }}
+            className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-[#09291E]"
+          >
+            <Printer className="h-3.5 w-3.5" aria-hidden="true" />
+            Print
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              onUpdatePersonalStatus({}, 'exported');
+              window.print();
+            }}
+            className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-[#09291E]"
+          >
+            <FileDown className="h-3.5 w-3.5" aria-hidden="true" />
+            Save as PDF
+          </button>
+        </div>
       </section>
 
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">

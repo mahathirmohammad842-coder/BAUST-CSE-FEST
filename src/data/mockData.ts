@@ -18,6 +18,10 @@ export const WORKSPACE_ROLES: WorkspaceRole[] = [
   'Volunteer',
   'Judge',
   'Guest',
+  'Sponsor',
+  'Mentor',
+  'Admin',
+  'Super Admin',
 ];
 
 export const DEMO_ACCESS_ROLES: WorkspaceRole[] = [
@@ -28,6 +32,8 @@ export const DEMO_ACCESS_ROLES: WorkspaceRole[] = [
   'Guest',
   'Sponsor',
   'Mentor',
+  'Admin',
+  'Super Admin',
 ];
 
 export const ALL_ROLES: UserRole[] = [
@@ -36,6 +42,10 @@ export const ALL_ROLES: UserRole[] = [
   'Volunteer',
   'Judge',
   'Guest',
+  'Sponsor',
+  'Mentor',
+  'Admin',
+  'Super Admin',
 ];
 
 export const ALL_CHANNELS: NotificationChannel[] = [
@@ -120,10 +130,10 @@ export const INDIVIDUAL_USERS_DIRECTORY: string[] = [
 
 export const DEMO_USERS: Record<WorkspaceRole, SystemUser> = {
   Organizer: {
-    id: 'usr-org-01',
-    fullName: 'Mahathir Mohammad',
-    email: 'mahathirmohammad842@gmail.com',
-    phone: '01792102548',
+    id: 'usr-superadmin-01',
+    fullName: 'Sajid Rahman',
+    email: 'superadmin@baust-csefest.local',
+    phone: '+880 1700-000100',
     role: 'Organizer',
     affiliation: 'Convener, BAUST CSE Fest 2026',
     badgeCode: 'ORG-001',
@@ -195,6 +205,24 @@ export const DEMO_USERS: Record<WorkspaceRole, SystemUser> = {
     badgeCode: 'MNT-012',
     assignedRoom: 'Central Auditorium',
     teamOrGroup: 'Team Leaders & Coaches',
+  },
+  Admin: {
+    id: 'usr-admin-01',
+    fullName: 'Nusrat Jahan',
+    email: 'admin@baust-csefest.local',
+    phone: '+880 1700-000101',
+    role: 'Admin',
+    affiliation: 'BAUST CSE Fest Administration',
+    badgeCode: 'ADM-001',
+  },
+  'Super Admin': {
+    id: 'usr-org-01',
+    fullName: 'Mahathir Mohammad',
+    email: 'mahathirmohammad842@gmail.com',
+    phone: '01792102548',
+    role: 'Super Admin',
+    affiliation: 'BAUST CSE Fest Platform Administration',
+    badgeCode: 'SADM-001',
   },
 };
 
@@ -926,4 +954,6 @@ export const INITIAL_USER_PREFERENCES: Record<WorkspaceRole, UserPreferenceMatri
   Guest: createDefaultPreferencesForRole('Guest'),
   Sponsor: createDefaultPreferencesForRole('Sponsor'),
   Mentor: createDefaultPreferencesForRole('Mentor'),
+  Admin: createDefaultPreferencesForRole('Admin'),
+  'Super Admin': createDefaultPreferencesForRole('Super Admin'),
 };

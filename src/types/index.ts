@@ -5,9 +5,14 @@ export type WorkspaceRole =
   | 'Judge'
   | 'Guest'
   | 'Sponsor'
-  | 'Mentor';
+  | 'Mentor'
+  | 'Admin'
+  | 'Super Admin';
 
-export type RegistrableRole = Exclude<WorkspaceRole, 'Organizer'>;
+export type RegistrableRole = Exclude<
+  WorkspaceRole,
+  'Organizer' | 'Admin' | 'Super Admin'
+>;
 
 export type RegistrationStatus = 'Pending Approval' | 'Approved' | 'Rejected';
 
@@ -61,7 +66,85 @@ export interface OrganizerSettings {
   sessionTimeoutEnabled: boolean;
 }
 
-export type UserRole = WorkspaceRole | 'Admin';
+export type UserRole = WorkspaceRole;
+
+export type ProfileAccountStatus =
+  | 'Active'
+  | 'Pending Approval'
+  | 'Rejected'
+  | 'Suspended';
+
+export type ProfileSection = 'overview' | 'security' | 'notifications' | 'activity';
+
+export interface ProfileSocialLinks {
+  website: string;
+  linkedIn: string;
+  github: string;
+}
+
+export interface ProfileNotificationPreferences {
+  email: boolean;
+  push: boolean;
+  inApp: boolean;
+  securityAlerts: boolean;
+}
+
+export interface UserProfile {
+  userId: string;
+  role: WorkspaceRole;
+  fullName: string;
+  email: string;
+  phone: string;
+  department: string;
+  institution: string;
+  biography: string;
+  photoDataUrl: string;
+  socialLinks: ProfileSocialLinks;
+  notificationPreferences: ProfileNotificationPreferences;
+  accountStatus: ProfileAccountStatus;
+  verified: boolean;
+  createdAt: string;
+}
+
+export type ProfileAuditAction =
+  | 'profile-updated'
+  | 'profile-verified'
+  | 'profile-unverified'
+  | 'account-suspended'
+  | 'account-reactivated'
+  | 'password-changed'
+  | 'password-reset'
+  | 'notifications-updated';
+
+export interface ProfileAuditEvent {
+  id: string;
+  userId: string;
+  actorId: string;
+  actorName: string;
+  action: ProfileAuditAction;
+  occurredAt: string;
+  summary: string;
+}
+
+export interface ProfileLoginEvent {
+  id: string;
+  userId: string;
+  occurredAt: string;
+  method: 'password' | 'demo';
+}
+
+export interface ProfileCredential {
+  salt: string;
+  hash: string;
+}
+
+export interface ProfileState {
+  profiles: UserProfile[];
+  events: ProfileAuditEvent[];
+  loginHistory: ProfileLoginEvent[];
+  credentials: Record<string, ProfileCredential>;
+  passwordResetRequired: string[];
+}
 
 export type NotificationChannel =
   | 'In-App'
@@ -97,15 +180,35 @@ export type AnnouncementCategory =
   | 'Logistics & Hospitality'
   | 'Safety & Campus';
 
+export type AttachmentFileType =
+  | 'PDF'
+  | 'Word'
+  | 'Excel'
+  | 'PowerPoint'
+  | 'Image'
+  | 'Archive'
+  | 'Text'
+  | 'Schedule'
+  | 'Map';
+
 export interface Attachment {
   id: string;
   announcementId: string;
   fileName: string;
-  fileType: 'PDF' | 'Image' | 'Schedule' | 'Map';
+  fileType: AttachmentFileType;
   fileSizeBytes: number;
   fileSizeLabel: string;
   mockUrl: string;
   downloadCount: number;
+  viewCount?: number;
+  mimeType?: string;
+  dataUrl?: string;
+}
+
+export interface AttachmentDeliveryOptions {
+  inApp: boolean;
+  email: boolean;
+  push: boolean;
 }
 
 export interface TargetingCriteria {
@@ -174,6 +277,7 @@ export interface Announcement {
   expiresAt?: string;
   timezone: 'Asia/Dhaka';
   attachments: Attachment[];
+  attachmentDelivery?: AttachmentDeliveryOptions;
   actionLabel?: string;
   actionUrl?: string;
   totalRecipients: number;

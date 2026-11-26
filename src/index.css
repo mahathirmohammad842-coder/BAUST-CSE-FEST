@@ -63,13 +63,16 @@
 
 .page-enter,
 .form-enter {
-  animation: ui-rise-in 260ms cubic-bezier(0.2, 0.75, 0.25, 1) both;
+  animation: ui-fade-in 180ms ease-out both;
 }
 
 .account-menu-enter,
-.toast-enter,
-.sidebar-enter {
+.toast-enter {
   animation: ui-rise-in 180ms cubic-bezier(0.2, 0.75, 0.25, 1) both;
+}
+
+.sidebar-enter {
+  animation: ui-fade-in 180ms ease-out both;
 }
 
 .modal-backdrop-enter {

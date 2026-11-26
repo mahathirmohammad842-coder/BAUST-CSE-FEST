@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { BarChart3, Building2, Layers, TrendingUp } from 'lucide-react';
 import { ChannelPill } from '../components/ChannelPill';
+import type { NotificationActionEvent } from '../utils/notificationActions';
 import {
   ALL_CHANNELS,
   ALL_NOTIFICATION_TYPES,
@@ -9,13 +10,17 @@ import {
   MONTHLY_ENGAGEMENT_TREND,
 } from '../data/mockData';
 import type { Announcement, NotificationType } from '../types';
-import { formatPercent } from '../utils/formatters';
+import { formatDhakaDateTime, formatPercent } from '../utils/formatters';
 
 interface AnalyticsPageProps {
   announcements: Announcement[];
+  notificationEvents: NotificationActionEvent[];
 }
 
-export function AnalyticsPage({ announcements }: AnalyticsPageProps) {
+export function AnalyticsPage({
+  announcements,
+  notificationEvents,
+}: AnalyticsPageProps) {
   const [timeframe, setTimeframe] = useState<'daily' | 'monthly'>('daily');
   const [categoryFilter, setCategoryFilter] = useState<
     NotificationType | 'All'
@@ -101,6 +106,23 @@ export function AnalyticsPage({ announcements }: AnalyticsPageProps) {
   }, [filteredAnnouncements]);
 
   const maxTrendSent = Math.max(...trendSeries.map((d) => d.sent), 1);
+  const notificationActionSummary = useMemo(
+    () => ({
+      reads: notificationEvents.filter((event) => event.action === 'read').length,
+      unread: notificationEvents.filter((event) => event.action === 'unread').length,
+      organized: notificationEvents.filter((event) =>
+        ['starred', 'unstarred', 'saved', 'unsaved', 'pinned', 'unpinned', 'archived', 'unarchived'].includes(event.action)
+      ).length,
+      shared: notificationEvents.filter((event) =>
+        ['shared', 'copied', 'printed', 'exported'].includes(event.action)
+      ).length,
+    }),
+    [notificationEvents]
+  );
+  const announcementTitles = useMemo(
+    () => new Map(announcements.map((announcement) => [announcement.id, announcement.title])),
+    [announcements]
+  );
 
   return (
     <div className="space-y-4">
@@ -346,6 +368,75 @@ export function AnalyticsPage({ announcements }: AnalyticsPageProps) {
                     </td>
                   </tr>
                 ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section className="overflow-hidden rounded-xl border border-emerald-200/70 bg-white dark:border-emerald-800/60 dark:bg-[#061D15]">
+          <div className="border-b border-emerald-100 px-4 py-3 dark:border-emerald-800/60">
+            <h3 className="font-display text-sm font-bold text-emerald-950 dark:text-emerald-50">
+              Personal Notification Activity
+            </h3>
+            <p className="mt-0.5 text-xs text-emerald-900/60 dark:text-emerald-300/65">
+              Recent user actions recorded by this browser
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-4">
+            {[
+              { label: 'Tracked actions', value: notificationEvents.length },
+              { label: 'Marked read', value: notificationActionSummary.reads },
+              { label: 'Organization actions', value: notificationActionSummary.organized },
+              { label: 'Shares & exports', value: notificationActionSummary.shared },
+            ].map((metric) => (
+              <div
+                key={metric.label}
+                className="rounded-lg border border-emerald-100 bg-emerald-50/40 p-3 dark:border-emerald-800/60 dark:bg-[#041811]"
+              >
+                <div className="text-[11px] font-medium text-emerald-900/60 dark:text-emerald-300/65">
+                  {metric.label}
+                </div>
+                <div className="mt-1 font-mono text-lg font-bold text-emerald-950 dark:text-emerald-50 tabular-nums">
+                  {metric.value.toLocaleString()}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="overflow-x-auto border-t border-emerald-100 dark:border-emerald-800/60">
+            <table className="w-full min-w-[640px] text-left text-xs">
+              <thead>
+                <tr className="bg-emerald-50/45 font-semibold text-emerald-900/70 dark:bg-[#041811] dark:text-emerald-200/80">
+                  <th className="px-4 py-2.5">Action</th>
+                  <th className="px-4 py-2.5">Notification</th>
+                  <th className="px-4 py-2.5">User ID</th>
+                  <th className="px-4 py-2.5">Time</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-emerald-100/70 dark:divide-emerald-800/50">
+                {notificationEvents.slice(0, 12).map((event) => (
+                  <tr key={event.id}>
+                    <td className="px-4 py-3 font-semibold text-emerald-800 dark:text-emerald-300">
+                      {event.action.replaceAll('-', ' ')}
+                      {event.detail ? <span className="ml-1 font-normal text-emerald-900/55 dark:text-emerald-300/60">· {event.detail}</span> : null}
+                    </td>
+                    <td className="max-w-[280px] truncate px-4 py-3 text-emerald-950 dark:text-emerald-100">
+                      {announcementTitles.get(event.notificationId) ?? event.notificationId}
+                    </td>
+                    <td className="px-4 py-3 font-mono text-emerald-900/70 dark:text-emerald-200/75">
+                      {event.userId}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-emerald-900/65 dark:text-emerald-300/65">
+                      {formatDhakaDateTime(event.occurredAt)}
+                    </td>
+                  </tr>
+                ))}
+                {notificationEvents.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="px-4 py-6 text-center text-emerald-900/55 dark:text-emerald-300/60">
+                      No user notification actions have been recorded yet.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>

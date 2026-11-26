@@ -4,6 +4,7 @@ import {
   LayoutDashboard,
   Megaphone,
   PenSquare,
+  ShieldAlert,
   ShieldCheck,
   Settings,
   UsersRound,
@@ -18,7 +19,9 @@ export type OrganizerRoute =
   | 'delivery-detail'
   | 'analytics'
   | 'user-approvals'
+  | 'blocked-users'
   | 'users'
+  | 'profiles'
   | 'profile'
   | 'settings';
 
@@ -26,6 +29,7 @@ interface SidebarProps {
   activeRoute: OrganizerRoute;
   failedDeliveryCount: number;
   pendingRequestCount: number;
+  blockedUserCount: number;
   mobileOpen: boolean;
   onCloseMobile: () => void;
   onNavigate: (route: OrganizerRoute) => void;
@@ -36,6 +40,7 @@ export function Sidebar({
   activeRoute,
   failedDeliveryCount,
   pendingRequestCount,
+  blockedUserCount,
   mobileOpen,
   onCloseMobile,
   onNavigate,
@@ -62,7 +67,14 @@ export function Sidebar({
       icon: ShieldCheck,
       badge: pendingRequestCount > 0 ? pendingRequestCount : undefined,
     },
+    {
+      id: 'blocked-users',
+      label: 'Blocked Users',
+      icon: ShieldAlert,
+      badge: blockedUserCount > 0 ? blockedUserCount : undefined,
+    },
     { id: 'users', label: 'Users', icon: UsersRound },
+    { id: 'profiles', label: 'Profile Management', icon: CircleUserRound },
   ];
 
   const handleSelect = (route: OrganizerRoute) => {
@@ -91,8 +103,8 @@ export function Sidebar({
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 py-4">
-        <nav className="space-y-1" aria-label="Organizer Sidebar Navigation">
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4">
+        <nav className="space-y-1" aria-label="Workspace Navigation">
           {links.map((item) => {
             const Icon = item.icon;
             const isActive =
@@ -172,13 +184,13 @@ export function Sidebar({
       </aside>
 
       {mobileOpen && (
-        <div className="fixed inset-0 z-40 flex lg:hidden">
+        <div className="fixed inset-x-0 bottom-0 top-14 z-40 flex lg:hidden">
           <div
-            className="fixed inset-0 bg-[#02160F]/70"
+            className="fixed inset-x-0 bottom-0 top-14 bg-[#02160F]/70"
             onClick={onCloseMobile}
             aria-hidden="true"
           />
-          <aside className="sidebar-enter relative z-50 w-64 max-w-[85vw]">{sidebarContent}</aside>
+          <aside className="sidebar-enter relative z-50 h-full w-64 max-w-[85vw]">{sidebarContent}</aside>
         </div>
       )}
     </>

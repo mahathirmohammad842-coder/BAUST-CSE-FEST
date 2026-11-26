@@ -13,14 +13,17 @@ import {
 } from './data/mockData';
 import { AnalyticsPage } from './pages/AnalyticsPage';
 import { AnnouncementsPage } from './pages/AnnouncementsPage';
+import { BlockedUsersPage } from './pages/BlockedUsersPage';
 import { ComposerPage } from './pages/ComposerPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { DeliveryDetailPage } from './pages/DeliveryDetailPage';
 import { LoginPage } from './pages/LoginPage';
-import { ProfilePage } from './pages/ProfilePage';
+import { ProfileManagementPage } from './pages/ProfileManagementPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { UserInboxPage } from './pages/UserInboxPage';
 import { UserApprovalsPage } from './pages/UserApprovalsPage';
+import { UserProfilePage } from './pages/UserProfilePage';
+import { UserSettingsPage } from './pages/UserSettingsPage';
 import { UsersPage } from './pages/UsersPage';
 import type {
   ActivityFeedEntry,
@@ -29,10 +32,16 @@ import type {
   NotificationDelivery,
   OrganizerProfile,
   OrganizerSettings,
+  ProfileAccountStatus,
+  ProfileAuditAction,
+  ProfileAuditEvent,
+  ProfileLoginEvent,
+  ProfileState,
   RegistrationInput,
   RegistrationRequest,
   SettingsSection,
   SystemUser,
+  UserProfile,
   UserPreferenceMatrix,
   WorkspaceRole,
 } from './types';
@@ -44,16 +53,41 @@ import {
   hashRegistrationPassword,
   loadRegistrationRequests,
   loadDeletedDemoUserIds,
-  loadTemporaryUserBlocks,
+  findActiveUserBlock,
+  loadUserBlockState,
   REGISTRATION_STORAGE_KEY,
   DELETED_DEMO_USERS_STORAGE_KEY,
-  TEMPORARY_USER_BLOCKS_STORAGE_KEY,
+  USER_BLOCK_STATE_STORAGE_KEY,
   saveDeletedDemoUserIds,
   saveRegistrationRequests,
-  saveTemporaryUserBlocks,
-  type TemporaryUserBlock,
+  saveUserBlockState,
+  type UserBlockAction,
+  type UserBlockAuditEvent,
+  type UserBlockReason,
+  type UserBlockState,
   verifyRegistrationPassword,
 } from './utils/registrationStore';
+import {
+  loadProfileState,
+  PROFILE_STORAGE_KEY,
+  saveProfileState,
+} from './utils/profileStore';
+import {
+  createDefaultPersonalNotificationState,
+  loadNotificationActionStore,
+  saveNotificationActionStore,
+  type NotificationActionName,
+  type NotificationActionStore,
+  type PersonalNotificationState,
+} from './utils/notificationActions';
+
+const DEMO_PASSWORD = 'demo1234';
+const ORGANIZER_PROFILE_STORAGE_KEY = 'baust_organizer_profile';
+const ACCOUNT_IDENTITY_SWAP_KEY = 'baust_organizer_superadmin_swap_v1';
+
+function canAccessOrganizerWorkspace(role: WorkspaceRole) {
+  return role === 'Organizer' || role === 'Super Admin';
+}
 
 function createDefaultOrganizerProfile(): OrganizerProfile {
   return {
@@ -93,26 +127,186 @@ function isOrganizerProfile(value: unknown): value is OrganizerProfile {
 
 function loadOrganizerProfile(): OrganizerProfile {
   try {
-    const storedProfile = window.localStorage.getItem('baust_organizer_profile');
+    const storedProfile = window.localStorage.getItem(
+      ORGANIZER_PROFILE_STORAGE_KEY
+    );
     if (storedProfile) {
       const parsedProfile: unknown = JSON.parse(storedProfile);
-      if (isOrganizerProfile(parsedProfile)) return parsedProfile;
+      const migrationComplete =
+        window.localStorage.getItem(ACCOUNT_IDENTITY_SWAP_KEY) === 'complete';
+      if (
+        isOrganizerProfile(parsedProfile) &&
+        (migrationComplete ||
+          parsedProfile.email.toLowerCase() ===
+            DEMO_USERS.Organizer.email.toLowerCase())
+      ) {
+        return parsedProfile;
+      }
     }
   } catch {
-    // Use the default profile if local storage is unavailable or invalid.
+    // Fall back to the current demo identity if storage is unavailable or invalid.
   }
   return createDefaultOrganizerProfile();
 }
 
+function createDefaultUserProfile(
+  user: SystemUser,
+  accountStatus: ProfileAccountStatus = 'Active',
+  createdAt = new Date().toISOString()
+): UserProfile {
+  const isAdministrator =
+    user.role === 'Organizer' ||
+    user.role === 'Admin' ||
+    user.role === 'Super Admin';
+  const isMahathir = user.id === DEMO_USERS['Super Admin'].id;
+  return {
+    userId: user.id,
+    role: user.role,
+    fullName: user.fullName,
+    email: user.email,
+    phone: user.phone,
+    department:
+      user.role === 'Organizer' || isMahathir
+        ? 'Computer Science & Engineering'
+        : '',
+    institution:
+      user.role === 'Organizer' || isMahathir ? 'BAUST' : user.affiliation,
+    biography: '',
+    photoDataUrl: '',
+    socialLinks: { website: '', linkedIn: '', github: '' },
+    notificationPreferences: {
+      email: true,
+      push: true,
+      inApp: true,
+      securityAlerts: true,
+    },
+    accountStatus,
+    verified: isAdministrator || accountStatus === 'Active',
+    createdAt,
+  };
+}
+
+function createProfileAuditEvent(
+  userId: string,
+  actorId: string,
+  actorName: string,
+  action: ProfileAuditAction,
+  summary: string
+): ProfileAuditEvent {
+  return {
+    id: `profile-event-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    userId,
+    actorId,
+    actorName,
+    action,
+    occurredAt: new Date().toISOString(),
+    summary,
+  };
+}
+
+function initializeProfileState(): ProfileState {
+  const profileState = loadProfileState();
+
+  try {
+    if (
+      window.localStorage.getItem(ACCOUNT_IDENTITY_SWAP_KEY) === 'complete'
+    ) {
+      return profileState;
+    }
+
+    const storedOrganizerProfile = window.localStorage.getItem(
+      ORGANIZER_PROFILE_STORAGE_KEY
+    );
+    let legacyOrganizerProfile: OrganizerProfile | null = null;
+    if (storedOrganizerProfile) {
+      const parsed: unknown = JSON.parse(storedOrganizerProfile);
+      if (isOrganizerProfile(parsed)) {
+        legacyOrganizerProfile = parsed;
+      }
+    }
+
+    let nextProfileState = profileState;
+    if (
+      legacyOrganizerProfile &&
+      legacyOrganizerProfile.email.toLowerCase() !==
+        DEMO_USERS.Organizer.email.toLowerCase()
+    ) {
+      const userId = DEMO_USERS['Super Admin'].id;
+      const existing = profileState.profiles.find(
+        (profile) => profile.userId === userId
+      );
+      const base = createDefaultUserProfile(DEMO_USERS['Super Admin']);
+      const transferredProfile: UserProfile = {
+        ...base,
+        ...existing,
+        userId,
+        role: 'Super Admin',
+        fullName: legacyOrganizerProfile.fullName,
+        email: legacyOrganizerProfile.email,
+        phone: legacyOrganizerProfile.phone,
+        department: legacyOrganizerProfile.department,
+        institution: existing?.institution || 'BAUST',
+        accountStatus:
+          legacyOrganizerProfile.accountStatus === 'Inactive'
+            ? 'Suspended'
+            : existing?.accountStatus ?? 'Active',
+        createdAt: existing?.createdAt ?? base.createdAt,
+      };
+      nextProfileState = {
+        ...profileState,
+        profiles: [
+          ...profileState.profiles.filter(
+            (profile) => profile.userId !== userId
+          ),
+          transferredProfile,
+        ],
+      };
+      saveProfileState(nextProfileState);
+    }
+
+    const newOrganizerData = profileState.profiles.find(
+      (profile) => profile.userId === DEMO_USERS.Organizer.id
+    );
+    const newOrganizerProfile =
+      legacyOrganizerProfile?.email.toLowerCase() ===
+      DEMO_USERS.Organizer.email.toLowerCase()
+        ? legacyOrganizerProfile
+        : {
+            ...createDefaultOrganizerProfile(),
+            ...(newOrganizerData
+              ? {
+                  fullName: newOrganizerData.fullName,
+                  email: newOrganizerData.email,
+                  phone: newOrganizerData.phone,
+                  department:
+                    newOrganizerData.department ||
+                    'Computer Science & Engineering',
+                  accountStatus:
+                    newOrganizerData.accountStatus === 'Suspended'
+                      ? ('Inactive' as const)
+                      : ('Active' as const),
+                }
+              : {}),
+          };
+    window.localStorage.setItem(
+      ORGANIZER_PROFILE_STORAGE_KEY,
+      JSON.stringify(newOrganizerProfile)
+    );
+    window.localStorage.setItem(ACCOUNT_IDENTITY_SWAP_KEY, 'complete');
+    return nextProfileState;
+  } catch (error) {
+    console.error('Unable to migrate Organizer and Super Admin profile data.', error);
+    return profileState;
+  }
+}
+
 function getUserBlockMessage(
-  blocks: TemporaryUserBlock[],
+  blocks: UserBlockState['records'],
   userId: string
 ): string | null {
-  const block = blocks.find(
-    (entry) =>
-      entry.userId === userId && Date.parse(entry.expiresAt) > Date.now()
-  );
+  const block = findActiveUserBlock(blocks, userId);
   if (!block) return null;
+  if (!block.expiresAt) return 'This account is permanently blocked.';
   const expiresAt = new Intl.DateTimeFormat('en-BD', {
     dateStyle: 'medium',
     timeStyle: 'short',
@@ -131,9 +325,12 @@ export default function App() {
   const [deletedDemoUserIds, setDeletedDemoUserIds] = useState<string[]>(
     loadDeletedDemoUserIds
   );
-  const [temporaryUserBlocks, setTemporaryUserBlocks] = useState<
-    TemporaryUserBlock[]
-  >(loadTemporaryUserBlocks);
+  const [userBlockState, setUserBlockState] =
+    useState<UserBlockState>(loadUserBlockState);
+  const [profileState, setProfileState] =
+    useState<ProfileState>(initializeProfileState);
+  const [notificationActionStore, setNotificationActionStore] =
+    useState<NotificationActionStore>(loadNotificationActionStore);
   const [lastAttendeeRole, setLastAttendeeRole] =
     useState<WorkspaceRole>('Participant');
   const [activeRoute, setActiveRoute] = useState<OrganizerRoute>('dashboard');
@@ -226,10 +423,13 @@ export default function App() {
         setDeletedDemoUserIds(loadDeletedDemoUserIds());
       }
       if (
-        event.key === TEMPORARY_USER_BLOCKS_STORAGE_KEY ||
+        event.key === USER_BLOCK_STATE_STORAGE_KEY ||
         event.key === null
       ) {
-        setTemporaryUserBlocks(loadTemporaryUserBlocks());
+        setUserBlockState(loadUserBlockState());
+      }
+      if (event.key === PROFILE_STORAGE_KEY || event.key === null) {
+        setProfileState(loadProfileState());
       }
     };
     window.addEventListener('storage', handleRegistrationStorage);
@@ -238,90 +438,543 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const timers = temporaryUserBlocks.map((block) =>
-      window.setTimeout(() => {
-        const remainingBlocks = temporaryUserBlocks.filter(
-          (entry) => Date.parse(entry.expiresAt) > Date.now()
-        );
-        if (remainingBlocks.length === temporaryUserBlocks.length) return;
-        try {
-          saveTemporaryUserBlocks(remainingBlocks);
-        } catch {
-          showToast('An expired user block could not be cleared from storage.');
-        }
-        setTemporaryUserBlocks(remainingBlocks);
-      }, Math.max(0, Date.parse(block.expiresAt) - Date.now()))
-    );
-    return () => timers.forEach((timer) => window.clearTimeout(timer));
-  }, [temporaryUserBlocks]);
+    const timer = window.setInterval(() => {
+      const now = new Date();
+      const expiredRecords = userBlockState.records.filter(
+        (record) =>
+          !record.endedAt &&
+          record.expiresAt !== null &&
+          Date.parse(record.expiresAt) <= now.getTime()
+      );
+      if (expiredRecords.length === 0) return;
+
+      const endedAt = now.toISOString();
+      const expiredIds = new Set(expiredRecords.map((record) => record.id));
+      const events: UserBlockAuditEvent[] = expiredRecords.map((record) => ({
+        id: `block-event-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        blockId: record.id,
+        userId: record.userId,
+        action: 'expired',
+        actorId: 'system',
+        actorName: 'System',
+        occurredAt: endedAt,
+        reason: record.reason,
+        note: record.note || undefined,
+        previousExpiresAt: record.expiresAt,
+        expiresAt: record.expiresAt,
+      }));
+      const updatedState: UserBlockState = {
+        records: userBlockState.records.map((record) =>
+          expiredIds.has(record.id)
+            ? {
+                ...record,
+                endedAt,
+                endedById: 'system',
+                endedByName: 'System',
+                endReason: 'expired',
+              }
+            : record
+        ),
+        events: [...userBlockState.events, ...events],
+      };
+      try {
+        saveUserBlockState(updatedState);
+      } catch {
+        showToast('Could not save expired block history. Check browser storage.');
+      }
+      setUserBlockState(updatedState);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [userBlockState]);
 
   const availableDemoUsers = useMemo(
     () =>
       DEMO_ACCESS_ROLES.map((role) => DEMO_USERS[role]).filter(
         (user): user is SystemUser & { role: WorkspaceRole } =>
-          user.role !== 'Admin' &&
           !deletedDemoUserIds.includes(user.id)
       ),
     [deletedDemoUserIds]
   );
 
+  const managedProfiles = useMemo(() => {
+    const accounts: {
+      user: SystemUser;
+      status: ProfileAccountStatus;
+      createdAt?: string;
+      approved?: boolean;
+    }[] = [
+      ...availableDemoUsers.map((user) => ({
+        user:
+          user.role === 'Organizer'
+            ? {
+                ...user,
+                fullName: organizerProfile.fullName,
+                email: organizerProfile.email,
+                phone: organizerProfile.phone,
+                affiliation: organizerProfile.designation,
+              }
+            : user,
+        status: 'Active' as const,
+      })),
+      ...registrationRequests.map((request) => ({
+        user: {
+          id: request.id,
+          fullName: request.fullName,
+          email: request.email,
+          phone: request.phone,
+          role: request.role,
+          affiliation: request.affiliation,
+          badgeCode: request.id,
+        },
+        status:
+          request.status === 'Approved'
+            ? ('Active' as const)
+            : request.status,
+        createdAt: request.registeredAt,
+        approved: request.status === 'Approved',
+      })),
+    ];
+
+    return accounts.map(({ user, status, createdAt, approved }) => {
+      const base = createDefaultUserProfile(user, status, createdAt);
+      const stored = profileState.profiles.find(
+        (profile) => profile.userId === user.id
+      );
+      const accountStatus =
+        stored?.accountStatus === 'Suspended'
+          ? 'Suspended'
+          : status;
+      return {
+        ...base,
+        ...stored,
+        userId: user.id,
+        role: user.role,
+        fullName: stored?.fullName ?? user.fullName,
+        email: stored?.email ?? user.email,
+        phone: stored?.phone ?? user.phone,
+        accountStatus,
+        verified: stored?.verified ?? (approved ?? base.verified),
+        createdAt: createdAt ?? stored?.createdAt ?? base.createdAt,
+      };
+    });
+  }, [
+    availableDemoUsers,
+    organizerProfile,
+    profileState.profiles,
+    registrationRequests,
+  ]);
+
   const handleChangeMode = (nextMode: WorkspaceMode) => {
+    if (nextMode === 'organizer' && !canAccessOrganizerWorkspace(activeRole)) return;
     setMode(nextMode);
     setMobileMenuOpen(false);
-    if (nextMode === 'organizer') {
-      setActiveRole('Organizer');
-    }
+    setActiveRoute('dashboard');
   };
 
   const handleNavigateProfile = () => {
-    setMode('organizer');
-    setActiveRole('Organizer');
+    setSettingsSection('account');
+    setMode(canAccessOrganizerWorkspace(activeRole) ? 'organizer' : 'inbox');
     setActiveRoute('profile');
     setMobileMenuOpen(false);
   };
 
   const handleNavigateSettings = (section: SettingsSection) => {
-    setMode('organizer');
-    setActiveRole('Organizer');
     setSettingsSection(section);
+    setMode(canAccessOrganizerWorkspace(activeRole) ? 'organizer' : 'inbox');
     setActiveRoute('settings');
     setMobileMenuOpen(false);
   };
 
+  const handleNavigateProfileManagement = () => {
+    if (
+      activeRole !== 'Organizer' &&
+      activeRole !== 'Admin' &&
+      activeRole !== 'Super Admin'
+    ) return;
+    setMode(canAccessOrganizerWorkspace(activeRole) ? 'organizer' : 'inbox');
+    setActiveRoute('profiles');
+    setMobileMenuOpen(false);
+  };
+
+  const persistProfileState = (nextState: ProfileState, failureMessage: string) => {
+    try {
+      saveProfileState(nextState);
+    } catch {
+      showToast(failureMessage);
+      return false;
+    }
+    setProfileState(nextState);
+    return true;
+  };
+
+  const getProfileActor = () => {
+    const actor =
+      activeRole === 'Organizer'
+        ? DEMO_USERS.Organizer
+        : registeredUser ?? DEMO_USERS[activeRole];
+    return {
+      actorId: actor.id,
+      actorName:
+        activeRole === 'Organizer' ? organizerProfile.fullName : actor.fullName,
+    };
+  };
+
+  const getCurrentProfileUserId = () =>
+    activeRole === 'Organizer'
+      ? DEMO_USERS.Organizer.id
+      : registeredUser?.id ?? DEMO_USERS[activeRole].id;
+
+  const handleSaveUserProfile = (profile: UserProfile) => {
+    const canEditOtherProfiles =
+      activeRole === 'Organizer' || activeRole === 'Super Admin';
+    if (!canEditOtherProfiles && profile.userId !== getCurrentProfileUserId()) {
+      showToast('You can only edit your own profile.');
+      return;
+    }
+    const actor = getProfileActor();
+    const event = createProfileAuditEvent(
+      profile.userId,
+      actor.actorId,
+      actor.actorName,
+      'profile-updated',
+      'Profile information updated'
+    );
+    const nextState: ProfileState = {
+      ...profileState,
+      profiles: [
+        ...profileState.profiles.filter(
+          (existing) => existing.userId !== profile.userId
+        ),
+        profile,
+      ],
+      events: [event, ...profileState.events].slice(0, 1000),
+    };
+    if (!persistProfileState(nextState, 'Could not save your profile. Check browser storage.')) {
+      return;
+    }
+    if (profile.userId === DEMO_USERS.Organizer.id) {
+      setOrganizerProfile((current) => ({
+        ...current,
+        fullName: profile.fullName,
+        phone: profile.phone,
+        department: profile.department,
+        email: profile.email,
+      }));
+    }
+    showToast('Profile information saved.');
+  };
+
+  const handleSaveProfileNotifications = (profile: UserProfile) => {
+    if (profile.userId !== getCurrentProfileUserId()) {
+      showToast('You can only update your own notification preferences.');
+      return;
+    }
+    const actor = getProfileActor();
+    const event = createProfileAuditEvent(
+      profile.userId,
+      actor.actorId,
+      actor.actorName,
+      'notifications-updated',
+      'Notification preferences updated'
+    );
+    const nextState: ProfileState = {
+      ...profileState,
+      profiles: [
+        ...profileState.profiles.filter(
+          (existing) => existing.userId !== profile.userId
+        ),
+        profile,
+      ],
+      events: [event, ...profileState.events].slice(0, 1000),
+    };
+    if (persistProfileState(nextState, 'Could not save notification preferences. Check browser storage.')) {
+      showToast('Notification preferences saved.');
+    }
+  };
+
+  const handleSetProfileVerification = (userId: string, verified: boolean) => {
+    const canVerify =
+      activeRole === 'Organizer' ||
+      activeRole === 'Admin' ||
+      activeRole === 'Super Admin';
+    const canUnverify =
+      activeRole === 'Organizer' || activeRole === 'Super Admin';
+    if (!canVerify || (!verified && !canUnverify)) return;
+    const profile = managedProfiles.find((item) => item.userId === userId);
+    if (!profile || profile.verified === verified) return;
+    const actor = getProfileActor();
+    const event = createProfileAuditEvent(
+      userId,
+      actor.actorId,
+      actor.actorName,
+      verified ? 'profile-verified' : 'profile-unverified',
+      verified ? 'Profile verified' : 'Profile verification removed'
+    );
+    const nextProfile = { ...profile, verified };
+    const nextState: ProfileState = {
+      ...profileState,
+      profiles: [
+        ...profileState.profiles.filter((item) => item.userId !== userId),
+        nextProfile,
+      ],
+      events: [event, ...profileState.events].slice(0, 1000),
+    };
+    if (persistProfileState(nextState, 'Could not update profile verification. Check browser storage.')) {
+      showToast(verified ? 'Profile verified.' : 'Profile verification removed.');
+    }
+  };
+
+  const handleSetProfileStatus = (
+    userId: string,
+    status: ProfileAccountStatus
+  ) => {
+    if (activeRole !== 'Organizer' && activeRole !== 'Super Admin') return;
+    const profile = managedProfiles.find((item) => item.userId === userId);
+    if (
+      !profile ||
+      userId === getCurrentProfileUserId() ||
+      (status !== 'Suspended' && status !== 'Active')
+    ) return;
+    const request = registrationRequests.find((item) => item.id === userId);
+    if (
+      status === 'Active' &&
+      request &&
+      request.status !== 'Approved'
+    ) {
+      showToast('Only approved accounts can be reactivated.');
+      return;
+    }
+    const actor = getProfileActor();
+    const event = createProfileAuditEvent(
+      userId,
+      actor.actorId,
+      actor.actorName,
+      status === 'Suspended' ? 'account-suspended' : 'account-reactivated',
+      status === 'Suspended' ? 'Account suspended' : 'Account reactivated'
+    );
+    const nextProfile = { ...profile, accountStatus: status };
+    const nextState: ProfileState = {
+      ...profileState,
+      profiles: [
+        ...profileState.profiles.filter((item) => item.userId !== userId),
+        nextProfile,
+      ],
+      events: [event, ...profileState.events].slice(0, 1000),
+    };
+    if (persistProfileState(nextState, 'Could not update account status. Check browser storage.')) {
+      showToast(status === 'Suspended' ? 'Account suspended.' : 'Account reactivated.');
+    }
+  };
+
+  const verifyAccountPassword = async (
+    userId: string,
+    password: string,
+    registration?: RegistrationRequest
+  ) => {
+    const storedCredential = profileState.credentials[userId];
+    if (storedCredential) {
+      return verifyRegistrationPassword(
+        password,
+        storedCredential.salt,
+        storedCredential.hash
+      );
+    }
+    if (registration) {
+      return verifyRegistrationPassword(
+        password,
+        registration.passwordSalt,
+        registration.passwordHash
+      );
+    }
+    if (userId === DEMO_USERS.Organizer.id && organizerPassword !== null) {
+      return password === organizerPassword;
+    }
+    return password === DEMO_PASSWORD;
+  };
+
+  const handleChangeUserPassword = async (
+    userId: string,
+    currentPassword: string,
+    newPassword: string
+  ) => {
+    if (userId !== getCurrentProfileUserId()) {
+      showToast('You can only change your own password.');
+      return false;
+    }
+    const request = registrationRequests.find((item) => item.id === userId);
+    try {
+      if (!(await verifyAccountPassword(userId, currentPassword, request))) {
+        return false;
+      }
+      const credential = await hashRegistrationPassword(newPassword);
+      const actor = getProfileActor();
+      const event = createProfileAuditEvent(
+        userId,
+        actor.actorId,
+        actor.actorName,
+        'password-changed',
+        'Account password changed'
+      );
+      const nextState: ProfileState = {
+        ...profileState,
+        credentials: {
+          ...profileState.credentials,
+          [userId]: { salt: credential.salt, hash: credential.hash },
+        },
+        passwordResetRequired: profileState.passwordResetRequired.filter(
+          (id) => id !== userId
+        ),
+        events: [event, ...profileState.events].slice(0, 1000),
+      };
+      if (!persistProfileState(nextState, 'Could not save your password. Check browser storage.')) {
+        return false;
+      }
+      if (request) {
+        const updatedRequests = registrationRequests.map((item) =>
+          item.id === userId
+            ? {
+                ...item,
+                passwordSalt: credential.salt,
+                passwordHash: credential.hash,
+              }
+            : item
+        );
+        try {
+          saveRegistrationRequests(updatedRequests);
+          setRegistrationRequests(updatedRequests);
+        } catch {
+          showToast('Password saved, but the registration record could not be synchronized.');
+        }
+      }
+      if (userId === DEMO_USERS.Organizer.id) {
+        setOrganizerPassword(newPassword);
+      }
+      showToast('Password updated.');
+      return true;
+    } catch {
+      showToast('Secure password update is unavailable in this browser.');
+      return false;
+    }
+  };
+
+  const handleResetUserPassword = async (userId: string) => {
+    if (activeRole !== 'Organizer' && activeRole !== 'Super Admin') return null;
+    const target = managedProfiles.find((profile) => profile.userId === userId);
+    if (!target) return null;
+    try {
+      const randomBytes = window.crypto.getRandomValues(new Uint8Array(8));
+      const temporaryPassword = `BAUST-${Array.from(randomBytes, (byte) =>
+        byte.toString(16).padStart(2, '0')
+      ).join('')}`;
+      const credential = await hashRegistrationPassword(temporaryPassword);
+      const actor = getProfileActor();
+      const event = createProfileAuditEvent(
+        userId,
+        actor.actorId,
+        actor.actorName,
+        'password-reset',
+        'Administrator reset the account password'
+      );
+      const nextState: ProfileState = {
+        ...profileState,
+        credentials: {
+          ...profileState.credentials,
+          [userId]: { salt: credential.salt, hash: credential.hash },
+        },
+        passwordResetRequired: [
+          ...new Set([...profileState.passwordResetRequired, userId]),
+        ],
+        events: [event, ...profileState.events].slice(0, 1000),
+      };
+      if (
+        !persistProfileState(
+          nextState,
+          'Could not reset the password. Check browser storage.'
+        )
+      ) return null;
+      showToast(`Temporary password created for ${target.fullName}.`);
+      return temporaryPassword;
+    } catch {
+      showToast('Secure password reset is unavailable in this browser.');
+      return null;
+    }
+  };
+
+  const recordProfileLogin = (
+    userId: string,
+    method: ProfileLoginEvent['method']
+  ) => {
+    const event: ProfileLoginEvent = {
+      id: `profile-login-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      userId,
+      occurredAt: new Date().toISOString(),
+      method,
+    };
+    const nextState: ProfileState = {
+      ...profileState,
+      loginHistory: [event, ...profileState.loginHistory].slice(0, 500),
+    };
+    persistProfileState(nextState, 'Sign-in succeeded, but login history could not be saved.');
+  };
+
   const handleSaveOrganizerProfile = (profile: OrganizerProfile) => {
     setOrganizerProfile(profile);
-    showToast('Profile information saved.');
+    const storedProfile =
+      managedProfiles.find(
+        (item) => item.userId === DEMO_USERS.Organizer.id
+      ) ?? createDefaultUserProfile(DEMO_USERS.Organizer);
+    handleSaveUserProfile({
+      ...storedProfile,
+      fullName: profile.fullName,
+      email: profile.email,
+      phone: profile.phone,
+      department: profile.department,
+      accountStatus: profile.accountStatus === 'Inactive' ? 'Suspended' : 'Active',
+    });
   };
 
   const handlePasswordUpdated = (
     currentPassword: string,
     newPassword: string
-  ) => {
-    if (organizerPassword !== null && currentPassword !== organizerPassword) {
-      return false;
-    }
-
-    setOrganizerPassword(newPassword);
-    showToast('Password updated for this app session.');
-    return true;
-  };
+  ) =>
+    handleChangeUserPassword(
+      DEMO_USERS.Organizer.id,
+      currentPassword || DEMO_PASSWORD,
+      newPassword
+    );
 
   const handleQuickDemoAccess = (
     role: WorkspaceRole,
-    account: SystemUser | null = null
+    account: SystemUser | null = null,
+    method: ProfileLoginEvent['method'] = 'demo'
   ) => {
+    const userId = account?.id ?? DEMO_USERS[role].id;
+    const passwordChangeRequired =
+      profileState.passwordResetRequired.includes(userId);
     setShowLoginPage(false);
     setMobileMenuOpen(false);
-    setRegisteredUser(account);
+    const profile = account
+      ? managedProfiles.find((item) => item.userId === account.id)
+      : undefined;
+    setRegisteredUser(
+      account && profile
+        ? { ...account, fullName: profile.fullName, phone: profile.phone }
+        : account
+    );
     setActiveRole(role);
-    if (role === 'Organizer') {
+    setActiveRoute(passwordChangeRequired ? 'profile' : 'dashboard');
+    if (canAccessOrganizerWorkspace(role)) {
       setMode('organizer');
-      setActiveRoute('dashboard');
     } else {
       setLastAttendeeRole(role);
       setMode('inbox');
     }
-    showToast(`Signed in as ${account?.fullName ?? DEMO_USERS[role].fullName} (${role}).`);
+    recordProfileLogin(userId, method);
+    showToast(
+      passwordChangeRequired
+        ? 'Sign-in successful. Please change your temporary password.'
+        : `Signed in as ${profile?.fullName ?? account?.fullName ?? DEMO_USERS[role].fullName} (${role}).`
+    );
   };
 
   const handleCredentialSignIn = async (
@@ -336,40 +989,81 @@ export default function App() {
       (digitsOnly.length >= 8 && organizerPhone === digitsOnly);
 
     if (matchesOrganizer) {
-      if (organizerPassword !== null && password !== organizerPassword) {
+      const organizerProfileRecord = managedProfiles.find(
+        (profile) => profile.userId === DEMO_USERS.Organizer.id
+      );
+      if (organizerProfileRecord?.accountStatus === 'Suspended') {
+        return 'This organizer account is suspended.';
+      }
+      let passwordMatches: boolean;
+      try {
+        passwordMatches = await verifyAccountPassword(
+          DEMO_USERS.Organizer.id,
+          password
+        );
+      } catch {
+        return 'Secure password verification is unavailable in this browser.';
+      }
+      if (!passwordMatches) {
         return 'Email/phone or password is incorrect.';
       }
-      handleQuickDemoAccess('Organizer');
+      handleQuickDemoAccess(
+        'Organizer',
+        null,
+        profileState.credentials[DEMO_USERS.Organizer.id] ||
+          organizerPassword !== null
+          ? 'password'
+          : 'demo'
+      );
       return null;
     }
 
-    const matchedUser = availableDemoUsers.find((user) => {
-      if (user.email.toLowerCase() === normalized) return true;
+    const matchedProfile = managedProfiles.find((profile) => {
+      if (profile.email.toLowerCase() === normalized) return true;
       if (digitsOnly.length >= 6) {
-        const userDigits = user.phone.replace(/\D/g, '');
+        const userDigits = profile.phone.replace(/\D/g, '');
         return userDigits.endsWith(digitsOnly) || digitsOnly.endsWith(userDigits);
       }
       return false;
     });
 
-    if (matchedUser) {
+    const matchedUser = matchedProfile
+      ? availableDemoUsers.find((user) => user.id === matchedProfile.userId)
+      : undefined;
+
+    if (matchedUser && matchedProfile) {
       const blockMessage = getUserBlockMessage(
-        temporaryUserBlocks,
+        userBlockState.records,
         matchedUser.id
       );
       if (blockMessage) return blockMessage;
-      handleQuickDemoAccess(matchedUser.role);
+      if (matchedProfile.accountStatus === 'Suspended') {
+        return 'This account is suspended. Contact an organizer for assistance.';
+      }
+      let passwordMatches: boolean;
+      try {
+        passwordMatches = await verifyAccountPassword(matchedUser.id, password);
+      } catch {
+        return 'Secure password verification is unavailable in this browser.';
+      }
+      if (!passwordMatches) return 'Email/phone or password is incorrect.';
+      handleQuickDemoAccess(
+        matchedUser.role,
+        null,
+        profileState.credentials[matchedUser.id] ? 'password' : 'demo'
+      );
       return null;
     }
 
     const registration = registrationRequests.find((request) => {
-      if (request.email.toLowerCase() === normalized) return true;
-      const phoneDigits = request.phone.replace(/\D/g, '');
+      const profile = managedProfiles.find((item) => item.userId === request.id);
+      if ((profile?.email ?? request.email).toLowerCase() === normalized) return true;
+      const phoneDigits = (profile?.phone ?? request.phone).replace(/\D/g, '');
       return digitsOnly.length >= 8 && phoneDigits === digitsOnly;
     });
     if (!registration) return 'Email/phone or password is incorrect.';
     const blockMessage = getUserBlockMessage(
-      temporaryUserBlocks,
+      userBlockState.records,
       registration.id
     );
     if (blockMessage) return blockMessage;
@@ -379,12 +1073,18 @@ export default function App() {
     if (registration.status === 'Rejected') {
       return 'This registration request was not approved. Please contact the organizer for assistance.';
     }
+    const registrationProfile = managedProfiles.find(
+      (profile) => profile.userId === registration.id
+    );
+    if (registrationProfile?.accountStatus === 'Suspended') {
+      return 'This account is suspended. Contact an organizer for assistance.';
+    }
 
     try {
-      const passwordMatches = await verifyRegistrationPassword(
+      const passwordMatches = await verifyAccountPassword(
+        registration.id,
         password,
-        registration.passwordSalt,
-        registration.passwordHash
+        registration
       );
       if (!passwordMatches) return 'Email/phone or password is incorrect.';
     } catch {
@@ -400,7 +1100,7 @@ export default function App() {
       affiliation: registration.affiliation,
       badgeCode: registration.id,
     };
-    handleQuickDemoAccess(registration.role, account);
+    handleQuickDemoAccess(registration.role, account, 'password');
     showToast('Your account has been approved. You can now sign in.');
     return null;
   };
@@ -461,7 +1161,7 @@ export default function App() {
     requestId: string,
     status: 'Approved' | 'Rejected'
   ) => {
-    if (activeRole !== 'Organizer') return;
+    if (!canAccessOrganizerWorkspace(activeRole)) return;
     const updatedRequests = registrationRequests.map((request) =>
       request.id === requestId && request.status === 'Pending Approval'
         ? { ...request, status, reviewedAt: new Date().toISOString() }
@@ -482,7 +1182,12 @@ export default function App() {
   };
 
   const handleDeleteUser = (userId: string) => {
-    if (activeRole !== 'Organizer' || userId === DEMO_USERS.Organizer.id) {
+    if (
+      !canAccessOrganizerWorkspace(activeRole) ||
+      userId === DEMO_USERS.Organizer.id ||
+      userId === DEMO_USERS['Super Admin'].id ||
+      userId === DEMO_USERS.Admin.id
+    ) {
       return;
     }
 
@@ -517,13 +1222,40 @@ export default function App() {
     showToast(`${demoUser.fullName} and their account were deleted.`);
   };
 
-  const handleBlockUser = (userId: string) => {
-    if (activeRole !== 'Organizer' || userId === DEMO_USERS.Organizer.id) {
+  const handleBlockUser = (
+    userId: string,
+    expiresAt: string | null,
+    reason: UserBlockReason,
+    note: string
+  ) => {
+    const canManageBlocks =
+      activeRole === 'Organizer' || activeRole === 'Super Admin';
+    const actor =
+      activeRole === 'Organizer'
+        ? {
+            id: organizerProfile.organizerId,
+            name: organizerProfile.fullName,
+          }
+        : {
+            id: DEMO_USERS['Super Admin'].id,
+            name: DEMO_USERS['Super Admin'].fullName,
+          };
+    if (
+      !canManageBlocks ||
+      userId === actor.id ||
+      (userId === DEMO_USERS.Organizer.id && activeRole !== 'Super Admin')
+    ) {
       return;
     }
-    const registration = registrationRequests.find(
-      (request) => request.id === userId && request.status === 'Approved'
-    );
+    if (expiresAt !== null && Date.parse(expiresAt) <= Date.now()) {
+      showToast('Choose a future expiry time for this block.');
+      return;
+    }
+    if (findActiveUserBlock(userBlockState.records, userId)) {
+      showToast('This user already has an active block.');
+      return;
+    }
+    const registration = registrationRequests.find((request) => request.id === userId);
     const demoUser = availableDemoUsers.find(
       (user) => user.id === userId && user.role !== 'Organizer'
     );
@@ -531,43 +1263,157 @@ export default function App() {
     if (!userName) return;
 
     const now = new Date();
-    const block: TemporaryUserBlock = {
+    const blockId = `user-block-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const block = {
+      id: blockId,
       userId,
       blockedAt: now.toISOString(),
-      expiresAt: new Date(now.getTime() + 60 * 60 * 1000).toISOString(),
+      expiresAt,
+      reason,
+      note,
+      blockedById: actor.id,
+      blockedByName: actor.name,
     };
-    const updatedBlocks = [
-      ...temporaryUserBlocks.filter(
-        (entry) =>
-          entry.userId !== userId && Date.parse(entry.expiresAt) > now.getTime()
-      ),
-      block,
-    ];
+    const event: UserBlockAuditEvent = {
+      id: `block-event-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      blockId,
+      userId,
+      action: 'blocked',
+      actorId: actor.id,
+      actorName: actor.name,
+      occurredAt: now.toISOString(),
+      reason,
+      note: note || undefined,
+      expiresAt,
+    };
+    const updatedState: UserBlockState = {
+      records: [...userBlockState.records, block],
+      events: [...userBlockState.events, event],
+    };
     try {
-      saveTemporaryUserBlocks(updatedBlocks);
+      saveUserBlockState(updatedState);
     } catch {
       showToast('Could not block the user. Check browser storage.');
       return;
     }
-    setTemporaryUserBlocks(updatedBlocks);
-    showToast(`${userName} is blocked for 1 hour.`);
+    setUserBlockState(updatedState);
+    showToast(
+      expiresAt
+        ? `${userName} is blocked until ${new Intl.DateTimeFormat('en-BD', {
+            dateStyle: 'medium',
+            timeStyle: 'short',
+            timeZone: 'Asia/Dhaka',
+          }).format(new Date(expiresAt))}.`
+        : `${userName} is permanently blocked.`
+    );
   };
 
-  const handleUnblockUser = (userId: string) => {
-    if (activeRole !== 'Organizer' || userId === DEMO_USERS.Organizer.id) {
+  const handleUnblockUser = (blockId: string) => {
+    if (activeRole !== 'Organizer' && activeRole !== 'Super Admin') {
       return;
     }
-    const updatedBlocks = temporaryUserBlocks.filter(
-      (block) => block.userId !== userId
+    const actor =
+      activeRole === 'Organizer'
+        ? { id: organizerProfile.organizerId, name: organizerProfile.fullName }
+        : { id: DEMO_USERS['Super Admin'].id, name: DEMO_USERS['Super Admin'].fullName };
+    const target = userBlockState.records.find(
+      (record) => record.id === blockId && !record.endedAt
     );
+    if (
+      !target ||
+      (target.userId === DEMO_USERS.Organizer.id && activeRole !== 'Super Admin') ||
+      target.userId === actor.id
+    ) return;
+    const now = new Date().toISOString();
+    const event: UserBlockAuditEvent = {
+      id: `block-event-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      blockId,
+      userId: target.userId,
+      action: 'unblocked',
+      actorId: actor.id,
+      actorName: actor.name,
+      occurredAt: now,
+      reason: target.reason,
+      note: target.note || undefined,
+      previousExpiresAt: target.expiresAt,
+      expiresAt: target.expiresAt,
+    };
+    const updatedState: UserBlockState = {
+      records: userBlockState.records.map((record) =>
+        record.id === blockId
+          ? {
+              ...record,
+              endedAt: now,
+              endedById: actor.id,
+              endedByName: actor.name,
+              endReason: 'unblocked',
+            }
+          : record
+      ),
+      events: [...userBlockState.events, event],
+    };
     try {
-      saveTemporaryUserBlocks(updatedBlocks);
+      saveUserBlockState(updatedState);
     } catch {
       showToast('Could not unblock the user. Check browser storage.');
       return;
     }
-    setTemporaryUserBlocks(updatedBlocks);
+    setUserBlockState(updatedState);
     showToast('User access has been restored.');
+  };
+
+  const handleUpdateBlockExpiry = (
+    blockId: string,
+    expiresAt: string,
+    action: Extract<UserBlockAction, 'extended' | 'expiry-changed'>
+  ) => {
+    if (
+      (activeRole !== 'Organizer' && activeRole !== 'Super Admin') ||
+      Date.parse(expiresAt) <= Date.now()
+    ) {
+      showToast('Choose a future expiry time.');
+      return;
+    }
+    const actor =
+      activeRole === 'Organizer'
+        ? { id: organizerProfile.organizerId, name: organizerProfile.fullName }
+        : { id: DEMO_USERS['Super Admin'].id, name: DEMO_USERS['Super Admin'].fullName };
+    const target = userBlockState.records.find(
+      (record) => record.id === blockId && !record.endedAt
+    );
+    if (
+      !target ||
+      (target.userId === DEMO_USERS.Organizer.id && activeRole !== 'Super Admin') ||
+      target.userId === actor.id
+    ) return;
+    const now = new Date().toISOString();
+    const event: UserBlockAuditEvent = {
+      id: `block-event-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      blockId,
+      userId: target.userId,
+      action,
+      actorId: actor.id,
+      actorName: actor.name,
+      occurredAt: now,
+      reason: target.reason,
+      note: target.note || undefined,
+      previousExpiresAt: target.expiresAt,
+      expiresAt,
+    };
+    const updatedState: UserBlockState = {
+      records: userBlockState.records.map((record) =>
+        record.id === blockId ? { ...record, expiresAt } : record
+      ),
+      events: [...userBlockState.events, event],
+    };
+    try {
+      saveUserBlockState(updatedState);
+    } catch {
+      showToast('Could not update the block expiry. Check browser storage.');
+      return;
+    }
+    setUserBlockState(updatedState);
+    showToast(action === 'extended' ? 'Block duration extended.' : 'Block expiry changed.');
   };
 
   const pendingRequestCount = useMemo(
@@ -577,6 +1423,14 @@ export default function App() {
       ).length,
     [registrationRequests]
   );
+  const blockedUserCount = useMemo(
+    () =>
+      userBlockState.records.filter((record) =>
+        findActiveUserBlock(userBlockState.records, record.userId)
+      ).reduce((userIds, record) => userIds.add(record.userId), new Set<string>())
+        .size,
+    [userBlockState.records]
+  );
   const failedDeliveryCount = useMemo(
     () => deliveries.filter((d) => d.status === 'Failed').length,
     [deliveries]
@@ -585,11 +1439,50 @@ export default function App() {
   const inboxRole: WorkspaceRole =
     activeRole === 'Organizer' ? lastAttendeeRole : activeRole;
 
+  const activeProfileUserId =
+    activeRole === 'Organizer'
+      ? DEMO_USERS.Organizer.id
+      : registeredUser?.id ?? DEMO_USERS[activeRole].id;
+  const activeProfile =
+    managedProfiles.find((profile) => profile.userId === activeProfileUserId) ??
+    createDefaultUserProfile(
+      registeredUser ?? DEMO_USERS[activeRole],
+      'Active'
+    );
+  const activeProfileBlock = findActiveUserBlock(
+    userBlockState.records,
+    activeProfileUserId
+  );
+  const inboxUserBase = registeredUser ?? DEMO_USERS[inboxRole];
+  const inboxUserProfile = managedProfiles.find(
+    (profile) => profile.userId === inboxUserBase.id
+  );
+  const inboxUser: SystemUser = {
+    ...inboxUserBase,
+    fullName: inboxUserProfile?.fullName ?? inboxUserBase.fullName,
+    phone: inboxUserProfile?.phone ?? inboxUserBase.phone,
+  };
+
   useEffect(() => {
-    if (activeRole === 'Organizer') return;
-    const userId = registeredUser?.id ?? DEMO_USERS[inboxRole].id;
-    const blockMessage = getUserBlockMessage(temporaryUserBlocks, userId);
-    if (!blockMessage) return;
+    const userId =
+      activeRole === 'Organizer'
+        ? DEMO_USERS.Organizer.id
+        : registeredUser?.id ?? DEMO_USERS[activeRole].id;
+    const blockMessage = getUserBlockMessage(userBlockState.records, userId);
+    const currentProfile = managedProfiles.find(
+      (profile) => profile.userId === userId
+    );
+    const accountIsAvailable =
+      activeRole === 'Organizer' ||
+      (registeredUser
+        ? registrationRequests.some(
+            (request) =>
+              request.id === registeredUser.id &&
+              request.status === 'Approved'
+          )
+        : !deletedDemoUserIds.includes(userId));
+    const isSuspended = currentProfile?.accountStatus === 'Suspended';
+    if (!blockMessage && accountIsAvailable && !isSuspended) return;
 
     setShowLoginPage(true);
     setRegisteredUser(null);
@@ -597,18 +1490,37 @@ export default function App() {
     setMode('organizer');
     setActiveRoute('dashboard');
     setMobileMenuOpen(false);
-    showToast(`${blockMessage} You have been signed out.`);
-  }, [activeRole, inboxRole, registeredUser, temporaryUserBlocks]);
+    showToast(
+      blockMessage
+        ? `${blockMessage} You have been signed out.`
+        : isSuspended
+          ? 'Your account has been suspended. You have been signed out.'
+          : 'Your account is no longer available. You have been signed out.'
+    );
+  }, [
+    activeRole,
+    deletedDemoUserIds,
+    managedProfiles,
+    registeredUser,
+    registrationRequests,
+    userBlockState.records,
+  ]);
 
   const unreadCount = useMemo(() => {
+    const userNotifications =
+      notificationActionStore.byUserId[inboxUser.id] ?? {};
     return announcements.filter((a) => {
       if (!isAnnouncementVisibleToRole(a, inboxRole)) {
         return false;
       }
-      const isRead = a.isReadByCurrentRole?.[inboxRole] ?? false;
+      const isRead =
+        userNotifications[a.id]?.read ??
+        a.isReadByUserId?.[inboxUser.id] ??
+        a.isReadByCurrentRole?.[inboxRole] ??
+        false;
       return !isRead;
     }).length;
-  }, [announcements, inboxRole]);
+  }, [announcements, inboxRole, inboxUser.id, notificationActionStore]);
 
   const selectedAnnouncement = useMemo(
     () =>
@@ -890,17 +1802,59 @@ export default function App() {
   const handleToggleRead = (
     announcementId: string,
     role: WorkspaceRole,
-    nextRead: boolean
+    nextRead: boolean,
+    userId: string
   ) => {
+    const previousState =
+      notificationActionStore.byUserId[userId]?.[announcementId] ??
+      createDefaultPersonalNotificationState();
+    const nextState = {
+      ...notificationActionStore,
+      byUserId: {
+        ...notificationActionStore.byUserId,
+        [userId]: {
+          ...notificationActionStore.byUserId[userId],
+          [announcementId]: {
+            ...previousState,
+            read: nextRead,
+          },
+        },
+      },
+      events: [
+        {
+          id: `notification-action-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          userId,
+          notificationId: announcementId,
+          action: nextRead ? 'read' as const : 'unread' as const,
+          occurredAt: new Date().toISOString(),
+        },
+        ...notificationActionStore.events,
+      ].slice(0, 5000),
+    };
+    try {
+      saveNotificationActionStore(nextState);
+    } catch {
+      showToast('Could not save your notification status. Check browser storage.');
+      return;
+    }
+    setNotificationActionStore(nextState);
+
     setAnnouncements((prev) =>
       prev.map((ann) => {
         if (ann.id !== announcementId) return ann;
-        const wasRead = ann.isReadByCurrentRole?.[role] ?? false;
+        const wasRead =
+          ann.isReadByUserId?.[userId] ??
+          ann.isReadByCurrentRole?.[role] ??
+          false;
         const delta = nextRead && !wasRead ? 1 : !nextRead && wasRead ? -1 : 0;
 
         return {
           ...ann,
           readCount: Math.max(0, ann.readCount + delta),
+          isReadByUserId: {
+            ...(ann.isReadByUserId ?? {}),
+            [userId]: nextRead,
+          },
           isReadByCurrentRole: {
             ...(ann.isReadByCurrentRole ?? {}),
             [role]: nextRead,
@@ -910,26 +1864,198 @@ export default function App() {
     );
   };
 
-  const handleMarkAllRead = (role: WorkspaceRole) => {
-    setAnnouncements((prev) =>
-      prev.map((ann) => {
-        if (!isAnnouncementVisibleToRole(ann, role)) return ann;
-        const wasRead = ann.isReadByCurrentRole?.[role] ?? false;
+  const handleUpdateNotificationAction = (
+    userId: string,
+    notificationId: string,
+    patch: Partial<PersonalNotificationState>,
+    action: NotificationActionName,
+    detail?: string
+  ) => {
+    const previous =
+      notificationActionStore.byUserId[userId]?.[notificationId] ??
+      createDefaultPersonalNotificationState();
+    const event = {
+      id: `notification-action-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      userId,
+      notificationId,
+      action,
+      occurredAt: new Date().toISOString(),
+      detail,
+    };
+    const nextState: NotificationActionStore = {
+      ...notificationActionStore,
+      byUserId: {
+        ...notificationActionStore.byUserId,
+        [userId]: {
+          ...notificationActionStore.byUserId[userId],
+          [notificationId]: { ...previous, ...patch },
+        },
+      },
+      events: [event, ...notificationActionStore.events].slice(0, 5000),
+    };
+    try {
+      saveNotificationActionStore(nextState);
+    } catch {
+      showToast('Could not save this notification action. Check browser storage.');
+      return;
+    }
+    setNotificationActionStore(nextState);
+  };
 
-        return {
-          ...ann,
-          readCount: wasRead ? ann.readCount : ann.readCount + 1,
-          isReadByCurrentRole: {
-            ...(ann.isReadByCurrentRole ?? {}),
-            [role]: true,
-          },
-        };
-      })
+  const handleBulkUpdateNotificationActions = (
+    userId: string,
+    notificationIds: string[],
+    patch: Partial<PersonalNotificationState>,
+    action: NotificationActionName
+  ) => {
+    if (notificationIds.length === 0) return;
+    const userNotifications = {
+      ...notificationActionStore.byUserId[userId],
+    };
+    const events = [...notificationActionStore.events];
+    const changedIds = new Set(notificationIds);
+    for (const notificationId of notificationIds) {
+      const previous =
+        userNotifications[notificationId] ??
+        createDefaultPersonalNotificationState();
+      userNotifications[notificationId] = { ...previous, ...patch };
+      events.unshift({
+        id: `notification-action-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        userId,
+        notificationId,
+        action,
+        occurredAt: new Date().toISOString(),
+      });
+    }
+
+    const nextState: NotificationActionStore = {
+      byUserId: {
+        ...notificationActionStore.byUserId,
+        [userId]: userNotifications,
+      },
+      events: events.slice(0, 5000),
+    };
+    try {
+      saveNotificationActionStore(nextState);
+    } catch {
+      showToast('Could not save bulk notification actions. Check browser storage.');
+      return;
+    }
+    setNotificationActionStore(nextState);
+
+    if (typeof patch.read === 'boolean') {
+      setAnnouncements((previous) =>
+        previous.map((announcement) => {
+          if (!changedIds.has(announcement.id)) return announcement;
+          const wasRead =
+            announcement.isReadByUserId?.[userId] ??
+            announcement.isReadByCurrentRole?.[activeRole] ??
+            false;
+          const delta =
+            patch.read && !wasRead ? 1 : !patch.read && wasRead ? -1 : 0;
+          return {
+            ...announcement,
+            readCount: Math.max(0, announcement.readCount + delta),
+            isReadByUserId: {
+              ...(announcement.isReadByUserId ?? {}),
+              [userId]: patch.read,
+            },
+          };
+        })
+      );
+    }
+  };
+
+  const handleRecordNotificationView = (userId: string, notificationId: string) => {
+    const previous =
+      notificationActionStore.byUserId[userId]?.[notificationId] ??
+      createDefaultPersonalNotificationState();
+    handleUpdateNotificationAction(
+      userId,
+      notificationId,
+      {
+        viewCount: previous.viewCount + 1,
+        lastOpenedAt: new Date().toISOString(),
+      },
+      'viewed'
     );
+  };
+
+  const handleRecordNotificationReadTime = (
+    userId: string,
+    notificationId: string,
+    seconds: number
+  ) => {
+    if (seconds <= 0) return;
+    const previous =
+      notificationActionStore.byUserId[userId]?.[notificationId] ??
+      createDefaultPersonalNotificationState();
+    handleUpdateNotificationAction(
+      userId,
+      notificationId,
+      { readTimeSeconds: previous.readTimeSeconds + seconds },
+      'read-time',
+      `${seconds} seconds`
+    );
+  };
+
+  const handleMarkAllRead = (role: WorkspaceRole, userId: string) => {
+    const now = new Date().toISOString();
+    const nextByUser = {
+      ...notificationActionStore.byUserId,
+      [userId]: { ...notificationActionStore.byUserId[userId] },
+    };
+    const events = [...notificationActionStore.events];
+    const nextAnnouncements = announcements.map((ann) => {
+      if (!isAnnouncementVisibleToRole(ann, role)) return ann;
+      const previous =
+        nextByUser[userId][ann.id] ??
+        createDefaultPersonalNotificationState();
+      nextByUser[userId][ann.id] = { ...previous, read: true };
+      events.unshift({
+        id: `notification-action-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        userId,
+        notificationId: ann.id,
+        action: 'read',
+        occurredAt: now,
+      });
+      const wasRead =
+        ann.isReadByUserId?.[userId] ??
+        ann.isReadByCurrentRole?.[role] ??
+        false;
+      return {
+        ...ann,
+        readCount: wasRead ? ann.readCount : ann.readCount + 1,
+        isReadByUserId: {
+          ...(ann.isReadByUserId ?? {}),
+          [userId]: true,
+        },
+        isReadByCurrentRole: {
+          ...(ann.isReadByCurrentRole ?? {}),
+          [role]: true,
+        },
+      };
+    });
+    const nextState: NotificationActionStore = {
+      byUserId: nextByUser,
+      events: events.slice(0, 5000),
+    };
+    try {
+      saveNotificationActionStore(nextState);
+    } catch {
+      showToast('Could not mark notifications read. Check browser storage.');
+      return;
+    }
+    setNotificationActionStore(nextState);
+    setAnnouncements(nextAnnouncements);
     showToast(`Marked all notices read for ${role}.`);
   };
 
-  const handleTrackClick = (announcementId: string, attachmentId?: string) => {
+  const handleTrackClick = (
+    announcementId: string,
+    attachmentId?: string,
+    attachmentAction: 'view' | 'download' = 'download'
+  ) => {
     setAnnouncements((prev) =>
       prev.map((ann) => {
         if (ann.id !== announcementId) return ann;
@@ -939,7 +2065,15 @@ export default function App() {
           attachments: attachmentId
             ? ann.attachments.map((att) =>
                 att.id === attachmentId
-                  ? { ...att, downloadCount: att.downloadCount + 1 }
+                  ? {
+                      ...att,
+                      viewCount:
+                        (att.viewCount ?? 0) +
+                        (attachmentAction === 'view' ? 1 : 0),
+                      downloadCount:
+                        att.downloadCount +
+                        (attachmentAction === 'download' ? 1 : 0),
+                    }
                   : att
               )
             : ann.attachments,
@@ -989,16 +2123,14 @@ export default function App() {
         activeRole={activeRole}
         unreadCount={unreadCount}
         isDark={darkMode}
-        userName={
-          activeRole === 'Organizer'
-            ? organizerProfile.fullName
-            : registeredUser?.fullName ?? DEMO_USERS[inboxRole].fullName
-        }
+        userName={activeProfile.fullName}
+        avatarUrl={activeProfile.photoDataUrl || undefined}
         onToggleTheme={() => setDarkMode((prev) => !prev)}
         onChangeMode={handleChangeMode}
         onOpenLogin={() => setShowLoginPage(true)}
         onOpenMobileMenu={() => setMobileMenuOpen(true)}
         onNavigateProfile={handleNavigateProfile}
+        onManageProfiles={handleNavigateProfileManagement}
         onNavigateSettings={handleNavigateSettings}
       />
 
@@ -1008,6 +2140,7 @@ export default function App() {
             activeRoute={activeRoute}
             failedDeliveryCount={failedDeliveryCount}
             pendingRequestCount={pendingRequestCount}
+            blockedUserCount={blockedUserCount}
             mobileOpen={mobileMenuOpen}
             onCloseMobile={() => setMobileMenuOpen(false)}
             onNavigate={(route) => setActiveRoute(route)}
@@ -1021,10 +2154,95 @@ export default function App() {
         >
           <div className="mx-auto w-full max-w-[1440px] px-4 py-5 sm:px-6">
             <div key={`${mode}-${activeRoute}`} className="page-enter min-w-0">
-              {mode === 'organizer' ? (
+              {activeRoute === 'profile' ? (
+                <UserProfilePage
+                  profile={activeProfile}
+                  events={profileState.events}
+                  loginHistory={profileState.loginHistory}
+                  blockedUntil={
+                    activeProfileBlock
+                      ? activeProfileBlock.expiresAt
+                        ? `Blocked until ${new Intl.DateTimeFormat('en-BD', {
+                            dateStyle: 'medium',
+                            timeStyle: 'short',
+                            timeZone: 'Asia/Dhaka',
+                          }).format(new Date(activeProfileBlock.expiresAt))}`
+                        : 'Permanently blocked'
+                      : null
+                  }
+                  passwordResetRequired={profileState.passwordResetRequired.includes(
+                    activeProfile.userId
+                  )}
+                  hasPasswordCredential={
+                    Boolean(profileState.credentials[activeProfile.userId]) ||
+                    (activeProfile.role === 'Organizer' &&
+                      organizerPassword !== null) ||
+                    registrationRequests.some(
+                      (request) => request.id === activeProfile.userId
+                    )
+                  }
+                  onSave={handleSaveUserProfile}
+                  onSaveNotifications={handleSaveProfileNotifications}
+                  onChangePassword={(currentPassword, newPassword) =>
+                    handleChangeUserPassword(
+                      activeProfile.userId,
+                      currentPassword,
+                      newPassword
+                    )
+                  }
+                  isDark={darkMode}
+                  onToggleTheme={() => setDarkMode((prev) => !prev)}
+                />
+              ) : activeRoute === 'settings' ? (
+                activeRole === 'Organizer' ? (
+                  <SettingsPage
+                    profile={organizerProfile}
+                    settings={organizerSettings}
+                    section={settingsSection}
+                    isDark={darkMode}
+                    hasPassword={
+                      organizerPassword !== null ||
+                      Boolean(profileState.credentials[DEMO_USERS.Organizer.id])
+                    }
+                    onSaveProfile={handleSaveOrganizerProfile}
+                    onUpdateSettings={setOrganizerSettings}
+                    onChangeSection={setSettingsSection}
+                    onToggleTheme={() => setDarkMode((prev) => !prev)}
+                    onPasswordUpdated={handlePasswordUpdated}
+                  />
+                ) : (
+                  <UserSettingsPage
+                    profile={activeProfile}
+                    section={settingsSection}
+                    isDark={darkMode}
+                    hasPasswordCredential={
+                      Boolean(profileState.credentials[activeProfile.userId]) ||
+                      registrationRequests.some(
+                        (request) => request.id === activeProfile.userId
+                      )
+                    }
+                    onSaveProfile={handleSaveUserProfile}
+                    onSaveNotifications={handleSaveProfileNotifications}
+                    onChangePassword={(currentPassword, newPassword) =>
+                      handleChangeUserPassword(
+                        activeProfile.userId,
+                        currentPassword,
+                        newPassword
+                      )
+                    }
+                    onChangeSection={setSettingsSection}
+                    onToggleTheme={() => setDarkMode((prev) => !prev)}
+                  />
+                )
+              ) : mode === 'organizer' ? (
                 <>
                   {activeRoute === 'dashboard' && (
                     <DashboardPage
+                      title={
+                        activeRole === 'Super Admin'
+                          ? 'Super Admin Dashboard'
+                          : 'Organizer Dashboard'
+                      }
                       announcements={announcements}
                       activityFeed={activityFeed}
                       failedCount={failedDeliveryCount}
@@ -1075,15 +2293,52 @@ export default function App() {
                           handleRetryAllFailedForAnnouncement
                         }
                         onPublishScheduledNow={handlePublishScheduledNow}
+                        personalStatus={{
+                          ...createDefaultPersonalNotificationState(),
+                          ...notificationActionStore.byUserId[activeProfileUserId]?.[
+                            selectedAnnouncement.id
+                          ],
+                          read:
+                            notificationActionStore.byUserId[activeProfileUserId]?.[
+                              selectedAnnouncement.id
+                            ]?.read ??
+                            selectedAnnouncement.isReadByUserId?.[
+                              activeProfileUserId
+                            ] ??
+                            selectedAnnouncement.isReadByCurrentRole?.[
+                              activeRole
+                            ] ??
+                            false,
+                        }}
+                        onToggleRead={(nextRead) =>
+                          handleToggleRead(
+                            selectedAnnouncement.id,
+                            activeRole,
+                            nextRead,
+                            activeProfileUserId
+                          )
+                        }
+                        onUpdatePersonalStatus={(patch, action) =>
+                          handleUpdateNotificationAction(
+                            activeProfileUserId,
+                            selectedAnnouncement.id,
+                            patch,
+                            action
+                          )
+                        }
+                        onNotify={showToast}
                       />
                     )}
 
                   {activeRoute === 'analytics' && (
-                    <AnalyticsPage announcements={announcements} />
+                    <AnalyticsPage
+                      announcements={announcements}
+                      notificationEvents={notificationActionStore.events}
+                    />
                   )}
 
                   {activeRoute === 'user-approvals' &&
-                    activeRole === 'Organizer' && (
+                    canAccessOrganizerWorkspace(activeRole) && (
                       <UserApprovalsPage
                         requests={registrationRequests}
                         demoUserCount={availableDemoUsers.length}
@@ -1091,46 +2346,79 @@ export default function App() {
                       />
                     )}
 
-                  {activeRoute === 'users' && activeRole === 'Organizer' && (
+                  {activeRoute === 'users' &&
+                    canAccessOrganizerWorkspace(activeRole) && (
                     <UsersPage
-                      organizer={DEMO_USERS.Organizer}
+                      organizer={{
+                        ...DEMO_USERS.Organizer,
+                        fullName: organizerProfile.fullName,
+                        email: organizerProfile.email,
+                        phone: organizerProfile.phone,
+                      }}
                       demoUsers={availableDemoUsers}
                       requests={registrationRequests}
-                      blocks={temporaryUserBlocks}
+                      blocks={userBlockState.records}
                       onBlockUser={handleBlockUser}
                       onUnblockUser={handleUnblockUser}
                       onDeleteUser={handleDeleteUser}
                     />
                   )}
 
-                  {activeRoute === 'profile' && (
-                    <ProfilePage
-                      profile={organizerProfile}
-                      onEditProfile={() => handleNavigateSettings('account')}
+                  {activeRoute === 'blocked-users' &&
+                    canAccessOrganizerWorkspace(activeRole) && (
+                      <BlockedUsersPage
+                        users={availableDemoUsers}
+                        requests={registrationRequests}
+                        records={userBlockState.records}
+                        events={userBlockState.events}
+                        onUnblock={handleUnblockUser}
+                        onUpdateExpiry={handleUpdateBlockExpiry}
+                      />
+                    )}
+
+                  {activeRoute === 'profiles' &&
+                    canAccessOrganizerWorkspace(activeRole) && (
+                    <ProfileManagementPage
+                      profiles={managedProfiles}
+                      blocks={userBlockState.records}
+                      canManage={canAccessOrganizerWorkspace(activeRole)}
+                      canVerify
+                      onSaveProfile={handleSaveUserProfile}
+                      onSetVerified={handleSetProfileVerification}
+                      onSetStatus={handleSetProfileStatus}
+                      onBlock={handleBlockUser}
+                      onUnblock={handleUnblockUser}
+                      onResetPassword={handleResetUserPassword}
                     />
                   )}
 
-                  {activeRoute === 'settings' && (
-                    <SettingsPage
-                      profile={organizerProfile}
-                      settings={organizerSettings}
-                      section={settingsSection}
-                      isDark={darkMode}
-                      hasPassword={organizerPassword !== null}
-                      onSaveProfile={handleSaveOrganizerProfile}
-                      onUpdateSettings={setOrganizerSettings}
-                      onChangeSection={setSettingsSection}
-                      onToggleTheme={() => setDarkMode((prev) => !prev)}
-                      onPasswordUpdated={handlePasswordUpdated}
-                    />
-                  )}
                 </>
+              ) : activeRoute === 'profiles' &&
+                (activeRole === 'Admin' || activeRole === 'Super Admin') ? (
+                <ProfileManagementPage
+                  profiles={managedProfiles}
+                  blocks={userBlockState.records}
+                  canManage={activeRole === 'Super Admin'}
+                  canVerify
+                  onSaveProfile={handleSaveUserProfile}
+                  onSetVerified={handleSetProfileVerification}
+                  onSetStatus={handleSetProfileStatus}
+                  onBlock={handleBlockUser}
+                  onUnblock={handleUnblockUser}
+                  onResetPassword={handleResetUserPassword}
+                />
               ) : (
                 <UserInboxPage
                   activeRole={inboxRole}
-                  activeUser={registeredUser ?? DEMO_USERS[inboxRole]}
+                  activeUser={inboxUser}
                   announcements={announcements}
                   preferences={preferencesByRole[inboxRole]}
+                  notificationStates={
+                    notificationActionStore.byUserId[inboxUser.id] ?? {}
+                  }
+                  notificationEvents={notificationActionStore.events.filter(
+                    (event) => event.userId === inboxUser.id
+                  )}
                   onUpdatePreferences={(next) => {
                     setPreferencesByRole((prev) => ({
                       ...prev,
@@ -1144,8 +2432,39 @@ export default function App() {
                     }));
                     showToast(`Reset notification preferences for ${inboxRole}.`);
                   }}
-                  onToggleRead={handleToggleRead}
-                  onMarkAllRead={handleMarkAllRead}
+                  onToggleRead={(id, role, nextRead) =>
+                    handleToggleRead(id, role, nextRead, inboxUser.id)
+                  }
+                  onMarkAllRead={(role) =>
+                    handleMarkAllRead(role, inboxUser.id)
+                  }
+                  onUpdateNotificationAction={(id, patch, action, detail) =>
+                    handleUpdateNotificationAction(
+                      inboxUser.id,
+                      id,
+                      patch,
+                      action,
+                      detail
+                    )
+                  }
+                  onBulkUpdateNotifications={(ids, patch, action) =>
+                    handleBulkUpdateNotificationActions(
+                      inboxUser.id,
+                      ids,
+                      patch,
+                      action
+                    )
+                  }
+                  onRecordNotificationView={(id) =>
+                    handleRecordNotificationView(inboxUser.id, id)
+                  }
+                  onRecordNotificationReadTime={(id, seconds) =>
+                    handleRecordNotificationReadTime(
+                      inboxUser.id,
+                      id,
+                      seconds
+                    )
+                  }
                   onTrackClick={handleTrackClick}
                 />
               )}

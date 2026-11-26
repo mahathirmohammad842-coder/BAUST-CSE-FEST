@@ -103,7 +103,7 @@ export function UserApprovalsPage({
         </div>
         <span className="inline-flex w-fit items-center gap-2 rounded-full border border-emerald-200 bg-white px-3 py-1.5 text-xs font-medium text-emerald-800 dark:border-emerald-800/70 dark:bg-[#061D15] dark:text-emerald-200">
           <ShieldCheck className="h-3.5 w-3.5" />
-          Organizer review only
+          Organizer or Super Admin review
         </span>
       </header>
 

@@ -26,6 +26,7 @@ import {
 } from '../utils/formatters';
 
 interface DashboardPageProps {
+  title?: string;
   announcements: Announcement[];
   activityFeed: ActivityFeedEntry[];
   failedCount: number;
@@ -35,6 +36,7 @@ interface DashboardPageProps {
 }
 
 export function DashboardPage({
+  title = 'Organizer Dashboard',
   announcements,
   activityFeed,
   failedCount,
@@ -148,7 +150,7 @@ export function DashboardPage({
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="font-display text-xl font-bold text-emerald-950 dark:text-emerald-50">
-            Organizer Dashboard
+            {title}
           </h1>
           <p className="text-xs text-emerald-900/60 dark:text-emerald-300/65">
             Notification &amp; Announcement Operations · GMT+6

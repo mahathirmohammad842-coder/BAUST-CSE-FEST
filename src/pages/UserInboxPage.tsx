@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
+  Archive,
   BellRing,
+  Bookmark,
   Building2,
   Check,
   CheckCheck,
@@ -10,20 +12,29 @@ import {
   Copy,
   Download,
   ExternalLink,
+  FileDown,
+  Flag,
   HelpCircle,
+  History,
   Inbox,
   Mail,
   MailOpen,
   MapPin,
   MessageSquare,
+  Pin,
+  Printer,
   Moon,
   Paperclip,
   Plus,
   RotateCcw,
   Search,
   Send,
+  Share2,
   ShieldAlert,
   SlidersHorizontal,
+  Star,
+  Tag,
+  Trash2,
   Trophy,
   X,
 } from 'lucide-react';
@@ -45,18 +56,27 @@ import type {
   UserPreferenceMatrix,
   WorkspaceRole,
 } from '../types';
+import type {
+  NotificationActionEvent,
+  NotificationActionName,
+  PersonalNotificationState,
+} from '../utils/notificationActions';
+import { createDefaultPersonalNotificationState } from '../utils/notificationActions';
 import {
   formatDhakaDateTime,
   formatDhakaTimeOnly,
   getPriorityWeight,
   isAnnouncementVisibleToRole,
 } from '../utils/formatters';
+import { getAttachmentsForChannel } from '../utils/attachmentUtils';
 
 interface UserInboxPageProps {
   activeRole: WorkspaceRole;
   activeUser: SystemUser;
   announcements: Announcement[];
   preferences: UserPreferenceMatrix;
+  notificationStates: Record<string, PersonalNotificationState>;
+  notificationEvents: NotificationActionEvent[];
   onUpdatePreferences: (next: UserPreferenceMatrix) => void;
   onResetPreferences: () => void;
   onToggleRead: (
@@ -65,13 +85,44 @@ interface UserInboxPageProps {
     nextRead: boolean
   ) => void;
   onMarkAllRead: (role: WorkspaceRole) => void;
-  onTrackClick: (announcementId: string, attachmentId?: string) => void;
+  onUpdateNotificationAction: (
+    notificationId: string,
+    patch: Partial<PersonalNotificationState>,
+    action: NotificationActionName,
+    detail?: string
+  ) => void;
+  onBulkUpdateNotifications: (
+    notificationIds: string[],
+    patch: Partial<PersonalNotificationState>,
+    action: NotificationActionName
+  ) => void;
+  onRecordNotificationView: (notificationId: string) => void;
+  onRecordNotificationReadTime: (
+    notificationId: string,
+    seconds: number
+  ) => void;
+  onTrackClick: (
+    announcementId: string,
+    attachmentId?: string,
+    attachmentAction?: 'view' | 'download'
+  ) => void;
 }
 
 type InboxFilterPill =
   | 'all'
   | 'unread'
+  | 'starred'
+  | 'saved'
+  | 'pinned'
+  | 'archived'
+  | 'high-priority'
   | 'emergency'
+  | 'my-department'
+  | 'my-events'
+  | 'snoozed'
+  | 'recently-viewed'
+  | 'frequently-accessed'
+  | 'history'
   | 'schedule-rooms'
   | 'competitions';
 
@@ -105,15 +156,29 @@ function saveRecentSearches(role: WorkspaceRole, queries: string[]) {
   }
 }
 
+function toLocalDateTimeValue(value: string | null) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
 export function UserInboxPage({
   activeRole,
   activeUser,
   announcements,
   preferences,
+  notificationStates,
+  notificationEvents,
   onUpdatePreferences,
   onResetPreferences,
   onToggleRead,
   onMarkAllRead,
+  onUpdateNotificationAction,
+  onBulkUpdateNotifications,
+  onRecordNotificationView,
+  onRecordNotificationReadTime,
   onTrackClick,
 }: UserInboxPageProps) {
   const [filterPill, setFilterPill] = useState<InboxFilterPill>('all');
@@ -127,6 +192,16 @@ export function UserInboxPage({
   const [selectedNoticeId, setSelectedNoticeId] = useState<string | null>(null);
   const [mobileReaderOpen, setMobileReaderOpen] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [selectedNotificationIds, setSelectedNotificationIds] = useState<string[]>([]);
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [labelFilter, setLabelFilter] = useState('');
+  const [labelDraft, setLabelDraft] = useState('');
+  const [draftResponse, setDraftResponse] = useState('');
+  const [snoozeChoice, setSnoozeChoice] = useState('1h');
+  const [customSnooze, setCustomSnooze] = useState('');
+  const [followUpDueAt, setFollowUpDueAt] = useState('');
+  const [reminderTime, setReminderTime] = useState(Date.now());
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [prefsSavedBanner, setPrefsSavedBanner] = useState(false);
 
@@ -145,6 +220,11 @@ export function UserInboxPage({
   const [infoQuestion, setInfoQuestion] = useState('');
   const [organizerSubject, setOrganizerSubject] = useState('');
   const [organizerMessage, setOrganizerMessage] = useState('');
+  const readSessionRef = useRef<{ notificationId: string; startedAt: number } | null>(null);
+  const onReadTimeRef = useRef(onRecordNotificationReadTime);
+  onReadTimeRef.current = onRecordNotificationReadTime;
+  const touchStartXRef = useRef<number | null>(null);
+  const suppressNextClickRef = useRef(false);
 
   useEffect(() => {
     setRecentSearches(loadRecentSearches(activeRole));
@@ -152,7 +232,48 @@ export function UserInboxPage({
     setQuickMenuOpen(false);
     setMobileReaderOpen(false);
     setIncidentRoom(activeUser.assignedRoom || BAUST_ROOMS[0]);
+    setSelectedNotificationIds([]);
+    setFilterPill('all');
+    setLabelFilter('');
   }, [activeRole, activeUser.assignedRoom]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setReminderTime(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const dueReminders = Object.entries(notificationStates).filter(
+      ([, state]) =>
+        state.snoozedUntil !== null &&
+        Date.parse(state.snoozedUntil) <= reminderTime &&
+        state.reminderNotifiedAt === null
+    );
+    if (dueReminders.length === 0) return;
+
+    const notifiedAt = new Date(reminderTime).toISOString();
+    dueReminders.forEach(([notificationId]) => {
+      onUpdateNotificationAction(
+        notificationId,
+        { reminderNotifiedAt: notifiedAt },
+        'reminder-triggered'
+      );
+    });
+    flashFeedback(
+      dueReminders.length === 1
+        ? 'A snoozed notification is ready for follow-up.'
+        : `${dueReminders.length} snoozed notifications are ready for follow-up.`
+    );
+  }, [notificationStates, onUpdateNotificationAction, reminderTime]);
+
+  useEffect(() => () => {
+    const session = readSessionRef.current;
+    if (!session) return;
+    const seconds = Math.round((Date.now() - session.startedAt) / 1000);
+    if (seconds > 0) {
+      onReadTimeRef.current(session.notificationId, seconds);
+    }
+  }, []);
 
   useEffect(() => {
     const handleOutsideClick = (event: MouseEvent) => {
@@ -213,35 +334,89 @@ export function UserInboxPage({
     return () => window.clearTimeout(timer);
   }, [searchQuery, activeRole]);
 
+  const notificationStateFor = (notice: Announcement) => {
+    const stored = notificationStates[notice.id];
+    if (stored) return stored;
+    return {
+      ...createDefaultPersonalNotificationState(),
+      read:
+        notice.isReadByUserId?.[activeUser.id] ??
+        notice.isReadByCurrentRole?.[activeRole] ??
+        false,
+    };
+  };
+
+  const isNotificationRead = (notice: Announcement) =>
+    notificationStateFor(notice).read;
+
+  const finishReadSession = () => {
+    const session = readSessionRef.current;
+    if (!session) return;
+    readSessionRef.current = null;
+    const seconds = Math.round((Date.now() - session.startedAt) / 1000);
+    if (seconds > 0) {
+      onRecordNotificationReadTime(session.notificationId, seconds);
+    }
+  };
+
   const roleNotices = useMemo(() => {
     return announcements
       .filter((a) => isAnnouncementVisibleToRole(a, activeRole))
       .sort((a, b) => {
+        const pinnedDifference =
+          Number(notificationStates[b.id]?.pinned ?? false) -
+          Number(notificationStates[a.id]?.pinned ?? false);
+        if (pinnedDifference !== 0) return pinnedDifference;
         const pw = getPriorityWeight(b.priority) - getPriorityWeight(a.priority);
         if (pw !== 0) return pw;
         return (b.publishedAt || b.createdAt).localeCompare(
           a.publishedAt || a.createdAt
         );
       });
-  }, [announcements, activeRole]);
+  }, [announcements, activeRole, notificationStates]);
 
   const emergencyNotices = useMemo(
-    () => roleNotices.filter((n) => n.priority === 'Emergency'),
-    [roleNotices]
+    () =>
+      roleNotices.filter(
+        (notice) =>
+          notice.priority === 'Emergency' &&
+          !notificationStateFor(notice).archived &&
+          !notificationStateFor(notice).deleted
+      ),
+    [roleNotices, notificationStates]
   );
 
   const unreadCount = useMemo(
     () =>
       roleNotices.filter(
-        (n) => !(n.isReadByCurrentRole?.[activeRole] ?? false)
+        (notice) =>
+          !notificationStateFor(notice).read &&
+          !notificationStateFor(notice).archived &&
+          !notificationStateFor(notice).deleted
       ).length,
-    [roleNotices, activeRole]
+    [roleNotices, activeRole, notificationStates, activeUser.id]
   );
 
   const filteredNotices = useMemo(() => {
     return roleNotices.filter((n) => {
-      const isRead = n.isReadByCurrentRole?.[activeRole] ?? false;
+      const state = notificationStateFor(n);
+      const isRead = state.read;
+      const isSnoozed =
+        state.snoozedUntil !== null &&
+        Date.parse(state.snoozedUntil) > reminderTime;
+
+      if (state.deleted) return false;
+      if (filterPill === 'archived' ? !state.archived : state.archived) return false;
+      if (
+        filterPill === 'snoozed'
+          ? !isSnoozed
+          : isSnoozed
+      ) return false;
       if (filterPill === 'unread' && isRead) return false;
+      if (filterPill === 'starred' && !state.starred) return false;
+      if (filterPill === 'saved' && !state.saved) return false;
+      if (filterPill === 'pinned' && !state.pinned) return false;
+      if (filterPill === 'high-priority' && !['High', 'Emergency'].includes(n.priority)) return false;
       if (
         filterPill === 'emergency' &&
         n.priority !== 'Emergency' &&
@@ -261,6 +436,24 @@ export function UserInboxPage({
       ) {
         return false;
       }
+      if (
+        filterPill === 'my-department' &&
+        !n.targeting.rooms.includes(activeUser.assignedRoom || '') &&
+        !(activeUser.affiliation && `${n.title} ${n.body} ${n.category}`.toLowerCase().includes(activeUser.affiliation.toLowerCase()))
+      ) return false;
+      if (
+        filterPill === 'my-events' &&
+        n.targeting.competitions.length === 0 &&
+        !['Competition Update', 'Ceremony'].includes(n.type)
+      ) return false;
+      if (filterPill === 'recently-viewed' && !state.lastOpenedAt) return false;
+      if (filterPill === 'frequently-accessed' && state.viewCount < 3) return false;
+      if (filterPill === 'history') return false;
+      if (labelFilter && !state.labels.includes(labelFilter)) return false;
+
+      const noticeDate = new Date(n.publishedAt || n.createdAt);
+      if (dateFrom && noticeDate < new Date(`${dateFrom}T00:00:00`)) return false;
+      if (dateTo && noticeDate > new Date(`${dateTo}T23:59:59.999`)) return false;
 
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
@@ -268,33 +461,71 @@ export function UserInboxPage({
           n.title.toLowerCase().includes(q) ||
           n.body.toLowerCase().includes(q) ||
           n.type.toLowerCase().includes(q) ||
-          n.targeting.rooms.some((r) => r.toLowerCase().includes(q));
+          n.category.toLowerCase().includes(q) ||
+          n.senderName.toLowerCase().includes(q) ||
+          n.targeting.rooms.some((r) => r.toLowerCase().includes(q)) ||
+          n.targeting.competitions.some((competition) => competition.toLowerCase().includes(q)) ||
+          state.labels.some((label) => label.toLowerCase().includes(q));
         if (!matches) return false;
       }
       return true;
     });
-  }, [roleNotices, activeRole, filterPill, searchQuery]);
+  }, [
+    roleNotices,
+    activeRole,
+    activeUser,
+    dateFrom,
+    dateTo,
+    filterPill,
+    labelFilter,
+    notificationStates,
+    reminderTime,
+    searchQuery,
+  ]);
 
   const selectedNotice = useMemo(() => {
     if (selectedNoticeId) {
       const found = filteredNotices.find((n) => n.id === selectedNoticeId);
-      if (found) return found;
+      if (found) return notificationStateFor(found).deleted ? null : found;
       const inRole = roleNotices.find((n) => n.id === selectedNoticeId);
-      if (inRole) return inRole;
+      if (inRole) return notificationStateFor(inRole).deleted ? null : inRole;
     }
-    return filteredNotices[0] ?? roleNotices[0] ?? null;
-  }, [filteredNotices, roleNotices, selectedNoticeId]);
+    const first = filteredNotices[0] ?? roleNotices[0] ?? null;
+    return first && !notificationStateFor(first).deleted ? first : null;
+  }, [filteredNotices, roleNotices, selectedNoticeId, notificationStates]);
 
   const handleOpenNotice = (notice: Announcement) => {
     if (searchQuery.trim()) {
       recordSearchQuery(searchQuery);
     }
+    finishReadSession();
     setSelectedNoticeId(notice.id);
     setMobileReaderOpen(true);
-    if (!(notice.isReadByCurrentRole?.[activeRole] ?? false)) {
+    const state = notificationStateFor(notice);
+    setDraftResponse(state.draftResponse);
+    setFollowUpDueAt(toLocalDateTimeValue(state.dueAt));
+    onRecordNotificationView(notice.id);
+    readSessionRef.current = {
+      notificationId: notice.id,
+      startedAt: Date.now(),
+    };
+    window.history.replaceState(
+      null,
+      '',
+      `#notification=${encodeURIComponent(notice.id)}`
+    );
+    if (!isNotificationRead(notice)) {
       onToggleRead(notice.id, activeRole, true);
     }
   };
+
+  useEffect(() => {
+    const sharedId = new URLSearchParams(
+      window.location.hash.replace(/^#/, '')
+    ).get('notification');
+    const sharedNotice = roleNotices.find((notice) => notice.id === sharedId);
+    if (sharedNotice) handleOpenNotice(sharedNotice);
+  }, []);
 
   const handleSelectRecentSearch = (query: string) => {
     setSearchQuery(query);
@@ -328,6 +559,70 @@ export function UserInboxPage({
     window.setTimeout(() => setPrefsSavedBanner(false), 2000);
   };
 
+  const handleSnooze = (notice: Announcement) => {
+    const now = new Date();
+    let until: Date;
+    if (customSnooze) {
+      until = new Date(customSnooze);
+    } else {
+      switch (snoozeChoice) {
+        case '1h':
+          until = new Date(now.getTime() + 60 * 60 * 1000);
+          break;
+        case '3h':
+          until = new Date(now.getTime() + 3 * 60 * 60 * 1000);
+          break;
+        case 'tomorrow':
+          until = new Date(now);
+          until.setDate(until.getDate() + 1);
+          until.setHours(9, 0, 0, 0);
+          break;
+        case 'next-week':
+          until = new Date(now);
+          until.setDate(until.getDate() + 7);
+          until.setHours(9, 0, 0, 0);
+          break;
+        default:
+          flashFeedback('Choose a snooze duration.');
+          return;
+      }
+    }
+    if (Number.isNaN(until.getTime()) || until <= now) {
+      flashFeedback('Choose a future reminder time.');
+      return;
+    }
+    onUpdateNotificationAction(
+      notice.id,
+      { snoozedUntil: until.toISOString(), reminderNotifiedAt: null },
+      'snoozed',
+      until.toISOString()
+    );
+    setCustomSnooze('');
+    flashFeedback(`Reminder set for ${formatDhakaDateTime(until.toISOString())}.`);
+  };
+
+  const handleCopyText = async (
+    text: string,
+    successMessage: string,
+    noticeId?: string
+  ) => {
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error('Clipboard access is unavailable in this browser.');
+      }
+      await navigator.clipboard.writeText(text);
+      if (noticeId) {
+        onUpdateNotificationAction(noticeId, {}, 'copied');
+      }
+      flashFeedback(successMessage);
+    } catch {
+      flashFeedback('Could not access the clipboard. Check browser permissions.');
+    }
+  };
+
+  const noticeContent = (notice: Announcement) =>
+    `${notice.title}\n${notice.type} · ${notice.category}\nFrom: ${notice.senderName}\n${formatDhakaDateTime(notice.publishedAt || notice.createdAt)}\n\n${notice.body}`;
+
   const toggleMatrixCell = (
     type: NotificationType,
     channel: NotificationChannel
@@ -346,13 +641,32 @@ export function UserInboxPage({
     flashPrefsSaved();
   };
 
-  const handleSimulatedAttachmentDownload = (
+  const handleAttachmentDownload = (
+    noticeId: string,
+    attachment: Announcement['attachments'][number]
+  ) => {
+    onTrackClick(noticeId, attachment.id, 'download');
+    if (!attachment.dataUrl) {
+      flashFeedback(`Sample attachment download: ${attachment.fileName}`);
+      return;
+    }
+
+    const link = document.createElement('a');
+    link.href = attachment.dataUrl;
+    link.download = attachment.fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    flashFeedback(`Download started: ${attachment.fileName}`);
+  };
+
+  const handleAttachmentView = (
     noticeId: string,
     attachmentId: string,
     fileName: string
   ) => {
-    onTrackClick(noticeId, attachmentId);
-    flashFeedback(`Simulated download started: ${fileName}`);
+    onTrackClick(noticeId, attachmentId, 'view');
+    flashFeedback(`Opened attachment: ${fileName}`);
   };
 
   const handleSimulatedActionLink = (noticeId: string, label: string) => {
@@ -362,24 +676,168 @@ export function UserInboxPage({
     );
   };
 
-  const handleCopyNoticeSummary = (notice: Announcement) => {
-    const text = `${notice.title}\nRooms: ${notice.targeting.rooms.join(', ') || 'Campus Wide'}\nTime: ${formatDhakaDateTime(notice.publishedAt || notice.createdAt)}\n\n${notice.body}`;
-    if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(text).catch(() => {});
-    }
-    flashFeedback('Notice details copied to clipboard.');
-  };
-
+  const availableLabels = Array.from(
+    new Set(Object.values(notificationStates).flatMap((state) => state.labels))
+  ).sort((left, right) => left.localeCompare(right));
   const filterPills: { id: InboxFilterPill; label: string }[] = [
     { id: 'all', label: `All (${roleNotices.length})` },
     { id: 'unread', label: `Unread (${unreadCount})` },
-    { id: 'emergency', label: 'Emergency' },
+    { id: 'starred', label: 'Starred' },
+    { id: 'saved', label: 'Saved' },
+    { id: 'pinned', label: 'Pinned' },
+    { id: 'archived', label: 'Archived' },
+    { id: 'snoozed', label: 'Snoozed' },
+    { id: 'high-priority', label: 'High priority' },
+    { id: 'emergency', label: 'Emergency alerts' },
+    { id: 'my-department', label: 'My department' },
+    { id: 'my-events', label: 'My events' },
+    { id: 'recently-viewed', label: 'Recently viewed' },
+    { id: 'frequently-accessed', label: 'Frequently accessed' },
     { id: 'schedule-rooms', label: 'Schedule & Rooms' },
     { id: 'competitions', label: 'Competitions' },
+    { id: 'history', label: 'History' },
   ];
+
+  const applyBulkAction = (
+    patch: Partial<PersonalNotificationState>,
+    action: NotificationActionName
+  ) => {
+    if (selectedNotificationIds.length === 0) return;
+    onBulkUpdateNotifications(selectedNotificationIds, patch, action);
+    setSelectedNotificationIds([]);
+    flashFeedback(`Updated ${selectedNotificationIds.length} notifications.`);
+  };
+
+  const exportSelected = () => {
+    const records = roleNotices
+      .filter((notice) => selectedNotificationIds.includes(notice.id))
+      .map((notice) => ({
+        notice,
+        personalStatus: notificationStateFor(notice),
+      }));
+    try {
+      const file = new Blob([JSON.stringify(records, null, 2)], {
+        type: 'application/json',
+      });
+      const url = URL.createObjectURL(file);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'baust-notifications-export.json';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      onBulkUpdateNotifications(selectedNotificationIds, {}, 'exported');
+      setSelectedNotificationIds([]);
+      flashFeedback('Selected notifications exported.');
+    } catch {
+      flashFeedback('The notification export could not be created.');
+    }
+  };
+
+  const toggleSelection = (notificationId: string) => {
+    setSelectedNotificationIds((selected) =>
+      selected.includes(notificationId)
+        ? selected.filter((id) => id !== notificationId)
+        : [...selected, notificationId]
+    );
+  };
+
+  const handleAddLabel = (notice: Announcement) => {
+    const label = labelDraft.trim().slice(0, 32);
+    if (!label) return;
+    const labels = notificationStateFor(notice).labels;
+    if (labels.some((existing) => existing.toLowerCase() === label.toLowerCase())) {
+      flashFeedback('That label is already assigned.');
+      return;
+    }
+    onUpdateNotificationAction(
+      notice.id,
+      { labels: [...labels, label] },
+      'label-added',
+      label
+    );
+    setLabelDraft('');
+  };
+
+  const handleRemoveLabel = (notice: Announcement, label: string) => {
+    onUpdateNotificationAction(
+      notice.id,
+      {
+        labels: notificationStateFor(notice).labels.filter(
+          (existing) => existing !== label
+        ),
+      },
+      'label-removed',
+      label
+    );
+  };
+
+  const handleCopyNoticeContent = (notice: Announcement) =>
+    handleCopyText(noticeContent(notice), 'Notice content copied.', notice.id);
+
+  const handleCopyNoticeLink = (notice: Announcement) => {
+    const link = `${window.location.origin}${window.location.pathname}#notification=${encodeURIComponent(notice.id)}`;
+    void handleCopyText(link, 'Notification link copied.', notice.id);
+  };
+
+  const handleShareNotice = async (notice: Announcement) => {
+    const text = noticeContent(notice);
+    const url = `${window.location.origin}${window.location.pathname}#notification=${encodeURIComponent(notice.id)}`;
+    try {
+      if (!navigator.share) {
+        await handleCopyText(`${text}\n\n${url}`, 'Notice details copied for sharing.', notice.id);
+        return;
+      }
+      await navigator.share({ title: notice.title, text, url });
+      onUpdateNotificationAction(notice.id, {}, 'shared');
+      flashFeedback('Notice shared.');
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      flashFeedback('Could not share this notice from the current browser.');
+    }
+  };
+
+  const handlePrintNotice = (notice: Announcement) => {
+    onUpdateNotificationAction(notice.id, {}, 'printed');
+    flashFeedback('Choose “Save as PDF” in the print dialog to download a PDF.');
+    window.print();
+  };
+
+  const saveDraftResponse = (notice: Announcement) => {
+    onUpdateNotificationAction(
+      notice.id,
+      { draftResponse },
+      'response-draft-saved'
+    );
+    flashFeedback('Response draft saved on this device.');
+  };
+
+  const selectedNotificationState = selectedNotice
+    ? notificationStateFor(selectedNotice)
+    : null;
 
   return (
     <div className="space-y-4">
+      <style>{`
+        @media print {
+          body * { visibility: hidden !important; }
+          #notification-print-content,
+          #notification-print-content * { visibility: visible !important; }
+          #notification-print-content {
+            position: fixed !important;
+            inset: 0 !important;
+            width: 100% !important;
+            max-height: none !important;
+            overflow: visible !important;
+            padding: 24px !important;
+            border: 0 !important;
+            box-shadow: none !important;
+            background: #fff !important;
+            color: #111 !important;
+          }
+        }
+      `}</style>
       {emergencyNotices.length > 0 && (
         <div
           role="region"
@@ -452,8 +910,9 @@ export function UserInboxPage({
           </div>
         </div>
 
-        <div className="flex flex-col gap-3 border-t border-emerald-100 pt-3 lg:flex-row lg:items-center lg:justify-between dark:border-emerald-800/60">
-          <div className="inline-flex flex-wrap items-center gap-1 rounded-lg bg-emerald-50/80 p-1 dark:bg-[#041811] dark:border dark:border-emerald-800/50">
+        <div className="space-y-3 border-t border-emerald-100 pt-3 dark:border-emerald-800/60">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex max-w-full items-center gap-1 overflow-x-auto rounded-lg bg-emerald-50/80 p-1 dark:border dark:border-emerald-800/50 dark:bg-[#041811]">
             {filterPills.map((pill) => (
               <button
                 key={pill.id}
@@ -470,7 +929,37 @@ export function UserInboxPage({
             ))}
           </div>
 
-          <div ref={searchContainerRef} className="relative">
+          <div className="flex flex-wrap items-center gap-2">
+          <label className="sr-only" htmlFor="notification-date-from">From date</label>
+          <input
+            id="notification-date-from"
+            type="date"
+            aria-label="Filter from date"
+            value={dateFrom}
+            onChange={(event) => setDateFrom(event.target.value)}
+            className="min-h-9 rounded-lg border border-emerald-200/80 bg-white px-2 text-xs text-emerald-950 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50"
+          />
+          <label className="sr-only" htmlFor="notification-date-to">To date</label>
+          <input
+            id="notification-date-to"
+            type="date"
+            aria-label="Filter to date"
+            value={dateTo}
+            onChange={(event) => setDateTo(event.target.value)}
+            className="min-h-9 rounded-lg border border-emerald-200/80 bg-white px-2 text-xs text-emerald-950 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50"
+          />
+          {availableLabels.length > 0 && (
+            <select
+              aria-label="Filter by custom label"
+              value={labelFilter}
+              onChange={(event) => setLabelFilter(event.target.value)}
+              className="min-h-9 max-w-36 rounded-lg border border-emerald-200/80 bg-white px-2 text-xs text-emerald-950 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50"
+            >
+              <option value="">All labels</option>
+              {availableLabels.map((label) => <option key={label} value={label}>{label}</option>)}
+            </select>
+          )}
+          <div ref={searchContainerRef} className="relative min-w-0 flex-1 sm:flex-none">
             <Search
               className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-emerald-700/60 dark:text-emerald-400/60"
               aria-hidden="true"
@@ -579,6 +1068,27 @@ export function UserInboxPage({
               </div>
             )}
           </div>
+          </div>
+        </div>
+
+        {selectedNotificationIds.length > 0 && (
+          <div
+            role="toolbar"
+            aria-label="Bulk notification actions"
+            className="flex flex-wrap items-center gap-2 border-t border-emerald-100 pt-3 dark:border-emerald-800/60"
+          >
+            <span className="mr-1 text-xs font-semibold text-emerald-950 dark:text-emerald-100">
+              {selectedNotificationIds.length} selected
+            </span>
+            <button type="button" onClick={() => applyBulkAction({ read: false }, 'unread')} className="rounded-lg border border-emerald-200 px-2.5 py-1.5 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-100">Mark unread</button>
+            <button type="button" onClick={() => applyBulkAction({ starred: true }, 'starred')} className="rounded-lg border border-emerald-200 px-2.5 py-1.5 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-100">Star selected</button>
+            <button type="button" onClick={() => applyBulkAction({ saved: true }, 'saved')} className="rounded-lg border border-emerald-200 px-2.5 py-1.5 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-100">Save selected</button>
+            <button type="button" onClick={() => applyBulkAction({ archived: true }, 'archived')} className="rounded-lg border border-emerald-200 px-2.5 py-1.5 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-100">Archive selected</button>
+            <button type="button" onClick={() => applyBulkAction({ deleted: true }, 'deleted')} className="rounded-lg border border-red-200 px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 dark:border-red-900/70 dark:text-red-300">Delete selected</button>
+            <button type="button" onClick={exportSelected} className="rounded-lg bg-emerald-700 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-600 dark:bg-emerald-600">Export selected</button>
+            <button type="button" onClick={() => setSelectedNotificationIds([])} className="ml-auto rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-500 hover:bg-slate-100 dark:text-emerald-300 dark:hover:bg-emerald-950/50">Clear</button>
+          </div>
+        )}
         </div>
       </div>
 
@@ -591,7 +1101,35 @@ export function UserInboxPage({
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12 items-start">
+      {filterPill === 'history' && (
+        <section className="rounded-xl border border-emerald-200/70 bg-white p-4 dark:border-emerald-800/60 dark:bg-[#061D15]">
+          <h2 className="flex items-center gap-2 font-display text-sm font-bold text-emerald-950 dark:text-emerald-50">
+            <History className="h-4 w-4 text-emerald-700 dark:text-emerald-400" />
+            Notification history
+          </h2>
+          {notificationEvents.length ? (
+            <ol className="mt-3 divide-y divide-emerald-100 dark:divide-emerald-900/60">
+              {notificationEvents.slice(0, 100).map((event) => {
+                const notice = roleNotices.find((item) => item.id === event.notificationId);
+                return (
+                  <li key={event.id} className="flex flex-wrap items-center justify-between gap-2 py-2.5 text-xs">
+                    <span className="font-medium text-emerald-950 dark:text-emerald-100">
+                      {notice?.title ?? event.notificationId}
+                      <span className="ml-2 text-emerald-700 dark:text-emerald-300">{event.action.replace(/-/g, ' ')}</span>
+                      {event.detail && <span className="ml-2 text-slate-500 dark:text-emerald-200/60">{event.detail}</span>}
+                    </span>
+                    <time className="text-slate-500 dark:text-emerald-200/60">{formatDhakaDateTime(event.occurredAt)}</time>
+                  </li>
+                );
+              })}
+            </ol>
+          ) : (
+            <p className="mt-3 text-xs text-slate-500 dark:text-emerald-200/60">Your notification actions will appear here.</p>
+          )}
+        </section>
+      )}
+
+      <div className={`grid grid-cols-1 items-start gap-5 lg:grid-cols-12 ${filterPill === 'history' ? 'hidden' : ''}`}>
         <div
           className={`space-y-2.5 lg:col-span-5 ${
             mobileReaderOpen ? 'hidden lg:block' : 'block'
@@ -610,15 +1148,62 @@ export function UserInboxPage({
             />
           ) : (
             filteredNotices.map((notice) => {
-              const isRead = notice.isReadByCurrentRole?.[activeRole] ?? false;
+              const status = notificationStateFor(notice);
+              const isRead = status.read;
               const isSelected = selectedNotice?.id === notice.id;
               const isEmergency = notice.priority === 'Emergency';
 
               return (
                 <div
                   key={notice.id}
-                  onClick={() => handleOpenNotice(notice)}
-                  className={`cursor-pointer rounded-xl border p-3.5 transition-colors ${
+                  onClick={() => {
+                    if (suppressNextClickRef.current) {
+                      suppressNextClickRef.current = false;
+                      return;
+                    }
+                    handleOpenNotice(notice);
+                  }}
+                  onTouchStart={(event) => {
+                    touchStartXRef.current =
+                      event.changedTouches[0]?.clientX ?? null;
+                  }}
+                  onTouchEnd={(event) => {
+                    const startX = touchStartXRef.current;
+                    const endX = event.changedTouches[0]?.clientX;
+                    touchStartXRef.current = null;
+                    if (startX === null || endX === undefined) return;
+                    const delta = endX - startX;
+                    if (Math.abs(delta) < 70) return;
+                    suppressNextClickRef.current = true;
+                    window.setTimeout(() => {
+                      suppressNextClickRef.current = false;
+                    }, 500);
+                    if (delta > 0) {
+                      onUpdateNotificationAction(
+                        notice.id,
+                        { saved: true },
+                        'saved'
+                      );
+                      flashFeedback('Notification saved for later.');
+                    } else if (delta < -170) {
+                      onUpdateNotificationAction(
+                        notice.id,
+                        { deleted: true },
+                        'deleted'
+                      );
+                      flashFeedback('Notification deleted.');
+                    } else if (delta < -115) {
+                      onUpdateNotificationAction(
+                        notice.id,
+                        { archived: true },
+                        'archived'
+                      );
+                      flashFeedback('Notification archived.');
+                    } else {
+                      onToggleRead(notice.id, activeRole, !isRead);
+                    }
+                  }}
+                  className={`group cursor-pointer rounded-xl border p-3.5 transition-colors ${
                     isSelected
                       ? 'border-emerald-700 bg-emerald-50/45 dark:border-emerald-400 dark:bg-[#0B2E22]'
                       : isEmergency
@@ -632,6 +1217,18 @@ export function UserInboxPage({
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-1.5 text-xs">
                         <PriorityBadge priority={notice.priority} />
+                        {status.starred && (
+                          <span className="font-semibold text-amber-700 dark:text-amber-300">Starred</span>
+                        )}
+                        {status.saved && (
+                          <span className="font-semibold text-sky-700 dark:text-sky-300">Saved</span>
+                        )}
+                        {status.pinned && (
+                          <span className="font-semibold text-violet-700 dark:text-violet-300">Pinned</span>
+                        )}
+                        {status.followUp && (
+                          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-900 dark:bg-amber-900/50 dark:text-amber-200">Action required</span>
+                        )}
                         {!isRead && (
                           <>
                             <span className="font-bold text-emerald-700 dark:text-emerald-400">
@@ -668,7 +1265,7 @@ export function UserInboxPage({
                       </p>
 
                       {(notice.targeting.rooms.length > 0 ||
-                        notice.attachments.length > 0) && (
+                        getAttachmentsForChannel(notice, 'In-App').length > 0) && (
                         <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-emerald-900/60 dark:text-emerald-300/65">
                           {notice.targeting.rooms.length > 0 && (
                             <span className="inline-flex items-center gap-1">
@@ -679,13 +1276,13 @@ export function UserInboxPage({
                               {notice.targeting.rooms[0]}
                             </span>
                           )}
-                          {notice.attachments.length > 0 && (
+                          {getAttachmentsForChannel(notice, 'In-App').length > 0 && (
                             <span className="inline-flex items-center gap-1">
                               <Paperclip
                                 className="h-3 w-3 text-emerald-700/60 dark:text-emerald-400/70"
                                 aria-hidden="true"
                               />
-                              {notice.attachments.length} attachment
+                              {getAttachmentsForChannel(notice, 'In-App').length} attachment
                             </span>
                           )}
                         </div>
@@ -713,6 +1310,126 @@ export function UserInboxPage({
                       )}
                     </button>
                   </div>
+                  <div className="mt-3 flex flex-wrap items-center gap-1 border-t border-emerald-100/80 pt-2 dark:border-emerald-900/60">
+                    <label
+                      className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg px-2 text-[11px] font-medium text-slate-600 hover:bg-slate-100 dark:text-emerald-200/70 dark:hover:bg-emerald-950/50"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedNotificationIds.includes(notice.id)}
+                        onChange={() => toggleSelection(notice.id)}
+                        aria-label={`Select ${notice.title}`}
+                        className="accent-emerald-700"
+                      />
+                      Select
+                    </label>
+                    <button
+                      type="button"
+                      aria-label={status.starred ? `Unstar ${notice.title}` : `Star ${notice.title}`}
+                      aria-pressed={status.starred}
+                      title={status.starred ? 'Unstar' : 'Star'}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        const next = !status.starred;
+                        onUpdateNotificationAction(
+                          notice.id,
+                          { starred: next },
+                          next ? 'starred' : 'unstarred'
+                        );
+                      }}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-amber-700 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-950/40"
+                    >
+                      <Star className={`h-4 w-4 ${status.starred ? 'fill-current' : ''}`} />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={status.saved ? `Remove ${notice.title} from saved` : `Save ${notice.title} for later`}
+                      aria-pressed={status.saved}
+                      title={status.saved ? 'Remove from saved' : 'Save for later'}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        const next = !status.saved;
+                        onUpdateNotificationAction(
+                          notice.id,
+                          { saved: next },
+                          next ? 'saved' : 'unsaved'
+                        );
+                      }}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-sky-700 hover:bg-sky-50 dark:text-sky-300 dark:hover:bg-sky-950/40"
+                    >
+                      <Bookmark className={`h-4 w-4 ${status.saved ? 'fill-current' : ''}`} />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={status.pinned ? `Unpin ${notice.title}` : `Pin ${notice.title}`}
+                      aria-pressed={status.pinned}
+                      title={status.pinned ? 'Unpin' : 'Pin'}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        const next = !status.pinned;
+                        onUpdateNotificationAction(
+                          notice.id,
+                          { pinned: next },
+                          next ? 'pinned' : 'unpinned'
+                        );
+                      }}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-violet-700 hover:bg-violet-50 dark:text-violet-300 dark:hover:bg-violet-950/40"
+                    >
+                      <Pin className={`h-4 w-4 ${status.pinned ? 'fill-current' : ''}`} />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={status.archived ? `Restore ${notice.title} from archive` : `Archive ${notice.title}`}
+                      title={status.archived ? 'Restore from archive' : 'Archive'}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        const next = !status.archived;
+                        onUpdateNotificationAction(
+                          notice.id,
+                          { archived: next },
+                          next ? 'archived' : 'unarchived'
+                        );
+                      }}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-emerald-800 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-950/40"
+                    >
+                      <Archive className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Delete ${notice.title}`}
+                      title="Delete"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onUpdateNotificationAction(
+                          notice.id,
+                          { deleted: true },
+                          'deleted'
+                        );
+                      }}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-red-700 hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/40"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Snooze ${notice.title} for one hour`}
+                      title="Snooze for 1 hour"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        const until = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+                        onUpdateNotificationAction(
+                          notice.id,
+                          { snoozedUntil: until, reminderNotifiedAt: null },
+                          'snoozed',
+                          until
+                        );
+                      }}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-700 hover:bg-slate-100 dark:text-emerald-200 dark:hover:bg-emerald-950/40"
+                    >
+                      <Clock className="h-4 w-4" />
+                    </button>
+                  </div>
                 </div>
               );
             })
@@ -720,6 +1437,7 @@ export function UserInboxPage({
         </div>
 
         <aside
+          id="notification-print-content"
           className={`rounded-xl border border-emerald-200/70 bg-white p-4 sm:p-5 lg:sticky lg:top-4 lg:col-span-7 dark:border-emerald-800/60 dark:bg-[#061D15] ${
             mobileReaderOpen ? 'block' : 'hidden lg:block'
           }`}
@@ -730,7 +1448,15 @@ export function UserInboxPage({
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => setMobileReaderOpen(false)}
+                    onClick={() => {
+                      finishReadSession();
+                      setMobileReaderOpen(false);
+                      window.history.replaceState(
+                        null,
+                        '',
+                        `${window.location.pathname}${window.location.search}`
+                      );
+                    }}
                     className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 px-2.5 py-1 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800/70 dark:text-emerald-100 dark:hover:bg-[#09291E] lg:hidden"
                   >
                     <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
@@ -744,11 +1470,137 @@ export function UserInboxPage({
 
                 <button
                   type="button"
-                  onClick={() => handleCopyNoticeSummary(selectedNotice)}
+                  onClick={() => void handleCopyNoticeContent(selectedNotice)}
+                  aria-label="Copy notice content"
                   className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-2.5 py-1 text-xs font-semibold text-emerald-900 hover:bg-emerald-50/70 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-100 dark:hover:bg-[#09291E] whitespace-nowrap"
                 >
                   <Copy className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
-                  Copy
+                  Copy content
+                </button>
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-center gap-1.5 border-b border-emerald-100 pb-3 dark:border-emerald-800/60">
+                <button
+                  type="button"
+                  aria-label={selectedNotificationState?.starred ? 'Unstar notification' : 'Star notification'}
+                  aria-pressed={selectedNotificationState?.starred}
+                  onClick={() => {
+                    if (!selectedNotificationState) return;
+                    const next = !selectedNotificationState.starred;
+                    onUpdateNotificationAction(
+                      selectedNotice.id,
+                      { starred: next },
+                      next ? 'starred' : 'unstarred'
+                    );
+                  }}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-amber-200 px-2.5 text-xs font-semibold text-amber-800 hover:bg-amber-50 dark:border-amber-900/70 dark:text-amber-200 dark:hover:bg-amber-950/40"
+                >
+                  <Star className={`h-3.5 w-3.5 ${selectedNotificationState?.starred ? 'fill-current' : ''}`} />
+                  {selectedNotificationState?.starred ? 'Starred' : 'Star'}
+                </button>
+                <button
+                  type="button"
+                  aria-label={selectedNotificationState?.saved ? 'Unsave notification' : 'Save notification for later'}
+                  aria-pressed={selectedNotificationState?.saved}
+                  onClick={() => {
+                    if (!selectedNotificationState) return;
+                    const next = !selectedNotificationState.saved;
+                    onUpdateNotificationAction(
+                      selectedNotice.id,
+                      { saved: next },
+                      next ? 'saved' : 'unsaved'
+                    );
+                  }}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-sky-200 px-2.5 text-xs font-semibold text-sky-800 hover:bg-sky-50 dark:border-sky-900/70 dark:text-sky-200 dark:hover:bg-sky-950/40"
+                >
+                  <Bookmark className={`h-3.5 w-3.5 ${selectedNotificationState?.saved ? 'fill-current' : ''}`} />
+                  {selectedNotificationState?.saved ? 'Saved' : 'Save'}
+                </button>
+                <button
+                  type="button"
+                  aria-label={selectedNotificationState?.pinned ? 'Unpin notification' : 'Pin notification'}
+                  aria-pressed={selectedNotificationState?.pinned}
+                  onClick={() => {
+                    if (!selectedNotificationState) return;
+                    const next = !selectedNotificationState.pinned;
+                    onUpdateNotificationAction(
+                      selectedNotice.id,
+                      { pinned: next },
+                      next ? 'pinned' : 'unpinned'
+                    );
+                  }}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-violet-200 px-2.5 text-xs font-semibold text-violet-800 hover:bg-violet-50 dark:border-violet-900/70 dark:text-violet-200 dark:hover:bg-violet-950/40"
+                >
+                  <Pin className="h-3.5 w-3.5" />
+                  {selectedNotificationState?.pinned ? 'Pinned' : 'Pin'}
+                </button>
+                <button
+                  type="button"
+                  aria-label={selectedNotificationState?.archived ? 'Restore notification from archive' : 'Archive notification'}
+                  onClick={() => {
+                    if (!selectedNotificationState) return;
+                    const next = !selectedNotificationState.archived;
+                    onUpdateNotificationAction(
+                      selectedNotice.id,
+                      { archived: next },
+                      next ? 'archived' : 'unarchived'
+                    );
+                  }}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-emerald-200 px-2.5 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800/70 dark:text-emerald-100 dark:hover:bg-emerald-950/40"
+                >
+                  <Archive className="h-3.5 w-3.5" />
+                  {selectedNotificationState?.archived ? 'Restore' : 'Archive'}
+                </button>
+                <button
+                  type="button"
+                  aria-label="Delete notification"
+                  onClick={() =>
+                    onUpdateNotificationAction(
+                      selectedNotice.id,
+                      { deleted: true },
+                      'deleted'
+                    )
+                  }
+                  className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-red-200 px-2.5 text-xs font-semibold text-red-700 hover:bg-red-50 dark:border-red-900/70 dark:text-red-300 dark:hover:bg-red-950/40"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Delete
+                </button>
+                <button
+                  type="button"
+                  aria-label="Copy notification link"
+                  onClick={() => handleCopyNoticeLink(selectedNotice)}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-emerald-900/70 dark:text-emerald-100 dark:hover:bg-emerald-950/40"
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                  Copy link
+                </button>
+                <button
+                  type="button"
+                  aria-label="Share notification"
+                  onClick={() => void handleShareNotice(selectedNotice)}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-emerald-900/70 dark:text-emerald-100 dark:hover:bg-emerald-950/40"
+                >
+                  <Share2 className="h-3.5 w-3.5" />
+                  Share
+                </button>
+                <button
+                  type="button"
+                  aria-label="Print or save notification as PDF"
+                  onClick={() => handlePrintNotice(selectedNotice)}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-emerald-900/70 dark:text-emerald-100 dark:hover:bg-emerald-950/40"
+                >
+                  <Printer className="h-3.5 w-3.5" />
+                  Print
+                </button>
+                <button
+                  type="button"
+                  aria-label="Download notification as PDF"
+                  onClick={() => handlePrintNotice(selectedNotice)}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-emerald-900/70 dark:text-emerald-100 dark:hover:bg-emerald-950/40"
+                >
+                  <FileDown className="h-3.5 w-3.5" />
+                  Save as PDF
                 </button>
               </div>
 
@@ -771,8 +1623,166 @@ export function UserInboxPage({
                 </span>
               </div>
 
+              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500 dark:text-emerald-200/60">
+                <span>Views: {selectedNotificationState?.viewCount ?? 0}</span>
+                <span>Read time: {selectedNotificationState?.readTimeSeconds ?? 0}s</span>
+                <span>
+                  Last opened:{' '}
+                  {selectedNotificationState?.lastOpenedAt
+                    ? formatDhakaDateTime(selectedNotificationState.lastOpenedAt)
+                    : 'Not viewed'}
+                </span>
+              </div>
+
               <div className="mt-4 rounded-lg bg-emerald-50/40 p-4 text-sm leading-relaxed text-emerald-950 dark:bg-[#041811] dark:text-emerald-100 whitespace-pre-line">
                 {selectedNotice.body}
+              </div>
+
+              <div className="mt-4 rounded-lg border border-emerald-100 p-3 dark:border-emerald-900/60">
+                <div className="flex items-center gap-2 text-xs font-semibold text-emerald-950 dark:text-emerald-100">
+                  <Tag className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400" />
+                  Personal labels
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  {selectedNotificationState?.labels.map((label) => (
+                    <span key={label} className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-100">
+                      {label}
+                      <button
+                        type="button"
+                        aria-label={`Remove label ${label}`}
+                        onClick={() => handleRemoveLabel(selectedNotice, label)}
+                        className="rounded-full text-emerald-700 hover:text-red-700 dark:text-emerald-300 dark:hover:text-red-300"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ))}
+                  <form
+                    className="flex min-w-0 flex-1 items-center gap-1.5"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      handleAddLabel(selectedNotice);
+                    }}
+                  >
+                    <input
+                      value={labelDraft}
+                      onChange={(event) => setLabelDraft(event.target.value)}
+                      maxLength={32}
+                      aria-label="Add custom notification label"
+                      placeholder="Add a label"
+                      className="min-h-8 min-w-0 flex-1 rounded-md border border-emerald-200 px-2 text-xs dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50"
+                    />
+                    <button type="submit" className="rounded-md bg-emerald-700 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-600 dark:bg-emerald-600">Add</button>
+                  </form>
+                </div>
+              </div>
+
+              <div className="mt-3 grid gap-3 rounded-lg border border-emerald-100 p-3 sm:grid-cols-2 dark:border-emerald-900/60">
+                <div>
+                  <label className="flex items-center gap-2 text-xs font-semibold text-emerald-950 dark:text-emerald-100">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(selectedNotificationState?.followUp)}
+                      onChange={(event) => {
+                        const followUp = event.target.checked;
+                        onUpdateNotificationAction(
+                          selectedNotice.id,
+                          {
+                            followUp,
+                            dueAt: followUp ? (followUpDueAt ? new Date(followUpDueAt).toISOString() : null) : null,
+                          },
+                          followUp ? 'follow-up-set' : 'follow-up-cleared'
+                        );
+                      }}
+                      className="accent-emerald-700"
+                    />
+                    Flag for follow-up
+                  </label>
+                  <label className="mt-2 block text-[11px] font-medium text-slate-600 dark:text-emerald-200/65">
+                    Due date
+                    <input
+                      type="datetime-local"
+                      value={followUpDueAt}
+                      onChange={(event) => setFollowUpDueAt(event.target.value)}
+                      onBlur={() => {
+                        if (!selectedNotificationState?.followUp || !followUpDueAt) return;
+                        onUpdateNotificationAction(
+                          selectedNotice.id,
+                          { dueAt: new Date(followUpDueAt).toISOString() },
+                          'follow-up-set',
+                          followUpDueAt
+                        );
+                      }}
+                      className="mt-1 block min-h-8 w-full rounded-md border border-emerald-200 px-2 text-xs dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50"
+                    />
+                  </label>
+                  {selectedNotificationState?.dueAt && (
+                    <p className="mt-1 text-[10px] text-amber-700 dark:text-amber-300">
+                      Due {formatDhakaDateTime(selectedNotificationState.dueAt)}
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-emerald-950 dark:text-emerald-100">
+                    Snooze reminder
+                    <select
+                      value={snoozeChoice}
+                      onChange={(event) => setSnoozeChoice(event.target.value)}
+                      className="mt-1 block min-h-8 w-full rounded-md border border-emerald-200 px-2 text-xs font-normal dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50"
+                    >
+                      <option value="1h">1 hour</option>
+                      <option value="3h">3 hours</option>
+                      <option value="tomorrow">Tomorrow at 9:00 AM</option>
+                      <option value="next-week">Next week</option>
+                      <option value="custom">Custom date &amp; time</option>
+                    </select>
+                  </label>
+                  {snoozeChoice === 'custom' && (
+                    <input
+                      type="datetime-local"
+                      aria-label="Custom snooze date and time"
+                      value={customSnooze}
+                      onChange={(event) => setCustomSnooze(event.target.value)}
+                      className="mt-2 block min-h-8 w-full rounded-md border border-emerald-200 px-2 text-xs dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50"
+                    />
+                  )}
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <button type="button" onClick={() => handleSnooze(selectedNotice)} className="rounded-md bg-emerald-700 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-600 dark:bg-emerald-600">Set reminder</button>
+                    {selectedNotificationState?.snoozedUntil && (
+                      <>
+                        <span className="text-[10px] text-slate-500 dark:text-emerald-200/60">
+                          Until {formatDhakaDateTime(selectedNotificationState.snoozedUntil)}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => onUpdateNotificationAction(
+                            selectedNotice.id,
+                            { snoozedUntil: null, reminderNotifiedAt: null },
+                            'unsnoozed'
+                          )}
+                          className="text-xs font-semibold text-red-700 dark:text-red-300"
+                        >
+                          Clear
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-3 rounded-lg border border-emerald-100 p-3 dark:border-emerald-900/60">
+                <label className="block text-xs font-semibold text-emerald-950 dark:text-emerald-100">
+                  Draft response
+                  <textarea
+                    rows={2}
+                    maxLength={1000}
+                    value={draftResponse}
+                    onChange={(event) => setDraftResponse(event.target.value)}
+                    placeholder="Keep a private response draft for this notice."
+                    className="mt-1.5 block w-full resize-y rounded-md border border-emerald-200 bg-white p-2 text-xs font-normal dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50"
+                  />
+                </label>
+                <button type="button" onClick={() => saveDraftResponse(selectedNotice)} className="mt-2 rounded-md border border-emerald-200 px-2.5 py-1.5 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800/70 dark:text-emerald-100 dark:hover:bg-emerald-950/40">Save draft</button>
               </div>
 
               <div className="mt-4 space-y-2 text-xs">
@@ -814,24 +1824,16 @@ export function UserInboxPage({
                 </div>
               </div>
 
-              {selectedNotice.attachments.length > 0 && (
+              {getAttachmentsForChannel(selectedNotice, 'In-App').length > 0 && (
                 <div className="mt-4 border-t border-emerald-100 pt-3 dark:border-emerald-800/60">
                   <div className="text-xs font-semibold text-emerald-950 dark:text-emerald-100 mb-2">
                     Attachments
                   </div>
                   <div className="space-y-1.5">
-                    {selectedNotice.attachments.map((att) => (
-                      <button
+                    {getAttachmentsForChannel(selectedNotice, 'In-App').map((att) => (
+                      <div
                         key={att.id}
-                        type="button"
-                        onClick={() =>
-                          handleSimulatedAttachmentDownload(
-                            selectedNotice.id,
-                            att.id,
-                            att.fileName
-                          )
-                        }
-                        className="flex w-full items-center justify-between gap-3 rounded-lg border border-emerald-200/80 bg-emerald-50/45 px-3 py-2 text-left text-xs hover:bg-emerald-50 dark:border-emerald-800/70 dark:bg-[#041811] dark:hover:bg-[#09291E]"
+                        className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-200/80 bg-emerald-50/45 px-3 py-2 text-xs dark:border-emerald-800/70 dark:bg-[#041811]"
                       >
                         <div className="flex items-center gap-2 min-w-0">
                           <Paperclip className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400 shrink-0" />
@@ -842,11 +1844,29 @@ export function UserInboxPage({
                             {att.fileSizeLabel}
                           </span>
                         </div>
-                        <span className="inline-flex items-center gap-1 font-semibold text-emerald-700 dark:text-emerald-400 shrink-0">
-                          <Download className="h-3.5 w-3.5" />
-                          Download
-                        </span>
-                      </button>
+                        <div className="flex shrink-0 items-center gap-2">
+                          {att.dataUrl && (
+                            <a
+                              href={att.dataUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              onClick={() => handleAttachmentView(selectedNotice.id, att.id, att.fileName)}
+                              className="inline-flex items-center gap-1 rounded-md px-2 py-1 font-semibold text-emerald-700 hover:bg-emerald-100 dark:text-emerald-300 dark:hover:bg-emerald-900/50"
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" />
+                              Open
+                            </a>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleAttachmentDownload(selectedNotice.id, att)}
+                            className="inline-flex items-center gap-1 rounded-md px-2 py-1 font-semibold text-emerald-700 hover:bg-emerald-100 dark:text-emerald-300 dark:hover:bg-emerald-900/50"
+                          >
+                            <Download className="h-3.5 w-3.5" />
+                            Download
+                          </button>
+                        </div>
+                      </div>
                     ))}
                   </div>
                 </div>
@@ -859,12 +1879,12 @@ export function UserInboxPage({
                     onToggleRead(
                       selectedNotice.id,
                       activeRole,
-                      !(selectedNotice.isReadByCurrentRole?.[activeRole] ?? false)
+                      !isNotificationRead(selectedNotice)
                     )
                   }
                   className="rounded-lg border border-emerald-200 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-900 hover:bg-emerald-50/70 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-100 dark:hover:bg-[#09291E]"
                 >
-                  {selectedNotice.isReadByCurrentRole?.[activeRole]
+                  {isNotificationRead(selectedNotice)
                     ? 'Mark as Unread'
                     : 'Mark as Read'}
                 </button>
@@ -885,6 +1905,28 @@ export function UserInboxPage({
                   </button>
                 )}
               </div>
+
+              {notificationEvents.some(
+                (event) => event.notificationId === selectedNotice.id
+              ) && (
+                <section className="mt-4 border-t border-emerald-100 pt-3 dark:border-emerald-800/60">
+                  <h4 className="flex items-center gap-2 text-xs font-semibold text-emerald-950 dark:text-emerald-100">
+                    <History className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400" />
+                    Interaction history
+                  </h4>
+                  <ol className="mt-2 space-y-1.5">
+                    {notificationEvents
+                      .filter((event) => event.notificationId === selectedNotice.id)
+                      .slice(0, 5)
+                      .map((event) => (
+                        <li key={event.id} className="flex flex-wrap justify-between gap-2 text-[10px] text-slate-500 dark:text-emerald-200/60">
+                          <span>{event.action.replace(/-/g, ' ')}{event.detail ? ` · ${event.detail}` : ''}</span>
+                          <time>{formatDhakaDateTime(event.occurredAt)}</time>
+                        </li>
+                      ))}
+                  </ol>
+                </section>
+              )}
             </>
           ) : (
             <EmptyState

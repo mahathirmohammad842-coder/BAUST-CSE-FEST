@@ -90,24 +90,25 @@ export function ProfilePage({ profile, onEditProfile }: ProfilePageProps) {
 
       <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-[0_8px_28px_-20px_rgba(15,23,42,0.3)] dark:border-emerald-800/60 dark:bg-[#061D15]">
         <div className="h-28 bg-[radial-gradient(ellipse_at_82%_15%,rgba(110,231,183,0.38),transparent_35%),linear-gradient(115deg,#064E3B,#0C6B50_55%,#0F766E)] sm:h-36" />
-        <div className="px-4 pb-6 sm:px-8 sm:pb-8">
-          <div className="-mt-10 flex min-w-0 flex-col gap-4 pt-4 lg:-mt-12 lg:flex-row lg:flex-wrap lg:items-end lg:justify-between lg:pt-5">
-            <div className="flex min-w-0 flex-1 flex-col items-start gap-3 lg:flex-row lg:items-end lg:gap-4">
-              <ProfileAvatar name={profile.fullName} large />
-              <div className="min-w-0 flex-1 pb-1">
-                <h2 className="break-words font-display text-xl font-bold leading-tight tracking-tight text-slate-950 dark:text-emerald-50 sm:text-2xl">
-                  {profile.fullName}
-                </h2>
-                <p className="mt-1 break-words text-sm leading-5 text-slate-600 dark:text-emerald-200/70">
-                  {profile.designation} · {profile.department}
-                </p>
-              </div>
+        <div className="space-y-4 px-4 py-5 sm:px-8 sm:py-6">
+          <div className="flex min-w-0 items-center gap-4 sm:gap-5">
+            <ProfileAvatar name={profile.fullName} large />
+            <div className="min-w-0 flex-1">
+              <h2 className="break-words font-display text-xl font-bold leading-tight tracking-tight text-slate-950 dark:text-emerald-50 sm:text-2xl">
+                {profile.fullName}
+              </h2>
+              <p className="mt-1 break-words text-sm leading-5 text-slate-600 dark:text-emerald-200/70">
+                Organizer · {profile.department} · BAUST
+              </p>
+              <p className="mt-1 break-words text-xs leading-5 text-slate-500 dark:text-emerald-300/65">
+                {profile.designation}
+              </p>
             </div>
-            <span className="inline-flex w-fit shrink-0 items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800 lg:mb-1 dark:border-emerald-800/70 dark:bg-emerald-950/50 dark:text-emerald-300">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-              {profile.accountStatus} account
-            </span>
           </div>
+          <span className="inline-flex w-fit items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800 dark:border-emerald-800/70 dark:bg-emerald-950/50 dark:text-emerald-300">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+            {profile.accountStatus} account
+          </span>
         </div>
       </section>
 
