@@ -316,7 +316,7 @@ function getUserBlockMessage(
 }
 
 export default function App() {
-  const [showLoginPage, setShowLoginPage] = useState(false);
+  const [showLoginPage, setShowLoginPage] = useState(true);
   const [mode, setMode] = useState<WorkspaceMode>('organizer');
   const [activeRole, setActiveRole] = useState<WorkspaceRole>('Organizer');
   const [registeredUser, setRegisteredUser] = useState<SystemUser | null>(null);
