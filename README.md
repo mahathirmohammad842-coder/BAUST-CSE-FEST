@@ -36,15 +36,7 @@ The client uses Supabase Auth, Postgres, and private Storage. Browser configurat
    ```
    The migration creates profile, announcement, personal notification action, and private attachment-storage tables/policies.
 3. In Supabase Authentication settings, set the production Site URL and add the Vercel URL to the redirect allow list. Configure email confirmation to match your registration policy.
-4. Create the first staff account using Supabase Authentication (or create one through the app and confirm its email). Then promote it in the Supabase SQL Editor:
-   ```
-   update public.user_profiles
-   set role = 'Super Admin',
-       account_status = 'Active',
-       verified = true
-   where email = 'your-admin-email@example.com';
-   ```
-   Keep this operation restricted to project owners. The app does not allow public registration as Organizer, Admin, or Super Admin.
+4. Create and confirm `mahathirmohammad842@gmail.com` in Supabase Authentication → Users. Then run [bootstrap-super-admin.sql](./supabase/bootstrap-super-admin.sql) in the Supabase SQL Editor. It creates or promotes that Auth user's profile as Mahathir Mohammad (Super Admin). It does not create an Auth user or set a password. Keep this operation restricted to project owners; the app does not allow public registration as Organizer, Admin, or Super Admin.
 5. Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` as Vercel environment variables for the appropriate deployment environments, then redeploy.
 
 New registrations are created as `Pending Approval`; active staff can approve or reject them from User Approvals. After the first staff user signs in, the app seeds the initial sample notices if the announcements table is empty. Profiles, notices, notification actions, and uploaded notice attachments are then persisted in Supabase. Other prototype data (such as simulated delivery records and user-block audit history) still uses the app's local/demo state.
