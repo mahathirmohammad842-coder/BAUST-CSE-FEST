@@ -331,6 +331,37 @@ function getUserBlockMessage(
   return `This account is temporarily blocked until ${expiresAt}.`;
 }
 
+function getSupabaseFailureMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error !== 'object' || error === null || !('message' in error)) {
+    return 'Unexpected Supabase error.';
+  }
+
+  const message =
+    typeof error.message === 'string' ? error.message : 'Supabase request failed.';
+  const code =
+    'code' in error && typeof error.code === 'string' ? error.code : '';
+  if (
+    code === 'PGRST205' ||
+    code === '42P01' ||
+    (message.toLowerCase().includes('user_profiles') &&
+      (message.toLowerCase().includes('not find') ||
+        message.toLowerCase().includes('does not exist')))
+  ) {
+    return 'Supabase tables are missing. From the project folder run: npx supabase link --project-ref qnxtsnbpzxxmvhbgbqdm, then npx supabase db push.';
+  }
+
+  const details =
+    'details' in error && typeof error.details === 'string'
+      ? ` ${error.details}`
+      : '';
+  const hint =
+    'hint' in error && typeof error.hint === 'string'
+      ? ` Hint: ${error.hint}`
+      : '';
+  return `${message}${details}${hint}`;
+}
+
 function cloudProfilesToRegistrationRequests(
   profiles: CloudProfile[]
 ): RegistrationRequest[] {
@@ -567,8 +598,7 @@ export default function App() {
       return null;
     } catch (error) {
       await supabase?.auth.signOut();
-      const message =
-        error instanceof Error ? error.message : 'Unexpected Supabase error.';
+      const message = getSupabaseFailureMessage(error);
       return `Could not load your Supabase account data: ${message}`;
     }
   };
