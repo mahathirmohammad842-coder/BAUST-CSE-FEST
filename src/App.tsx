@@ -20,6 +20,7 @@ import { DeliveryDetailPage } from './pages/DeliveryDetailPage';
 import { LoginPage } from './pages/LoginPage';
 import { ProfileManagementPage } from './pages/ProfileManagementPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { SystemHealthPage } from './pages/SystemHealthPage';
 import { UserInboxPage } from './pages/UserInboxPage';
 import { UserApprovalsPage } from './pages/UserApprovalsPage';
 import { UserProfilePage } from './pages/UserProfilePage';
@@ -83,6 +84,7 @@ import {
 } from './utils/notificationActions';
 import {
   deleteCloudAnnouncement,
+  extractFunctionsInvokeError,
   fetchCloudAnnouncements,
   fetchCloudNotificationActions,
   fetchCloudProfile,
@@ -362,8 +364,8 @@ function getSupabaseFailureMessage(error: unknown): string {
 }
 
 function getAuthEmailErrorMessage(message: string): string {
-  if (/rate.?limit|too many requests/i.test(message)) {
-    return 'Supabase has temporarily rate-limited Auth emails for this project. Wait before trying again. To prevent this for production, configure a custom SMTP provider in Supabase Dashboard → Authentication → SMTP Settings; the project email limit cannot be raised from this app.';
+  if (/rate.?limit|too many requests|over_email_send_rate_limit|429/i.test(message)) {
+    return 'Supabase rate-limited confirmation emails (built-in SMTP allows 2/hour). Wait 60s before retrying, or in Supabase Dashboard → Authentication → Providers → Email turn Confirm email OFF (accounts still require Organizer approval) or configure Custom SMTP.';
   }
   return message;
 }
@@ -412,6 +414,7 @@ export default function App() {
   const [passwordRecoveryMode, setPasswordRecoveryMode] = useState(false);
   const passwordRecoveryRef = useRef(false);
   const authActivationRequestRef = useRef(0);
+  const skipNextAnnouncementSyncRef = useRef(false);
   const [cloudAnnouncementsReadyFor, setCloudAnnouncementsReadyFor] =
     useState<string | null>(null);
   const [mode, setMode] = useState<WorkspaceMode>('organizer');
@@ -571,12 +574,32 @@ export default function App() {
 
       const remoteAnnouncements = await fetchCloudAnnouncements();
       if (!isLatestRequest()) return null;
+      let finalAnnouncements: Announcement[];
       if (remoteAnnouncements.length === 0 && isStaff) {
         await saveCloudAnnouncements(INITIAL_ANNOUNCEMENTS, userId);
-        setAnnouncements(INITIAL_ANNOUNCEMENTS);
+        finalAnnouncements = INITIAL_ANNOUNCEMENTS;
       } else {
-        setAnnouncements(remoteAnnouncements);
+        finalAnnouncements = remoteAnnouncements;
       }
+      skipNextAnnouncementSyncRef.current = true;
+      setAnnouncements(finalAnnouncements);
+      const loadedAnnouncementById = new Map(
+        finalAnnouncements.map((item) => [item.id, item])
+      );
+      setDeliveries((prev) =>
+        prev.filter((d) => {
+          const ann = loadedAnnouncementById.get(d.announcementId);
+          return Boolean(
+            ann &&
+              (d.status !== 'Failed' ||
+                ann.failedCount > 0 ||
+                ann.status === 'Failed')
+          );
+        })
+      );
+      setActivityFeed((prev) =>
+        prev.filter((entry) => loadedAnnouncementById.has(entry.announcementId))
+      );
       setCloudAnnouncementsReadyFor(userId);
 
       const remoteActions = await fetchCloudNotificationActions(userId);
@@ -691,6 +714,10 @@ export default function App() {
       return;
     }
     if (!['Organizer', 'Admin', 'Super Admin'].includes(activeRole)) return;
+    if (skipNextAnnouncementSyncRef.current) {
+      skipNextAnnouncementSyncRef.current = false;
+      return;
+    }
     void saveCloudAnnouncements(announcements, cloudUserId).catch((error: unknown) => {
       const message =
         error instanceof Error ? error.message : 'Unexpected Supabase error.';
@@ -954,13 +981,39 @@ export default function App() {
       ? DEMO_USERS.Organizer.id
       : registeredUser?.id ?? DEMO_USERS[activeRole].id);
 
+  const handleRefreshCloudProfiles = async (): Promise<string | null> => {
+    if (!isSupabaseConfigured || !supabase) {
+      return 'Supabase is not configured.';
+    }
+    try {
+      const cloudProfiles = await fetchCloudProfiles();
+      setProfileState((previous) => ({
+        ...previous,
+        profiles: cloudProfiles.map(mapCloudProfile),
+      }));
+      setRegistrationRequests(
+        cloudProfilesToRegistrationRequests(cloudProfiles)
+      );
+      return null;
+    } catch (error) {
+      return getSupabaseFailureMessage(error);
+    }
+  };
+
   const handleSaveUserProfile = (profile: UserProfile) => {
+    const isSelf = profile.userId === getCurrentProfileUserId();
     const canEditOtherProfiles =
-      activeRole === 'Organizer' ||
-      activeRole === 'Super Admin' ||
-      (isSupabaseConfigured && activeRole === 'Admin');
-    if (!canEditOtherProfiles && profile.userId !== getCurrentProfileUserId()) {
+      activeRole === 'Organizer' || activeRole === 'Super Admin';
+    if (!isSelf && !canEditOtherProfiles) {
       showToast('You can only edit your own profile.');
+      return;
+    }
+    if (
+      !isSelf &&
+      profile.role === 'Super Admin' &&
+      activeRole !== 'Super Admin'
+    ) {
+      showToast('Only a Super Admin can edit a Super Admin profile.');
       return;
     }
     const actor = getProfileActor();
@@ -1027,6 +1080,15 @@ export default function App() {
       events: [event, ...profileState.events].slice(0, 1000),
     };
     if (persistProfileState(nextState, 'Could not save notification preferences. Check browser storage.')) {
+      if (isSupabaseConfigured) {
+        void saveCloudProfile(profile).catch((error: unknown) => {
+          const message =
+            error instanceof Error ? error.message : 'Unexpected Supabase error.';
+          showToast(
+            `Could not sync notification preferences with Supabase: ${message}`
+          );
+        });
+      }
       showToast('Notification preferences saved.');
     }
   };
@@ -1040,7 +1102,11 @@ export default function App() {
       activeRole === 'Organizer' || activeRole === 'Super Admin';
     if (!canVerify || (!verified && !canUnverify)) return;
     const profile = managedProfiles.find((item) => item.userId === userId);
-    if (!profile || profile.verified === verified) return;
+    if (
+      !profile ||
+      profile.verified === verified ||
+      (profile.role === 'Super Admin' && activeRole !== 'Super Admin')
+    ) return;
     if (isSupabaseConfigured && supabase) {
       const { error } = await supabase.rpc('admin_update_profile_flags', {
         target_user_id: userId,
@@ -1083,8 +1149,19 @@ export default function App() {
     if (
       !profile ||
       userId === getCurrentProfileUserId() ||
+      profile.role === 'Super Admin' ||
+      (profile.role === 'Organizer' && activeRole !== 'Super Admin') ||
       (status !== 'Suspended' && status !== 'Active')
     ) return;
+    const request = registrationRequests.find((item) => item.id === userId);
+    if (
+      status === 'Active' &&
+      request &&
+      request.status !== 'Approved'
+    ) {
+      showToast('Only approved accounts can be reactivated.');
+      return;
+    }
     if (isSupabaseConfigured && supabase) {
       const { error } = await supabase.rpc('admin_update_profile_flags', {
         target_user_id: userId,
@@ -1095,15 +1172,6 @@ export default function App() {
         showToast(`Could not update account status in Supabase: ${error.message}`);
         return;
       }
-    }
-    const request = registrationRequests.find((item) => item.id === userId);
-    if (
-      status === 'Active' &&
-      request &&
-      request.status !== 'Approved'
-    ) {
-      showToast('Only approved accounts can be reactivated.');
-      return;
     }
     const actor = getProfileActor();
     const event = createProfileAuditEvent(
@@ -1310,7 +1378,13 @@ export default function App() {
   const handleResetUserPassword = async (userId: string) => {
     if (activeRole !== 'Organizer' && activeRole !== 'Super Admin') return null;
     const target = managedProfiles.find((profile) => profile.userId === userId);
-    if (!target) return null;
+    if (
+      !target ||
+      target.userId === getCurrentProfileUserId() ||
+      (target.role === 'Super Admin' && activeRole !== 'Super Admin')
+    ) {
+      return null;
+    }
     try {
       const isCloudAuth = Boolean(isSupabaseConfigured && supabase);
       let temporaryPassword: string;
@@ -1324,9 +1398,8 @@ export default function App() {
           body: { userId },
         });
         if (error) {
-          showToast(
-            `Could not reset the Supabase password: ${getSupabaseFailureMessage(error)}`
-          );
+          const detail = await extractFunctionsInvokeError(error);
+          showToast(`Could not reset the Supabase password: ${detail}`);
           return null;
         }
         if (!data || typeof data.temporaryPassword !== 'string') {
@@ -1490,6 +1563,7 @@ export default function App() {
           full_name: input.fullName.trim(),
           phone: input.phone.trim(),
           requested_role: input.role,
+          department: input.affiliation.trim(),
           institution: input.affiliation.trim(),
         },
       },
@@ -1558,6 +1632,72 @@ export default function App() {
         ? 'User approved. They can now sign in and will see the approval notification.'
         : 'User rejected. The account remains inactive and the applicant will see the decision when signing in.'
     );
+  };
+
+  const handleBulkUpdateRegistrationStatus = async (
+    requestIds: string[],
+    status: 'Approved' | 'Rejected'
+  ) => {
+    if (!canAccessOrganizerWorkspace(activeRole) || requestIds.length === 0) {
+      return;
+    }
+    if (isSupabaseConfigured && supabase) {
+      let succeeded = 0;
+      let firstError: string | null = null;
+      for (const id of requestIds) {
+        const { error } = await supabase.rpc('review_user_registration', {
+          target_user_id: id,
+          approve: status === 'Approved',
+        });
+        if (error) {
+          if (!firstError) firstError = error.message;
+        } else {
+          succeeded += 1;
+        }
+      }
+      const refreshError = await handleRefreshCloudProfiles();
+      if (firstError) {
+        showToast(
+          `Processed ${succeeded}/${requestIds.length} requests. Error: ${firstError}`
+        );
+      } else if (refreshError) {
+        showToast(
+          `Updated ${succeeded} requests, but directory refresh failed: ${refreshError}`
+        );
+      } else {
+        showToast(
+          `${succeeded} registration${succeeded === 1 ? '' : 's'} ${
+            status === 'Approved' ? 'approved' : 'rejected'
+          } in Supabase.`
+        );
+      }
+      return;
+    }
+    for (const id of requestIds) {
+      await handleUpdateRegistrationStatus(id, status);
+    }
+  };
+
+  const handleBulkSetProfileStatus = async (
+    userIds: string[],
+    status: 'Active' | 'Suspended'
+  ) => {
+    if (!canAccessOrganizerWorkspace(activeRole) || userIds.length === 0) {
+      return;
+    }
+    for (const id of userIds) {
+      await handleSetProfileStatus(id, status);
+    }
+  };
+
+  const handleSendPasswordResetEmail = async (
+    email: string
+  ): Promise<string | null> => {
+    const error = await handleRequestPasswordReset(email);
+    if (!error) {
+      showToast(`Password reset email sent to ${email}.`);
+    }
+    return error;
   };
 
   const handleTrashRejectedUser = async (
@@ -1692,7 +1832,7 @@ export default function App() {
     showToast(`${demoUser.fullName} and their account were deleted.`);
   };
 
-  const handleBlockUser = (
+  const handleBlockUser = async (
     userId: string,
     expiresAt: string | null,
     reason: UserBlockReason,
@@ -1700,20 +1840,16 @@ export default function App() {
   ) => {
     const canManageBlocks =
       activeRole === 'Organizer' || activeRole === 'Super Admin';
-    const actor =
-      activeRole === 'Organizer'
-        ? {
-            id: organizerProfile.organizerId,
-            name: organizerProfile.fullName,
-          }
-        : {
-            id: DEMO_USERS['Super Admin'].id,
-            name: DEMO_USERS['Super Admin'].fullName,
-          };
+    const actorInfo = getProfileActor();
+    const actor = { id: actorInfo.actorId, name: actorInfo.actorName };
+    const targetProfile = managedProfiles.find(
+      (profile) => profile.userId === userId
+    );
     if (
       !canManageBlocks ||
       userId === actor.id ||
-      (userId === DEMO_USERS.Organizer.id && activeRole !== 'Super Admin')
+      targetProfile?.role === 'Super Admin' ||
+      (targetProfile?.role === 'Organizer' && activeRole !== 'Super Admin')
     ) {
       return;
     }
@@ -1725,12 +1861,33 @@ export default function App() {
       showToast('This user already has an active block.');
       return;
     }
-    const registration = registrationRequests.find((request) => request.id === userId);
-    const demoUser = availableDemoUsers.find(
-      (user) => user.id === userId && user.role !== 'Organizer'
+    const registration = registrationRequests.find(
+      (request) => request.id === userId
     );
-    const userName = registration?.fullName ?? demoUser?.fullName;
+    const demoUser = availableDemoUsers.find((user) => user.id === userId);
+    const userName =
+      targetProfile?.fullName ?? registration?.fullName ?? demoUser?.fullName;
     if (!userName) return;
+
+    if (isSupabaseConfigured && supabase) {
+      const { error } = await supabase.rpc('admin_update_profile_flags', {
+        target_user_id: userId,
+        new_account_status: 'Suspended',
+        new_verified: null,
+      });
+      if (error) {
+        showToast(`Could not suspend & block user in Supabase: ${error.message}`);
+        return;
+      }
+      setProfileState((previous) => ({
+        ...previous,
+        profiles: previous.profiles.map((profile) =>
+          profile.userId === userId
+            ? { ...profile, accountStatus: 'Suspended' }
+            : profile
+        ),
+      }));
+    }
 
     const now = new Date();
     const blockId = `user-block-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -1778,22 +1935,54 @@ export default function App() {
     );
   };
 
-  const handleUnblockUser = (blockId: string) => {
+  const handleUnblockUser = async (blockId: string) => {
     if (activeRole !== 'Organizer' && activeRole !== 'Super Admin') {
       return;
     }
-    const actor =
-      activeRole === 'Organizer'
-        ? { id: organizerProfile.organizerId, name: organizerProfile.fullName }
-        : { id: DEMO_USERS['Super Admin'].id, name: DEMO_USERS['Super Admin'].fullName };
+    const actorInfo = getProfileActor();
+    const actor = { id: actorInfo.actorId, name: actorInfo.actorName };
     const target = userBlockState.records.find(
       (record) => record.id === blockId && !record.endedAt
     );
+    const targetProfile = target
+      ? managedProfiles.find((profile) => profile.userId === target.userId)
+      : undefined;
     if (
       !target ||
-      (target.userId === DEMO_USERS.Organizer.id && activeRole !== 'Super Admin') ||
+      (targetProfile?.role === 'Organizer' && activeRole !== 'Super Admin') ||
+      targetProfile?.role === 'Super Admin' ||
       target.userId === actor.id
-    ) return;
+    ) {
+      return;
+    }
+
+    if (isSupabaseConfigured && supabase) {
+      const request = registrationRequests.find(
+        (item) => item.id === target.userId
+      );
+      if (!request || request.status === 'Approved') {
+        const { error } = await supabase.rpc('admin_update_profile_flags', {
+          target_user_id: target.userId,
+          new_account_status: 'Active',
+          new_verified: null,
+        });
+        if (error) {
+          showToast(
+            `Could not restore user access in Supabase: ${error.message}`
+          );
+          return;
+        }
+        setProfileState((previous) => ({
+          ...previous,
+          profiles: previous.profiles.map((profile) =>
+            profile.userId === target.userId
+              ? { ...profile, accountStatus: 'Active' }
+              : profile
+          ),
+        }));
+      }
+    }
+
     const now = new Date().toISOString();
     const event: UserBlockAuditEvent = {
       id: `block-event-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -1844,18 +2033,22 @@ export default function App() {
       showToast('Choose a future expiry time.');
       return;
     }
-    const actor =
-      activeRole === 'Organizer'
-        ? { id: organizerProfile.organizerId, name: organizerProfile.fullName }
-        : { id: DEMO_USERS['Super Admin'].id, name: DEMO_USERS['Super Admin'].fullName };
+    const actorInfo = getProfileActor();
+    const actor = { id: actorInfo.actorId, name: actorInfo.actorName };
     const target = userBlockState.records.find(
       (record) => record.id === blockId && !record.endedAt
     );
+    const targetProfile = target
+      ? managedProfiles.find((profile) => profile.userId === target.userId)
+      : undefined;
     if (
       !target ||
-      (target.userId === DEMO_USERS.Organizer.id && activeRole !== 'Super Admin') ||
+      (targetProfile?.role === 'Organizer' && activeRole !== 'Super Admin') ||
+      targetProfile?.role === 'Super Admin' ||
       target.userId === actor.id
-    ) return;
+    ) {
+      return;
+    }
     const now = new Date().toISOString();
     const event: UserBlockAuditEvent = {
       id: `block-event-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -1883,27 +2076,40 @@ export default function App() {
       return;
     }
     setUserBlockState(updatedState);
-    showToast(action === 'extended' ? 'Block duration extended.' : 'Block expiry changed.');
+    showToast(
+      action === 'extended' ? 'Block duration extended.' : 'Block expiry changed.'
+    );
   };
 
   const pendingRequestCount = useMemo(
     () =>
       registrationRequests.filter(
-        (request) => request.status === 'Pending Approval'
+        (request) => !request.trashedAt && request.status === 'Pending Approval'
       ).length,
     [registrationRequests]
   );
   const blockedUserCount = useMemo(
     () =>
-      userBlockState.records.filter((record) =>
-        findActiveUserBlock(userBlockState.records, record.userId)
-      ).reduce((userIds, record) => userIds.add(record.userId), new Set<string>())
+      userBlockState.records
+        .filter((record) =>
+          findActiveUserBlock(userBlockState.records, record.userId)
+        )
+        .reduce((userIds, record) => userIds.add(record.userId), new Set<string>())
         .size,
     [userBlockState.records]
   );
+  const announcementById = useMemo(
+    () => new Map(announcements.map((item) => [item.id, item])),
+    [announcements]
+  );
   const failedDeliveryCount = useMemo(
-    () => deliveries.filter((d) => d.status === 'Failed').length,
-    [deliveries]
+    () =>
+      deliveries.filter((d) => {
+        if (d.status !== 'Failed') return false;
+        const ann = announcementById.get(d.announcementId);
+        return Boolean(ann && (ann.failedCount > 0 || ann.status === 'Failed'));
+      }).length,
+    [announcementById, deliveries]
   );
 
   const inboxRole: WorkspaceRole =
@@ -2067,6 +2273,7 @@ export default function App() {
   const handleDeleteAnnouncement = (id: string) => {
     setAnnouncements((prev) => prev.filter((a) => a.id !== id));
     setDeliveries((prev) => prev.filter((d) => d.announcementId !== id));
+    setActivityFeed((prev) => prev.filter((entry) => entry.announcementId !== id));
     if (supabase && cloudUserId) {
       void deleteCloudAnnouncement(id).catch((error: unknown) => {
         const message =
@@ -2919,8 +3126,15 @@ export default function App() {
                           isSupabaseConfigured && activeRole === 'Super Admin'
                         }
                         onUpdateStatus={handleUpdateRegistrationStatus}
+                        onBulkUpdateStatus={handleBulkUpdateRegistrationStatus}
                         onTrashRejectedUser={handleTrashRejectedUser}
                         onRestoreTrashedUser={handleRestoreTrashedUser}
+                        onRefreshProfiles={
+                          isSupabaseConfigured
+                            ? handleRefreshCloudProfiles
+                            : undefined
+                        }
+                        onNotify={showToast}
                       />
                     )}
 
@@ -2939,11 +3153,26 @@ export default function App() {
                         createdAt: activeProfile.createdAt,
                       }}
                       staffUsers={availableDemoUsers}
+                      profiles={managedProfiles}
                       requests={registrationRequests}
                       blocks={userBlockState.records}
+                      isSupabaseConfigured={isSupabaseConfigured}
                       onBlockUser={handleBlockUser}
                       onUnblockUser={handleUnblockUser}
                       onDeleteUser={handleDeleteUser}
+                      onSetProfileStatus={handleSetProfileStatus}
+                      onUpdateRegistrationStatus={handleUpdateRegistrationStatus}
+                      onTrashRejectedUser={handleTrashRejectedUser}
+                      onRefreshProfiles={
+                        isSupabaseConfigured
+                          ? handleRefreshCloudProfiles
+                          : undefined
+                      }
+                      onBulkUpdateRegistrationStatus={
+                        handleBulkUpdateRegistrationStatus
+                      }
+                      onBulkSetProfileStatus={handleBulkSetProfileStatus}
+                      onNotify={showToast}
                     />
                   )}
 
@@ -2964,14 +3193,27 @@ export default function App() {
                     <ProfileManagementPage
                       profiles={managedProfiles}
                       blocks={userBlockState.records}
+                      events={profileState.events}
                       canManage={canAccessOrganizerWorkspace(activeRole)}
                       canVerify
+                      currentUserRole={activeRole}
                       onSaveProfile={handleSaveUserProfile}
                       onSetVerified={handleSetProfileVerification}
                       onSetStatus={handleSetProfileStatus}
                       onBlock={handleBlockUser}
                       onUnblock={handleUnblockUser}
                       onResetPassword={handleResetUserPassword}
+                      onSendResetEmail={
+                        isSupabaseConfigured
+                          ? handleSendPasswordResetEmail
+                          : undefined
+                      }
+                      onRefreshProfiles={
+                        isSupabaseConfigured
+                          ? handleRefreshCloudProfiles
+                          : undefined
+                      }
+                      onNotify={showToast}
                       canPromoteToAdmin={
                         isSupabaseConfigured && activeRole === 'Super Admin'
                       }
@@ -2980,20 +3222,45 @@ export default function App() {
                     />
                   )}
 
+                  {activeRoute === 'system-health' &&
+                    canAccessOrganizerWorkspace(activeRole) && (
+                      <SystemHealthPage
+                        activeRole={activeRole}
+                        profiles={managedProfiles}
+                        profileEvents={profileState.events}
+                        blockEvents={userBlockState.events}
+                        onRefreshProfiles={handleRefreshCloudProfiles}
+                        onNotify={showToast}
+                      />
+                    )}
+
                 </>
               ) : activeRoute === 'profiles' &&
                 (activeRole === 'Admin' || activeRole === 'Super Admin') ? (
                 <ProfileManagementPage
                   profiles={managedProfiles}
                   blocks={userBlockState.records}
+                  events={profileState.events}
                   canManage={activeRole === 'Super Admin'}
                   canVerify
+                  currentUserRole={activeRole}
                   onSaveProfile={handleSaveUserProfile}
                   onSetVerified={handleSetProfileVerification}
                   onSetStatus={handleSetProfileStatus}
                   onBlock={handleBlockUser}
                   onUnblock={handleUnblockUser}
                   onResetPassword={handleResetUserPassword}
+                  onSendResetEmail={
+                    isSupabaseConfigured
+                      ? handleSendPasswordResetEmail
+                      : undefined
+                  }
+                  onRefreshProfiles={
+                    isSupabaseConfigured
+                      ? handleRefreshCloudProfiles
+                      : undefined
+                  }
+                  onNotify={showToast}
                   canPromoteToAdmin={
                     isSupabaseConfigured && activeRole === 'Super Admin'
                   }

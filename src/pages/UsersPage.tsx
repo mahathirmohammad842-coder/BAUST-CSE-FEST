@@ -1,32 +1,51 @@
 import { useMemo, useState } from 'react';
 import {
   AlertTriangle,
-  Building2,
   Ban,
+  Building2,
+  Check,
   CheckCircle2,
   Clock3,
+  Download,
+  PauseCircle,
+  PlayCircle,
+  RefreshCw,
   Search,
   ShieldCheck,
   Trash2,
   UserRound,
   UsersRound,
   UserX,
+  X,
 } from 'lucide-react';
 import { Modal } from '../components/Modal';
 import { StatCard } from '../components/StatCard';
 import type {
+  ProfileAccountStatus,
   RegistrationRequest,
   RegistrationStatus,
   SystemUser,
+  UserProfile,
   WorkspaceRole,
 } from '../types';
+import { downloadCsv } from '../utils/csvExport';
 import type {
   UserBlockReason,
   UserBlockRecord,
 } from '../utils/registrationStore';
 
-type UserStatus = RegistrationStatus | 'Active' | 'Blocked';
-type BlockDuration = 'permanent' | '15m' | '30m' | '1h' | '6h' | '12h' | '24h' | '3d' | '7d' | 'custom';
+type UserStatus = RegistrationStatus | 'Active' | 'Suspended' | 'Blocked';
+type BlockDuration =
+  | 'permanent'
+  | '15m'
+  | '30m'
+  | '1h'
+  | '6h'
+  | '12h'
+  | '24h'
+  | '3d'
+  | '7d'
+  | 'custom';
 
 interface ManagedUser {
   id: string;
@@ -36,24 +55,47 @@ interface ManagedUser {
   role: WorkspaceRole;
   affiliation: string;
   status: UserStatus;
+  accountStatus: ProfileAccountStatus;
   registeredAt?: string;
   block?: UserBlockRecord;
   isAdministrator: boolean;
+  isRequest: boolean;
 }
 
 interface UsersPageProps {
   currentUser: SystemUser;
   staffUsers: SystemUser[];
+  profiles: UserProfile[];
   requests: RegistrationRequest[];
   blocks: UserBlockRecord[];
+  isSupabaseConfigured: boolean;
   onBlockUser: (
     userId: string,
     expiresAt: string | null,
     reason: UserBlockReason,
     note: string
-  ) => void;
-  onUnblockUser: (blockId: string) => void;
+  ) => Promise<void> | void;
+  onUnblockUser: (blockId: string) => Promise<void> | void;
   onDeleteUser: (userId: string) => void;
+  onSetProfileStatus: (
+    userId: string,
+    status: 'Active' | 'Suspended'
+  ) => Promise<void> | void;
+  onUpdateRegistrationStatus: (
+    requestId: string,
+    status: 'Approved' | 'Rejected'
+  ) => Promise<void> | void;
+  onTrashRejectedUser?: (userId: string) => Promise<string | null>;
+  onRefreshProfiles?: () => Promise<string | null>;
+  onBulkUpdateRegistrationStatus?: (
+    requestIds: string[],
+    status: 'Approved' | 'Rejected'
+  ) => Promise<void>;
+  onBulkSetProfileStatus?: (
+    userIds: string[],
+    status: 'Active' | 'Suspended'
+  ) => Promise<void>;
+  onNotify?: (message: string) => void;
 }
 
 function statusStyle(status: UserStatus) {
@@ -62,6 +104,9 @@ function statusStyle(status: UserStatus) {
   }
   if (status === 'Rejected') {
     return 'border-red-200 bg-red-50 text-red-700 dark:border-red-800/70 dark:bg-red-950/50 dark:text-red-300';
+  }
+  if (status === 'Suspended') {
+    return 'border-orange-200 bg-orange-50 text-orange-800 dark:border-orange-800/70 dark:bg-orange-950/50 dark:text-orange-300';
   }
   if (status === 'Blocked') {
     return 'border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200';
@@ -103,89 +148,155 @@ function getLocalDateTimeMinimum() {
 
 function getUserFromRequest(
   request: RegistrationRequest,
+  profile?: UserProfile,
   block?: UserBlockRecord
 ): ManagedUser {
+  const accountStatus: ProfileAccountStatus =
+    profile?.accountStatus === 'Suspended'
+      ? 'Suspended'
+      : request.status === 'Approved'
+        ? 'Active'
+        : request.status;
+  const status: UserStatus =
+    block && !block.endedAt
+      ? 'Blocked'
+      : accountStatus === 'Suspended'
+        ? 'Suspended'
+        : request.status;
+
   return {
     id: request.id,
-    fullName: request.fullName,
-    email: request.email,
-    phone: request.phone,
-    role: request.role,
-    affiliation: request.affiliation,
-    status: block && !block.endedAt ? 'Blocked' : request.status,
+    fullName: profile?.fullName ?? request.fullName,
+    email: profile?.email ?? request.email,
+    phone: profile?.phone ?? request.phone,
+    role: profile?.role ?? request.role,
+    affiliation:
+      profile?.institution || profile?.department || request.affiliation,
+    status,
+    accountStatus,
     registeredAt: request.registeredAt,
     block,
     isAdministrator: false,
+    isRequest: true,
   };
 }
 
 function getUserFromSystemUser(
   user: SystemUser,
+  profile?: UserProfile,
   block?: UserBlockRecord
 ): ManagedUser {
   const isAdministrator =
     user.role === 'Organizer' ||
     user.role === 'Admin' ||
     user.role === 'Super Admin';
+  const accountStatus: ProfileAccountStatus =
+    profile?.accountStatus === 'Suspended' ? 'Suspended' : 'Active';
+  const status: UserStatus =
+    block && !block.endedAt
+      ? 'Blocked'
+      : accountStatus === 'Suspended'
+        ? 'Suspended'
+        : 'Active';
+
   return {
     id: user.id,
-    fullName: user.fullName,
-    email: user.email,
-    phone: user.phone,
-    role: user.role,
-    affiliation: user.affiliation,
-    status: !isAdministrator && block && !block.endedAt ? 'Blocked' : 'Active',
-    registeredAt: user.createdAt,
-    block: isAdministrator ? undefined : block,
+    fullName: profile?.fullName ?? user.fullName,
+    email: profile?.email ?? user.email,
+    phone: profile?.phone ?? user.phone,
+    role: profile?.role ?? user.role,
+    affiliation: profile?.institution || profile?.department || user.affiliation,
+    status,
+    accountStatus,
+    registeredAt: profile?.createdAt ?? user.createdAt,
+    block,
     isAdministrator,
+    isRequest: false,
   };
 }
 
 export function UsersPage({
   currentUser,
   staffUsers,
+  profiles,
   requests,
   blocks,
+  isSupabaseConfigured,
   onBlockUser,
   onUnblockUser,
   onDeleteUser,
+  onSetProfileStatus,
+  onUpdateRegistrationStatus,
+  onTrashRejectedUser,
+  onRefreshProfiles,
+  onBulkUpdateRegistrationStatus,
+  onBulkSetProfileStatus,
+  onNotify,
 }: UsersPageProps) {
   const [query, setQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState<WorkspaceRole | 'All'>('All');
   const [statusFilter, setStatusFilter] = useState<UserStatus | 'All'>('All');
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [busyUserId, setBusyUserId] = useState<string | null>(null);
   const [userToDelete, setUserToDelete] = useState<ManagedUser | null>(null);
   const [userToBlock, setUserToBlock] = useState<ManagedUser | null>(null);
   const [blockDuration, setBlockDuration] = useState<BlockDuration>('1h');
   const [customExpiry, setCustomExpiry] = useState('');
-  const [blockReason, setBlockReason] = useState<UserBlockReason>('Policy Violation');
+  const [blockReason, setBlockReason] =
+    useState<UserBlockReason>('Policy Violation');
   const [adminNote, setAdminNote] = useState('');
 
-  const allUsers = useMemo(
-    () => {
-      const now = Date.now();
-      const blocksByUserId = new Map(
-        blocks
-          .filter(
-            (block) =>
-              !block.endedAt &&
-              (block.expiresAt === null || Date.parse(block.expiresAt) > now)
-          )
-          .map((block) => [block.userId, block])
-      );
-      return [
-        getUserFromSystemUser(currentUser),
-        ...staffUsers
-          .filter((user) => user.id !== currentUser.id)
-          .map((user) =>
-            getUserFromSystemUser(user, blocksByUserId.get(user.id))
-          ),
-        ...requests.map((request) =>
-          getUserFromRequest(request, blocksByUserId.get(request.id))
-        ),
-      ];
-    },
-    [blocks, currentUser, requests, staffUsers]
+  const profileByUserId = useMemo(
+    () => new Map(profiles.map((profile) => [profile.userId, profile])),
+    [profiles]
   );
+
+  const allUsers = useMemo(() => {
+    const now = Date.now();
+    const blocksByUserId = new Map(
+      blocks
+        .filter(
+          (block) =>
+            !block.endedAt &&
+            (block.expiresAt === null || Date.parse(block.expiresAt) > now)
+        )
+        .map((block) => [block.userId, block])
+    );
+
+    const staffIds = new Set([
+      currentUser.id,
+      ...staffUsers.map((user) => user.id),
+    ]);
+
+    return [
+      getUserFromSystemUser(
+        currentUser,
+        profileByUserId.get(currentUser.id),
+        blocksByUserId.get(currentUser.id)
+      ),
+      ...staffUsers
+        .filter((user) => user.id !== currentUser.id)
+        .map((user) =>
+          getUserFromSystemUser(
+            user,
+            profileByUserId.get(user.id),
+            blocksByUserId.get(user.id)
+          )
+        ),
+      ...requests
+        .filter((request) => !request.trashedAt && !staffIds.has(request.id))
+        .map((request) =>
+          getUserFromRequest(
+            request,
+            profileByUserId.get(request.id),
+            blocksByUserId.get(request.id)
+          )
+        ),
+    ];
+  }, [blocks, currentUser, profileByUserId, requests, staffUsers]);
+
   const filteredUsers = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return allUsers.filter((user) => {
@@ -202,6 +313,7 @@ export function UsersPage({
       );
     });
   }, [allUsers, query, roleFilter, statusFilter]);
+
   const counts = useMemo(
     () => ({
       total: allUsers.length,
@@ -210,10 +322,163 @@ export function UsersPage({
       ).length,
       pending: allUsers.filter((user) => user.status === 'Pending Approval')
         .length,
-      rejected: allUsers.filter((user) => user.status === 'Rejected').length,
+      restricted: allUsers.filter(
+        (user) =>
+          user.status === 'Rejected' ||
+          user.status === 'Suspended' ||
+          user.status === 'Blocked'
+      ).length,
     }),
     [allUsers]
   );
+
+  const canActOnUser = (user: ManagedUser) => {
+    if (user.id === currentUser.id) return false;
+    if (user.role === 'Super Admin') return false;
+    if (user.role === 'Organizer' && currentUser.role !== 'Super Admin') {
+      return false;
+    }
+    return true;
+  };
+
+  const selectableUsers = useMemo(
+    () => filteredUsers.filter(canActOnUser),
+    [filteredUsers, currentUser.id, currentUser.role]
+  );
+
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const selectedUsers = useMemo(
+    () => allUsers.filter((user) => selectedSet.has(user.id) && canActOnUser(user)),
+    [allUsers, selectedSet, currentUser.id, currentUser.role]
+  );
+
+  const allVisibleSelected =
+    selectableUsers.length > 0 &&
+    selectableUsers.every((user) => selectedSet.has(user.id));
+
+  const toggleSelectAll = () => {
+    if (allVisibleSelected) {
+      const visibleSet = new Set(selectableUsers.map((user) => user.id));
+      setSelectedIds((prev) => prev.filter((id) => !visibleSet.has(id)));
+    } else {
+      const merged = new Set([
+        ...selectedIds,
+        ...selectableUsers.map((user) => user.id),
+      ]);
+      setSelectedIds([...merged]);
+    }
+  };
+
+  const toggleSelectUser = (userId: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(userId)
+        ? prev.filter((id) => id !== userId)
+        : [...prev, userId]
+    );
+  };
+
+  const handleRefresh = async () => {
+    if (!onRefreshProfiles || refreshing) return;
+    setRefreshing(true);
+    try {
+      const error = await onRefreshProfiles();
+      onNotify?.(error ?? 'User directory synchronized with Supabase.');
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const handleExportCsv = () => {
+    const ok = downloadCsv(
+      `baust-users-${new Date().toISOString().slice(0, 10)}.csv`,
+      [
+        'Full Name',
+        'Email',
+        'Mobile',
+        'Role',
+        'Department / Organization',
+        'Status',
+        'Registered At',
+      ],
+      filteredUsers.map((user) => [
+        user.fullName,
+        user.email,
+        user.phone,
+        user.role,
+        user.affiliation,
+        user.status,
+        user.registeredAt ?? '',
+      ])
+    );
+    onNotify?.(
+      ok
+        ? `Exported ${filteredUsers.length} user record${filteredUsers.length === 1 ? '' : 's'} to CSV.`
+        : 'Could not export CSV in this browser.'
+    );
+  };
+
+  const runUserAction = async (userId: string, fn: () => Promise<void> | void) => {
+    setBusyUserId(userId);
+    try {
+      await fn();
+    } finally {
+      setBusyUserId(null);
+    }
+  };
+
+  const runBulkApprove = async (approve: boolean) => {
+    const targets = selectedUsers.filter((user) =>
+      approve
+        ? user.isRequest &&
+          (user.status === 'Pending Approval' || user.status === 'Rejected')
+        : user.isRequest && user.status === 'Pending Approval'
+    );
+    if (targets.length === 0) return;
+    setBulkBusy(true);
+    try {
+      if (onBulkUpdateRegistrationStatus) {
+        await onBulkUpdateRegistrationStatus(
+          targets.map((user) => user.id),
+          approve ? 'Approved' : 'Rejected'
+        );
+      } else {
+        for (const target of targets) {
+          await onUpdateRegistrationStatus(
+            target.id,
+            approve ? 'Approved' : 'Rejected'
+          );
+        }
+      }
+      setSelectedIds([]);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const runBulkStatus = async (nextStatus: 'Active' | 'Suspended') => {
+    const targets = selectedUsers.filter((user) =>
+      nextStatus === 'Suspended'
+        ? user.accountStatus === 'Active'
+        : user.accountStatus === 'Suspended'
+    );
+    if (targets.length === 0) return;
+    setBulkBusy(true);
+    try {
+      if (onBulkSetProfileStatus) {
+        await onBulkSetProfileStatus(
+          targets.map((user) => user.id),
+          nextStatus
+        );
+      } else {
+        for (const target of targets) {
+          await onSetProfileStatus(target.id, nextStatus);
+        }
+      }
+      setSelectedIds([]);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
 
   const confirmDelete = () => {
     if (!userToDelete || userToDelete.isAdministrator) return;
@@ -221,8 +486,8 @@ export function UsersPage({
     setUserToDelete(null);
   };
 
-  const confirmBlock = () => {
-    if (!userToBlock || userToBlock.isAdministrator) {
+  const confirmBlock = async () => {
+    if (!userToBlock || !canActOnUser(userToBlock)) {
       return;
     }
     if (
@@ -246,13 +511,25 @@ export function UsersPage({
         ? null
         : blockDuration === 'custom'
           ? new Date(customExpiry).toISOString()
-          : new Date(Date.now() + (durationMs[blockDuration] ?? 0)).toISOString();
+          : new Date(
+              Date.now() + (durationMs[blockDuration] ?? 0)
+            ).toISOString();
     if (expiresAt !== null && Date.parse(expiresAt) <= Date.now()) return;
-    onBlockUser(userToBlock.id, expiresAt, blockReason, adminNote.trim());
+    await onBlockUser(userToBlock.id, expiresAt, blockReason, adminNote.trim());
     setUserToBlock(null);
     setCustomExpiry('');
     setAdminNote('');
   };
+
+  const pendingSelectedCount = selectedUsers.filter(
+    (user) => user.isRequest && user.status === 'Pending Approval'
+  ).length;
+  const activeSelectedCount = selectedUsers.filter(
+    (user) => user.accountStatus === 'Active'
+  ).length;
+  const suspendedSelectedCount = selectedUsers.filter(
+    (user) => user.accountStatus === 'Suspended'
+  ).length;
 
   return (
     <div className="space-y-5">
@@ -265,13 +542,36 @@ export function UsersPage({
             </h1>
           </div>
           <p className="mt-1 text-xs text-emerald-900/60 dark:text-emerald-300/65">
-            Manage accounts, review access status, and remove users from the fest portal.
+            Manage accounts, review access status, suspend or block users, and export directory records.
           </p>
         </div>
-        <span className="inline-flex w-fit items-center gap-2 rounded-full border border-emerald-200 bg-white px-3 py-1.5 text-xs font-medium text-emerald-800 dark:border-emerald-800/70 dark:bg-[#061D15] dark:text-emerald-200">
-          <ShieldCheck className="h-3.5 w-3.5" />
-          {currentUser.role} administration
-        </span>
+        <div className="flex flex-wrap items-center gap-2">
+          {isSupabaseConfigured && onRefreshProfiles && (
+            <button
+              type="button"
+              disabled={refreshing}
+              onClick={() => void handleRefresh()}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 disabled:opacity-60 dark:border-emerald-800/70 dark:bg-[#061D15] dark:text-emerald-100 dark:hover:bg-emerald-950/50"
+            >
+              <RefreshCw
+                className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`}
+              />
+              Refresh
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={handleExportCsv}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800/70 dark:bg-[#061D15] dark:text-emerald-100 dark:hover:bg-emerald-950/50"
+          >
+            <Download className="h-3.5 w-3.5" />
+            Export CSV
+          </button>
+          <span className="inline-flex w-fit items-center gap-2 rounded-full border border-emerald-200 bg-white px-3 py-1.5 text-xs font-medium text-emerald-800 dark:border-emerald-800/70 dark:bg-[#061D15] dark:text-emerald-200">
+            <ShieldCheck className="h-3.5 w-3.5" />
+            {currentUser.role} administration
+          </span>
+        </div>
       </header>
 
       <section
@@ -281,7 +581,7 @@ export function UsersPage({
         <StatCard
           label="Total Users"
           value={counts.total.toLocaleString()}
-          sublabel="          Including the current administrator"
+          sublabel="Including the current administrator"
           icon={UsersRound}
         />
         <StatCard
@@ -299,9 +599,9 @@ export function UsersPage({
           tone="amber"
         />
         <StatCard
-          label="Rejected Users"
-          value={counts.rejected.toLocaleString()}
-          sublabel="Inactive accounts"
+          label="Restricted / Rejected"
+          value={counts.restricted.toLocaleString()}
+          sublabel="Suspended, blocked, or rejected"
           icon={UserX}
           tone="danger"
         />
@@ -381,6 +681,7 @@ export function UsersPage({
                       'Active',
                       'Pending Approval',
                       'Approved',
+                      'Suspended',
                       'Rejected',
                       'Blocked',
                     ].includes(status)
@@ -394,12 +695,74 @@ export function UsersPage({
                 <option value="Active">Active</option>
                 <option value="Pending Approval">Pending Approval</option>
                 <option value="Approved">Approved</option>
+                <option value="Suspended">Suspended</option>
                 <option value="Rejected">Rejected</option>
                 <option value="Blocked">Blocked</option>
               </select>
             </label>
           </div>
         </div>
+
+        {selectedUsers.length > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-emerald-100 bg-emerald-50/80 px-4 py-2.5 text-xs dark:border-emerald-800/60 dark:bg-emerald-950/35">
+            <span className="font-semibold text-emerald-950 dark:text-emerald-100">
+              {selectedUsers.length} account{selectedUsers.length === 1 ? '' : 's'} selected
+            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              {pendingSelectedCount > 0 && (
+                <>
+                  <button
+                    type="button"
+                    disabled={bulkBusy}
+                    onClick={() => void runBulkApprove(true)}
+                    className="inline-flex items-center gap-1 rounded-lg bg-emerald-700 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-emerald-600 disabled:opacity-60"
+                  >
+                    <Check className="h-3.5 w-3.5" />
+                    Approve ({pendingSelectedCount})
+                  </button>
+                  <button
+                    type="button"
+                    disabled={bulkBusy}
+                    onClick={() => void runBulkApprove(false)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-red-700 hover:bg-red-50 disabled:opacity-60 dark:border-red-800/70 dark:bg-[#061D15] dark:text-red-300"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                    Reject ({pendingSelectedCount})
+                  </button>
+                </>
+              )}
+              {activeSelectedCount > 0 && (
+                <button
+                  type="button"
+                  disabled={bulkBusy}
+                  onClick={() => void runBulkStatus('Suspended')}
+                  className="inline-flex items-center gap-1 rounded-lg border border-amber-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-amber-800 hover:bg-amber-50 disabled:opacity-60 dark:border-amber-800/70 dark:bg-[#061D15] dark:text-amber-300"
+                >
+                  <PauseCircle className="h-3.5 w-3.5" />
+                  Suspend ({activeSelectedCount})
+                </button>
+              )}
+              {suspendedSelectedCount > 0 && (
+                <button
+                  type="button"
+                  disabled={bulkBusy}
+                  onClick={() => void runBulkStatus('Active')}
+                  className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-50 disabled:opacity-60 dark:border-emerald-800/70 dark:bg-[#061D15] dark:text-emerald-300"
+                >
+                  <PlayCircle className="h-3.5 w-3.5" />
+                  Reactivate ({suspendedSelectedCount})
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setSelectedIds([])}
+                className="px-2 py-1 text-[11px] font-semibold text-emerald-900/70 hover:text-emerald-950 dark:text-emerald-300/75"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+        )}
 
         {filteredUsers.length === 0 ? (
           <div className="flex flex-col items-center px-6 py-14 text-center">
@@ -415,9 +778,19 @@ export function UsersPage({
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[980px] text-left">
+            <table className="w-full min-w-[1040px] text-left">
               <thead className="bg-emerald-50/70 text-[10px] font-semibold uppercase tracking-wide text-emerald-900/65 dark:bg-emerald-950/30 dark:text-emerald-200/65">
                 <tr>
+                  <th className="w-10 px-4 py-3">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all manageable users"
+                      checked={allVisibleSelected}
+                      disabled={selectableUsers.length === 0}
+                      onChange={toggleSelectAll}
+                      className="h-4 w-4 rounded border-emerald-300 text-emerald-700 focus:ring-emerald-600"
+                    />
+                  </th>
                   <th className="px-4 py-3">User</th>
                   <th className="px-4 py-3">Mobile</th>
                   <th className="px-4 py-3">Role</th>
@@ -428,115 +801,243 @@ export function UsersPage({
                 </tr>
               </thead>
               <tbody className="divide-y divide-emerald-100 dark:divide-emerald-900/50">
-                {filteredUsers.map((user) => (
-                  <tr
-                    key={user.id}
-                    className="text-xs text-emerald-950 dark:text-emerald-50"
-                  >
-                    <td className="px-4 py-3.5">
-                      <p className="font-semibold">{user.fullName}</p>
-                      <p className="mt-0.5 text-[11px] text-emerald-900/60 dark:text-emerald-300/65">
-                        {user.email}
-                      </p>
-                    </td>
-                    <td className="px-4 py-3.5">{user.phone}</td>
-                    <td className="px-4 py-3.5">
-                      <span className="inline-flex items-center gap-1.5">
-                        {user.isAdministrator && (
-                          <ShieldCheck className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-300" />
-                        )}
-                        {user.role}
-                        {user.isAdministrator && (
-                          <span className="text-[10px] text-emerald-700 dark:text-emerald-300">
-                            Admin
-                          </span>
-                        )}
-                      </span>
-                    </td>
-                    <td className="max-w-56 truncate px-4 py-3.5" title={user.affiliation}>
-                      <span className="inline-flex items-center gap-1.5">
-                        <Building2 className="h-3.5 w-3.5 shrink-0 text-emerald-800/45 dark:text-emerald-200/45" />
-                        <span className="truncate">{user.affiliation}</span>
-                      </span>
-                    </td>
-                    <td className="px-4 py-3.5">
-                      <div className="flex flex-col items-start gap-1">
-                        <span
-                          className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-semibold ${
-                            user.status === 'Blocked'
-                              ? user.block?.expiresAt
-                                ? 'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-200'
-                                : 'border-red-300 bg-red-100 text-red-800 dark:border-red-800 dark:bg-red-950/60 dark:text-red-200'
-                              : statusStyle(user.status)
-                          }`}
-                        >
-                          {user.status === 'Blocked'
-                            ? user.block?.expiresAt
-                              ? 'Temporarily Blocked'
-                              : 'Permanently Blocked'
-                            : user.status}
-                        </span>
-                        {user.block && !user.block.endedAt && (
-                          <span className="whitespace-nowrap text-[10px] text-slate-500 dark:text-slate-400">
-                            {user.block.expiresAt
-                              ? `Until ${formatBlockExpiry(user.block.expiresAt)}`
-                              : 'No expiry'}
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3.5 text-emerald-900/65 dark:text-emerald-300/70">
-                      {formatDate(user.registeredAt)}
-                    </td>
-                    <td className="px-4 py-3.5 text-right">
-                      {user.isAdministrator ? (
-                        <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-100 px-2.5 py-1.5 text-[11px] font-medium text-emerald-800/65 dark:border-emerald-800/60 dark:text-emerald-200/65">
-                          <ShieldCheck className="h-3.5 w-3.5" />
-                          Protected
-                        </span>
-                      ) : (
-                        <div className="inline-flex items-center gap-2 whitespace-nowrap">
-                          {user.status === 'Blocked' && user.block ? (
-                            <button
-                              type="button"
-                              onClick={() => onUnblockUser(user.block!.id)}
-                              aria-label={`Unblock ${user.fullName}`}
-                              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-800 transition-colors hover:bg-emerald-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 dark:border-emerald-800/70 dark:text-emerald-300 dark:hover:bg-emerald-950/50"
-                            >
-                              <CheckCircle2 className="h-3.5 w-3.5" />
-                              Unblock
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setUserToBlock(user);
-                                setBlockDuration('1h');
-                                setBlockReason('Policy Violation');
-                                setAdminNote('');
-                                setCustomExpiry('');
-                              }}
-                              aria-label={`Block user ${user.fullName}`}
-                              className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 px-2.5 py-1.5 text-[11px] font-semibold text-amber-800 transition-colors hover:bg-amber-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-600 dark:border-amber-800/70 dark:text-amber-300 dark:hover:bg-amber-950/40"
-                            >
-                              <Ban className="h-3.5 w-3.5" />
-                              Block User
-                            </button>
+                {filteredUsers.map((user) => {
+                  const manageable = canActOnUser(user);
+                  const rowBusy = busyUserId === user.id || bulkBusy;
+                  return (
+                    <tr
+                      key={user.id}
+                      className="text-xs text-emerald-950 dark:text-emerald-50"
+                    >
+                      <td className="px-4 py-3.5">
+                        <input
+                          type="checkbox"
+                          aria-label={`Select ${user.fullName}`}
+                          disabled={!manageable}
+                          checked={manageable && selectedSet.has(user.id)}
+                          onChange={() => toggleSelectUser(user.id)}
+                          className="h-4 w-4 rounded border-emerald-300 text-emerald-700 focus:ring-emerald-600 disabled:opacity-40"
+                        />
+                      </td>
+                      <td className="px-4 py-3.5">
+                        <p className="font-semibold">
+                          {user.fullName}
+                          {user.id === currentUser.id && (
+                            <span className="ml-1.5 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:bg-emerald-900/70 dark:text-emerald-200">
+                              You
+                            </span>
                           )}
-                          <button
-                            type="button"
-                            onClick={() => setUserToDelete(user)}
-                            aria-label={`Delete ${user.fullName}`}
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 px-2.5 py-1.5 text-[11px] font-semibold text-red-700 transition-colors hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 dark:border-red-800/70 dark:text-red-300 dark:hover:bg-red-950/40"
+                        </p>
+                        <p className="mt-0.5 text-[11px] text-emerald-900/60 dark:text-emerald-300/65">
+                          {user.email}
+                        </p>
+                      </td>
+                      <td className="px-4 py-3.5">{user.phone || '—'}</td>
+                      <td className="px-4 py-3.5">
+                        <span className="inline-flex items-center gap-1.5">
+                          {user.isAdministrator && (
+                            <ShieldCheck className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-300" />
+                          )}
+                          {user.role}
+                        </span>
+                      </td>
+                      <td
+                        className="max-w-56 truncate px-4 py-3.5"
+                        title={user.affiliation}
+                      >
+                        <span className="inline-flex items-center gap-1.5">
+                          <Building2 className="h-3.5 w-3.5 shrink-0 text-emerald-800/45 dark:text-emerald-200/45" />
+                          <span className="truncate">
+                            {user.affiliation || '—'}
+                          </span>
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5">
+                        <div className="flex flex-col items-start gap-1">
+                          <span
+                            className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-semibold ${
+                              user.status === 'Blocked'
+                                ? user.block?.expiresAt
+                                  ? 'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-200'
+                                  : 'border-red-300 bg-red-100 text-red-800 dark:border-red-800 dark:bg-red-950/60 dark:text-red-200'
+                                : statusStyle(user.status)
+                            }`}
                           >
-                            <Trash2 className="h-3.5 w-3.5" />
-                            Delete
-                          </button>
+                            {user.status === 'Blocked'
+                              ? user.block?.expiresAt
+                                ? 'Temporarily Blocked'
+                                : 'Permanently Blocked'
+                              : user.status}
+                          </span>
+                          {user.block && !user.block.endedAt && (
+                            <span className="whitespace-nowrap text-[10px] text-slate-500 dark:text-slate-400">
+                              {user.block.expiresAt
+                                ? `Until ${formatBlockExpiry(user.block.expiresAt)}`
+                                : 'No expiry'}
+                            </span>
+                          )}
                         </div>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td className="px-4 py-3.5 text-emerald-900/65 dark:text-emerald-300/70">
+                        {formatDate(user.registeredAt)}
+                      </td>
+                      <td className="px-4 py-3.5 text-right">
+                        {!manageable ? (
+                          <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-100 px-2.5 py-1.5 text-[11px] font-medium text-emerald-800/65 dark:border-emerald-800/60 dark:text-emerald-200/65">
+                            <ShieldCheck className="h-3.5 w-3.5" />
+                            Protected
+                          </span>
+                        ) : (
+                          <div className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                            {user.status === 'Pending Approval' && (
+                              <>
+                                <button
+                                  type="button"
+                                  disabled={rowBusy}
+                                  onClick={() =>
+                                    void runUserAction(user.id, () =>
+                                      onUpdateRegistrationStatus(user.id, 'Approved')
+                                    )
+                                  }
+                                  className="inline-flex items-center gap-1 rounded-lg bg-emerald-700 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-emerald-600 disabled:opacity-60"
+                                >
+                                  <Check className="h-3.5 w-3.5" />
+                                  Approve
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={rowBusy}
+                                  onClick={() =>
+                                    void runUserAction(user.id, () =>
+                                      onUpdateRegistrationStatus(user.id, 'Rejected')
+                                    )
+                                  }
+                                  className="inline-flex items-center gap-1 rounded-lg border border-red-200 px-2.5 py-1.5 text-[11px] font-semibold text-red-700 hover:bg-red-50 disabled:opacity-60 dark:border-red-800/70 dark:text-red-300"
+                                >
+                                  <X className="h-3.5 w-3.5" />
+                                  Reject
+                                </button>
+                              </>
+                            )}
+                            {user.status === 'Rejected' && (
+                              <>
+                                <button
+                                  type="button"
+                                  disabled={rowBusy}
+                                  onClick={() =>
+                                    void runUserAction(user.id, () =>
+                                      onUpdateRegistrationStatus(user.id, 'Approved')
+                                    )
+                                  }
+                                  className="inline-flex items-center gap-1 rounded-lg bg-emerald-700 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-emerald-600 disabled:opacity-60"
+                                >
+                                  <Check className="h-3.5 w-3.5" />
+                                  Re-approve
+                                </button>
+                                {isSupabaseConfigured &&
+                                  currentUser.role === 'Super Admin' &&
+                                  onTrashRejectedUser && (
+                                    <button
+                                      type="button"
+                                      disabled={rowBusy}
+                                      onClick={() =>
+                                        void runUserAction(user.id, async () => {
+                                          const err = await onTrashRejectedUser(
+                                            user.id
+                                          );
+                                          if (err) onNotify?.(err);
+                                        })
+                                      }
+                                      className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60 dark:border-slate-700 dark:text-slate-200"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                      Trash
+                                    </button>
+                                  )}
+                              </>
+                            )}
+                            {user.accountStatus === 'Active' &&
+                              user.status !== 'Blocked' && (
+                                <button
+                                  type="button"
+                                  disabled={rowBusy}
+                                  onClick={() =>
+                                    void runUserAction(user.id, () =>
+                                      onSetProfileStatus(user.id, 'Suspended')
+                                    )
+                                  }
+                                  className="inline-flex items-center gap-1 rounded-lg border border-orange-200 px-2.5 py-1.5 text-[11px] font-semibold text-orange-800 hover:bg-orange-50 disabled:opacity-60 dark:border-orange-800/70 dark:text-orange-300 dark:hover:bg-orange-950/40"
+                                >
+                                  <PauseCircle className="h-3.5 w-3.5" />
+                                  Suspend
+                                </button>
+                              )}
+                            {user.accountStatus === 'Suspended' &&
+                              user.status !== 'Blocked' && (
+                                <button
+                                  type="button"
+                                  disabled={rowBusy}
+                                  onClick={() =>
+                                    void runUserAction(user.id, () =>
+                                      onSetProfileStatus(user.id, 'Active')
+                                    )
+                                  }
+                                  className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-50 disabled:opacity-60 dark:border-emerald-800/70 dark:text-emerald-300 dark:hover:bg-emerald-950/40"
+                                >
+                                  <PlayCircle className="h-3.5 w-3.5" />
+                                  Reactivate
+                                </button>
+                              )}
+                            {user.status === 'Blocked' && user.block ? (
+                              <button
+                                type="button"
+                                disabled={rowBusy}
+                                onClick={() =>
+                                  void runUserAction(user.id, () =>
+                                    onUnblockUser(user.block!.id)
+                                  )
+                                }
+                                aria-label={`Unblock ${user.fullName}`}
+                                className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-800 transition-colors hover:bg-emerald-50 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 dark:border-emerald-800/70 dark:text-emerald-300 dark:hover:bg-emerald-950/50"
+                              >
+                                <CheckCircle2 className="h-3.5 w-3.5" />
+                                Unblock
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled={rowBusy}
+                                onClick={() => {
+                                  setUserToBlock(user);
+                                  setBlockDuration('1h');
+                                  setBlockReason('Policy Violation');
+                                  setAdminNote('');
+                                  setCustomExpiry('');
+                                }}
+                                aria-label={`Block user ${user.fullName}`}
+                                className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 px-2.5 py-1.5 text-[11px] font-semibold text-amber-800 transition-colors hover:bg-amber-50 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-600 dark:border-amber-800/70 dark:text-amber-300 dark:hover:bg-amber-950/40"
+                              >
+                                <Ban className="h-3.5 w-3.5" />
+                                Block User
+                              </button>
+                            )}
+                            {!isSupabaseConfigured && !user.isAdministrator && (
+                              <button
+                                type="button"
+                                onClick={() => setUserToDelete(user)}
+                                aria-label={`Delete ${user.fullName}`}
+                                className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 px-2.5 py-1.5 text-[11px] font-semibold text-red-700 transition-colors hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 dark:border-red-800/70 dark:text-red-300 dark:hover:bg-red-950/40"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                                Delete
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -572,8 +1073,12 @@ export function UsersPage({
       >
         {userToDelete && (
           <p className="text-sm leading-relaxed text-emerald-900/75 dark:text-emerald-200/80">
-            Delete <strong className="text-emerald-950 dark:text-emerald-50">{userToDelete.fullName}</strong>{' '}
-            ({userToDelete.email})? Their account and any associated registration request will be removed.
+            Delete{' '}
+            <strong className="text-emerald-950 dark:text-emerald-50">
+              {userToDelete.fullName}
+            </strong>{' '}
+            ({userToDelete.email})? Their account and any associated registration
+            request will be removed.
           </p>
         )}
       </Modal>
@@ -596,7 +1101,7 @@ export function UsersPage({
             </button>
             <button
               type="button"
-              onClick={confirmBlock}
+              onClick={() => void confirmBlock()}
               disabled={
                 blockDuration === 'custom' &&
                 (!customExpiry || Date.parse(customExpiry) <= Date.now())
@@ -615,14 +1120,26 @@ export function UsersPage({
           <div className="space-y-4">
             <div className="grid gap-3 rounded-xl border border-emerald-200 bg-emerald-50/60 p-4 text-xs dark:border-emerald-800/60 dark:bg-emerald-950/20 sm:grid-cols-2">
               <div>
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-800/60 dark:text-emerald-300/60">User</p>
-                <p className="mt-1 font-semibold text-emerald-950 dark:text-emerald-50">{userToBlock.fullName}</p>
-                <p className="mt-0.5 break-all text-emerald-900/65 dark:text-emerald-200/65">{userToBlock.email}</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-800/60 dark:text-emerald-300/60">
+                  User
+                </p>
+                <p className="mt-1 font-semibold text-emerald-950 dark:text-emerald-50">
+                  {userToBlock.fullName}
+                </p>
+                <p className="mt-0.5 break-all text-emerald-900/65 dark:text-emerald-200/65">
+                  {userToBlock.email}
+                </p>
               </div>
               <div>
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-800/60 dark:text-emerald-300/60">Role & current status</p>
-                <p className="mt-1 font-semibold text-emerald-950 dark:text-emerald-50">{userToBlock.role}</p>
-                <p className="mt-0.5 text-emerald-900/65 dark:text-emerald-200/65">{userToBlock.status}</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-800/60 dark:text-emerald-300/60">
+                  Role &amp; current status
+                </p>
+                <p className="mt-1 font-semibold text-emerald-950 dark:text-emerald-50">
+                  {userToBlock.role}
+                </p>
+                <p className="mt-0.5 text-emerald-900/65 dark:text-emerald-200/65">
+                  {userToBlock.status}
+                </p>
               </div>
             </div>
 
@@ -631,7 +1148,9 @@ export function UsersPage({
                 Block duration
                 <select
                   value={blockDuration}
-                  onChange={(event) => setBlockDuration(event.target.value as BlockDuration)}
+                  onChange={(event) =>
+                    setBlockDuration(event.target.value as BlockDuration)
+                  }
                   className="mt-1.5 min-h-10 w-full rounded-lg border border-emerald-200 bg-white px-3 py-2 text-xs font-normal text-emerald-950 outline-none focus:border-emerald-600 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50"
                 >
                   <option value="permanent">Block Permanently</option>
@@ -643,14 +1162,16 @@ export function UsersPage({
                   <option value="24h">Block for 24 Hours</option>
                   <option value="3d">Block for 3 Days</option>
                   <option value="7d">Block for 7 Days</option>
-                  <option value="custom">Custom date & time</option>
+                  <option value="custom">Custom date &amp; time</option>
                 </select>
               </label>
               <label className="text-xs font-semibold text-emerald-950 dark:text-emerald-50">
                 Block reason
                 <select
                   value={blockReason}
-                  onChange={(event) => setBlockReason(event.target.value as UserBlockReason)}
+                  onChange={(event) =>
+                    setBlockReason(event.target.value as UserBlockReason)
+                  }
                   className="mt-1.5 min-h-10 w-full rounded-lg border border-emerald-200 bg-white px-3 py-2 text-xs font-normal text-emerald-950 outline-none focus:border-emerald-600 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50"
                 >
                   <option>Spam</option>
@@ -677,7 +1198,10 @@ export function UsersPage({
             )}
 
             <label className="block text-xs font-semibold text-emerald-950 dark:text-emerald-50">
-              Admin note <span className="font-normal text-emerald-900/55 dark:text-emerald-300/55">(optional)</span>
+              Admin note{' '}
+              <span className="font-normal text-emerald-900/55 dark:text-emerald-300/55">
+                (optional)
+              </span>
               <textarea
                 rows={3}
                 maxLength={500}
@@ -691,7 +1215,8 @@ export function UsersPage({
             <div className="flex gap-2.5 rounded-lg border border-red-200 bg-red-50 p-3 text-xs leading-relaxed text-red-800 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-200">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
               <p>
-                Blocking immediately ends this user’s current app session and prevents sign-in.{' '}
+                Blocking immediately ends this user’s current app session and
+                prevents sign-in.{' '}
                 {blockDuration === 'permanent'
                   ? 'A permanent block stays in effect until an organizer unblocks the account.'
                   : blockDuration === 'custom'

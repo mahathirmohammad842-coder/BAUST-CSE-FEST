@@ -82,9 +82,6 @@ export function AnnouncementsPage({
     };
     for (const a of announcements) {
       counts[a.status] = (counts[a.status] ?? 0) + 1;
-      if (a.failedCount > 0 && a.status !== 'Failed') {
-        counts.Failed += 0;
-      }
     }
     return counts;
   }, [announcements]);
@@ -498,7 +495,7 @@ export function AnnouncementsPage({
         open={Boolean(deleteTarget)}
         onClose={() => setDeleteTarget(null)}
         title="Delete Announcement"
-        subtitle="Remove this announcement from the local demo workspace?"
+        subtitle="Remove this announcement and its delivery logs from the workspace?"
         dangerHeader
         footer={
           <>

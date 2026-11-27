@@ -4,6 +4,7 @@ import {
   LayoutDashboard,
   Megaphone,
   PenSquare,
+  Server,
   ShieldAlert,
   ShieldCheck,
   Settings,
@@ -22,6 +23,7 @@ export type OrganizerRoute =
   | 'blocked-users'
   | 'users'
   | 'profiles'
+  | 'system-health'
   | 'profile'
   | 'settings';
 
@@ -51,6 +53,7 @@ export function Sidebar({
     label: string;
     icon: typeof LayoutDashboard;
     badge?: number;
+    badgeTitle?: string;
   }[] = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     {
@@ -58,6 +61,10 @@ export function Sidebar({
       label: 'Announcements',
       icon: Megaphone,
       badge: failedDeliveryCount > 0 ? failedDeliveryCount : undefined,
+      badgeTitle:
+        failedDeliveryCount > 0
+          ? `${failedDeliveryCount} failed delivery dispatch${failedDeliveryCount === 1 ? '' : 'es'}`
+          : undefined,
     },
     { id: 'composer', label: 'Create Notice', icon: PenSquare },
     { id: 'analytics', label: 'Analytics', icon: BarChart3 },
@@ -66,15 +73,24 @@ export function Sidebar({
       label: 'User Approvals',
       icon: ShieldCheck,
       badge: pendingRequestCount > 0 ? pendingRequestCount : undefined,
+      badgeTitle:
+        pendingRequestCount > 0
+          ? `${pendingRequestCount} pending registration${pendingRequestCount === 1 ? '' : 's'}`
+          : undefined,
     },
     {
       id: 'blocked-users',
       label: 'Blocked Users',
       icon: ShieldAlert,
       badge: blockedUserCount > 0 ? blockedUserCount : undefined,
+      badgeTitle:
+        blockedUserCount > 0
+          ? `${blockedUserCount} active block${blockedUserCount === 1 ? '' : 's'}`
+          : undefined,
     },
     { id: 'users', label: 'Users', icon: UsersRound },
     { id: 'profiles', label: 'Profile Management', icon: CircleUserRound },
+    { id: 'system-health', label: 'System & Connectivity', icon: Server },
   ];
 
   const handleSelect = (route: OrganizerRoute) => {
@@ -132,7 +148,10 @@ export function Sidebar({
                   <span className="truncate">{item.label}</span>
                 </span>
                 {item.badge !== undefined && (
-                  <span className="rounded bg-red-600 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-white tabular-nums shrink-0">
+                  <span
+                    title={item.badgeTitle}
+                    className="rounded bg-red-600 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-white tabular-nums shrink-0"
+                  >
                     {item.badge}
                   </span>
                 )}

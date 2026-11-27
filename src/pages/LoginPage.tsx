@@ -110,6 +110,7 @@ export function LoginPage({
   const [isSettingNewPassword, setIsSettingNewPassword] =
     useState(isPasswordRecovery);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [rateLimitCooldown, setRateLimitCooldown] = useState(0);
   const [registration, setRegistration] = useState<RegistrationInput>({
     fullName: '',
     email: '',
@@ -118,6 +119,14 @@ export function LoginPage({
     affiliation: '',
     password: '',
   });
+
+  useEffect(() => {
+    if (rateLimitCooldown <= 0) return;
+    const timer = window.setInterval(() => {
+      setRateLimitCooldown((prev) => (prev <= 1 ? 0 : prev - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [rateLimitCooldown]);
 
   useEffect(() => {
     if (!isPasswordRecovery) return;
@@ -154,10 +163,28 @@ export function LoginPage({
 
   const handleRegistrationSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (isSubmitting || rateLimitCooldown > 0) return;
     setErrorMessage(null);
+
+    const trimmedName = registration.fullName.trim();
+    const trimmedEmail = registration.email.trim();
+    const trimmedAffiliation = registration.affiliation.trim();
     const digits = registration.phone.replace(/\D/g, '');
+
+    if (trimmedName.length < 2) {
+      setErrorMessage('Enter your full name (at least 2 characters).');
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+      setErrorMessage('Enter a valid email address.');
+      return;
+    }
     if (digits.length < 8) {
-      setErrorMessage('Enter a valid mobile number.');
+      setErrorMessage('Enter a valid mobile number (at least 8 digits).');
+      return;
+    }
+    if (trimmedAffiliation.length < 2) {
+      setErrorMessage('Enter your department or organization.');
       return;
     }
     if (registration.password.length < 8) {
@@ -176,16 +203,19 @@ export function LoginPage({
     try {
       const error = await onRegister({
         ...registration,
-        fullName: registration.fullName.trim(),
-        email: registration.email.trim(),
+        fullName: trimmedName,
+        email: trimmedEmail,
         phone: registration.phone.trim(),
-        affiliation: registration.affiliation.trim(),
+        affiliation: trimmedAffiliation,
       });
       if (error) {
+        if (/rate.?limit|too many requests|smtp/i.test(error)) {
+          setRateLimitCooldown(60);
+        }
         setErrorMessage(error);
         return;
       }
-      setEmail(registration.email.trim());
+      setEmail(trimmedEmail);
       setPassword('');
       setRegistration((previous) => ({
         ...previous,
@@ -398,8 +428,15 @@ export function LoginPage({
                     noValidate
                   >
                     {errorMessage && (
-                      <div role="alert" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-medium text-red-800 dark:border-red-800/70 dark:bg-red-950/60 dark:text-red-200">
-                        {errorMessage}
+                      <div
+                        role="alert"
+                        className="flex items-start gap-2.5 rounded-xl border border-red-200/90 bg-red-50/90 px-4 py-3 text-xs font-medium leading-relaxed text-red-800 dark:border-red-800/70 dark:bg-red-950/60 dark:text-red-200"
+                      >
+                        <AlertTriangle
+                          className="mt-0.5 h-4 w-4 shrink-0 text-red-600 dark:text-red-400"
+                          aria-hidden="true"
+                        />
+                        <span>{errorMessage}</span>
                       </div>
                     )}
                     <div className="grid gap-4 sm:grid-cols-2">
@@ -499,10 +536,14 @@ export function LoginPage({
                     </div>
                     <button
                       type="submit"
-                      disabled={isSubmitting}
-                      className="inline-flex min-h-[46px] w-full items-center justify-center rounded-xl bg-[#064E3B] px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#053D2E] disabled:cursor-wait disabled:opacity-70 dark:bg-emerald-400 dark:text-[#022017]"
+                      disabled={isSubmitting || rateLimitCooldown > 0}
+                      className="inline-flex min-h-[46px] w-full items-center justify-center rounded-xl bg-[#064E3B] px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#053D2E] disabled:cursor-not-allowed disabled:opacity-70 dark:bg-emerald-400 dark:text-[#022017]"
                     >
-                      {isSubmitting ? 'Submitting request…' : 'Submit for Approval'}
+                      {rateLimitCooldown > 0
+                        ? `Wait ${rateLimitCooldown}s before retrying`
+                        : isSubmitting
+                          ? 'Submitting request…'
+                          : 'Submit for Approval'}
                     </button>
                     <button
                       type="button"
