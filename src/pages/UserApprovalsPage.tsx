@@ -23,7 +23,7 @@ type RequestFilter = 'All' | RegistrationStatus;
 
 interface UserApprovalsPageProps {
   requests: RegistrationRequest[];
-  demoUserCount: number;
+  existingAccountCount: number;
   onUpdateStatus: (
     requestId: string,
     status: 'Approved' | 'Rejected'
@@ -50,7 +50,7 @@ function statusStyle(status: RegistrationStatus) {
 
 export function UserApprovalsPage({
   requests,
-  demoUserCount,
+  existingAccountCount,
   onUpdateStatus,
 }: UserApprovalsPageProps) {
   const [filter, setFilter] = useState<RequestFilter>('All');
@@ -59,16 +59,16 @@ export function UserApprovalsPage({
 
   const counts = useMemo(
     () => ({
-      total: demoUserCount + requests.length,
+      total: existingAccountCount + requests.length,
       pending: requests.filter((request) => request.status === 'Pending Approval')
         .length,
       approved:
-        demoUserCount +
+        existingAccountCount +
         requests.filter((request) => request.status === 'Approved').length,
       rejected: requests.filter((request) => request.status === 'Rejected')
         .length,
     }),
-    [demoUserCount, requests]
+    [existingAccountCount, requests]
   );
   const visibleRequests = useMemo(
     () =>
@@ -114,7 +114,7 @@ export function UserApprovalsPage({
         <StatCard
           label="Total Users"
           value={counts.total.toLocaleString()}
-          sublabel="Demo and registered accounts"
+          sublabel="Existing and registered accounts"
           icon={UserRound}
         />
         <StatCard

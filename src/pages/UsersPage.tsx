@@ -42,8 +42,8 @@ interface ManagedUser {
 }
 
 interface UsersPageProps {
-  organizer: SystemUser;
-  demoUsers: SystemUser[];
+  currentUser: SystemUser;
+  staffUsers: SystemUser[];
   requests: RegistrationRequest[];
   blocks: UserBlockRecord[];
   onBlockUser: (
@@ -70,7 +70,7 @@ function statusStyle(status: UserStatus) {
 }
 
 function formatDate(value?: string) {
-  if (!value) return 'Demo account';
+  if (!value) return '—';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '—';
   return new Intl.DateTimeFormat('en-BD', {
@@ -135,14 +135,15 @@ function getUserFromSystemUser(
     role: user.role,
     affiliation: user.affiliation,
     status: !isAdministrator && block && !block.endedAt ? 'Blocked' : 'Active',
+    registeredAt: user.createdAt,
     block: isAdministrator ? undefined : block,
     isAdministrator,
   };
 }
 
 export function UsersPage({
-  organizer,
-  demoUsers,
+  currentUser,
+  staffUsers,
   requests,
   blocks,
   onBlockUser,
@@ -172,9 +173,9 @@ export function UsersPage({
           .map((block) => [block.userId, block])
       );
       return [
-        getUserFromSystemUser(organizer),
-        ...demoUsers
-          .filter((user) => user.role !== 'Organizer')
+        getUserFromSystemUser(currentUser),
+        ...staffUsers
+          .filter((user) => user.id !== currentUser.id)
           .map((user) =>
             getUserFromSystemUser(user, blocksByUserId.get(user.id))
           ),
@@ -183,7 +184,7 @@ export function UsersPage({
         ),
       ];
     },
-    [blocks, demoUsers, organizer, requests]
+    [blocks, currentUser, requests, staffUsers]
   );
   const filteredUsers = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -269,7 +270,7 @@ export function UsersPage({
         </div>
         <span className="inline-flex w-fit items-center gap-2 rounded-full border border-emerald-200 bg-white px-3 py-1.5 text-xs font-medium text-emerald-800 dark:border-emerald-800/70 dark:bg-[#061D15] dark:text-emerald-200">
           <ShieldCheck className="h-3.5 w-3.5" />
-          Organizer administration
+          {currentUser.role} administration
         </span>
       </header>
 
@@ -280,13 +281,13 @@ export function UsersPage({
         <StatCard
           label="Total Users"
           value={counts.total.toLocaleString()}
-          sublabel="Including the organizer administrator"
+          sublabel="          Including the current administrator"
           icon={UsersRound}
         />
         <StatCard
           label="Active Users"
           value={counts.active.toLocaleString()}
-          sublabel="Eligible demo and approved accounts"
+          sublabel="Active profiles and approved accounts"
           icon={CheckCircle2}
           tone="success"
         />

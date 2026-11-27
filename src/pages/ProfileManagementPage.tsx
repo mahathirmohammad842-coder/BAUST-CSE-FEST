@@ -39,6 +39,8 @@ interface ProfileManagementPageProps {
   ) => void;
   onUnblock: (blockId: string) => void;
   onResetPassword: (userId: string) => Promise<string | null>;
+  canPromoteToAdmin: boolean;
+  onPromoteToAdmin: (userId: string) => Promise<string | null>;
 }
 
 const durationOptions: { value: BlockDuration; label: string; ms: number }[] = [
@@ -77,6 +79,8 @@ export function ProfileManagementPage({
   onBlock,
   onUnblock,
   onResetPassword,
+  canPromoteToAdmin,
+  onPromoteToAdmin,
 }: ProfileManagementPageProps) {
   const [query, setQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState('All');
@@ -86,6 +90,8 @@ export function ProfileManagementPage({
   const [blockNote, setBlockNote] = useState('');
   const [confirmBlock, setConfirmBlock] = useState(false);
   const [resetTarget, setResetTarget] = useState<UserProfile | null>(null);
+  const [promoteTarget, setPromoteTarget] = useState<UserProfile | null>(null);
+  const [promotionError, setPromotionError] = useState<string | null>(null);
   const [temporaryPassword, setTemporaryPassword] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
   const [copyError, setCopyError] = useState<string | null>(null);
@@ -141,6 +147,23 @@ export function ProfileManagementPage({
       await navigator.clipboard.writeText(temporaryPassword);
     } catch {
       setCopyError('Clipboard access failed. Select and copy the password manually.');
+    }
+  };
+
+  const promoteUserToAdmin = async () => {
+    if (!promoteTarget) return;
+    setWorking(true);
+    setPromotionError(null);
+    try {
+      const error = await onPromoteToAdmin(promoteTarget.userId);
+      if (error) {
+        setPromotionError(error);
+        return;
+      }
+      setSelectedProfile({ ...promoteTarget, role: 'Admin', verified: true });
+      setPromoteTarget(null);
+    } finally {
+      setWorking(false);
     }
   };
 
@@ -319,7 +342,70 @@ export function ProfileManagementPage({
                   </button>
                 </>
               )}
+              {canPromoteToAdmin &&
+                selectedProfile.accountStatus === 'Active' &&
+                !['Organizer', 'Admin', 'Super Admin'].includes(
+                  selectedProfile.role
+                ) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPromotionError(null);
+                      setPromoteTarget(selectedProfile);
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 px-3 py-2 text-xs font-semibold text-violet-800 hover:bg-violet-50 dark:border-violet-800/70 dark:text-violet-300 dark:hover:bg-violet-950/30"
+                  >
+                    <ShieldCheck className="h-3.5 w-3.5" />
+                    Promote to Admin
+                  </button>
+                )}
             </div>
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={promoteTarget !== null}
+        onClose={() => {
+          if (working) return;
+          setPromoteTarget(null);
+          setPromotionError(null);
+        }}
+        title="Promote user to Admin?"
+        subtitle="This grants access to staff tools and profile administration."
+        maxWidthClass="max-w-md"
+        footer={
+          <>
+            <button
+              type="button"
+              disabled={working}
+              onClick={() => setPromoteTarget(null)}
+              className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold disabled:opacity-60 dark:border-emerald-800/70"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={working}
+              onClick={() => void promoteUserToAdmin()}
+              className="rounded-lg bg-violet-700 px-3 py-2 text-xs font-semibold text-white hover:bg-violet-800 disabled:opacity-60"
+            >
+              {working ? 'Promoting…' : 'Confirm promotion'}
+            </button>
+          </>
+        }
+      >
+        {promoteTarget && (
+          <div className="space-y-3">
+            <p className="text-sm text-slate-700 dark:text-emerald-100">
+              Promote <strong>{promoteTarget.fullName}</strong> ({promoteTarget.email})
+              from {promoteTarget.role} to Admin?
+            </p>
+            {promotionError && (
+              <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800 dark:border-red-900/70 dark:bg-red-950/40 dark:text-red-200">
+                {promotionError}
+              </p>
+            )}
           </div>
         )}
       </Modal>

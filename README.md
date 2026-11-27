@@ -32,10 +32,10 @@ The client uses Supabase Auth, Postgres, and private Storage. Browser configurat
    ```
    npx supabase login
    npx supabase link --project-ref your-project-ref
-   npx supabase db push
+   npx supabase db push --remote
    ```
    The migration creates profile, announcement, personal notification action, and private attachment-storage tables/policies.
-3. In Supabase Authentication settings, set the production Site URL and add the Vercel URL to the redirect allow list. Configure email confirmation to match your registration policy.
+3. In Supabase Authentication → URL Configuration, set the production Site URL and add the Vercel URL to the redirect allow list. Password recovery redirects to the current site origin, so include production and any preview URLs you use. Ensure the Auth email provider and password-reset email template are enabled; configure SMTP if your project requires custom email delivery. Configure email confirmation to match your registration policy.
 4. Create and confirm `mahathirmohammad842@gmail.com` in Supabase Authentication → Users. Then run [bootstrap-super-admin.sql](./supabase/bootstrap-super-admin.sql) in the Supabase SQL Editor. It creates or promotes that Auth user's profile as Mahathir Mohammad (Super Admin). It does not create an Auth user or set a password. Keep this operation restricted to project owners; the app does not allow public registration as Organizer, Admin, or Super Admin.
 5. Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` as Vercel environment variables for the appropriate deployment environments, then redeploy.
 
@@ -43,15 +43,17 @@ New registrations are created as `Pending Approval`; active staff can approve or
 
 Attachments use the private `notice-attachments` bucket and signed download URLs. The migration limits uploads to 25 MB and the supported document/image types. The browser-side file checks are not malware scanning.
 
-## Organizer user management
+## User and role management
 
-The Organizer-only **Users** page lists demo accounts and registration requests, with search, role/status filters, confirmed deletion, and permanent or timed blocks. Blocks can use preset durations or a custom expiry, include a reason and admin note, and are tracked in the **Blocked Users** audit view with live countdowns, early unblocking, expiry changes, and history. Blocking signs the user out immediately and prevents future sign-in in this frontend prototype. User data and audit events are stored in the current browser's local storage; there is no server-side API or shared database, so this UI is not a production security boundary and does not disable backend/API access.
+The Supabase **Users** directory displays actual profiles rather than demo identities. The **Super Admin** can promote another active, non-administrator account to **Admin** from **Profile Management → View → Promote to Admin**. The target must first have a Supabase Auth account and an active profile; new people can register with an eligible non-admin role and be approved before promotion. The promotion is enforced by a database RPC that only an active Super Admin can call. It does not create Auth users or set passwords; use Supabase Auth invitations for new accounts.
+
+Timed and permanent blocks, block reasons, notes, and history still use browser-local prototype state. They are not a production security boundary and do not disable backend/API access.
 
 ## Role-based profiles
 
-Every signed-in role can open **My Profile** to update their photo, name, phone, department, institution, biography, social links, password, and notification preferences. Profiles include completion progress, account status, verification, activity, and sign-in history. Organizers and Super Admins can manage other profiles, including verification, edits, suspension, blocks, and password resets; Admins can view and verify profiles only. Admin and Super Admin demo accounts are available from the sign-in form and are not public registration roles.
+Every signed-in role can open **My Profile** to update their photo, name, phone, department, institution, biography, social links, password, and notification preferences. Profiles include completion progress, account status, verification, activity, and sign-in history. The sign-in page includes **Forgot password?** for Supabase email recovery; users follow the emailed link to set a new password. Organizers and Super Admins can manage other profiles, including verification, edits, suspension, blocks, and password resets; Admins can view and verify profiles only. Admin and Super Admin are not public registration roles.
 
-The demo Organizer is Sajid Rahman and the demo Super Admin is Mahathir Mohammad. Role permissions follow the assigned role: the Organizer receives event-workspace access, while the Super Admin receives cross-profile administration. Existing browser-stored profile data, credentials, and audit history are migrated with the corresponding account identity.
+Role permissions follow the assigned Supabase profile role: the Organizer receives event-workspace access, while the Super Admin receives cross-profile administration. Supabase login uses Auth accounts only; demo credentials are not accepted.
 
 When Supabase is configured, account passwords are managed by Supabase Auth and profile fields/preferences are synchronized with the RLS-protected profile table. The local demo-only sign-in and PBKDF2 credential behavior is used only when Supabase environment variables are absent.
 

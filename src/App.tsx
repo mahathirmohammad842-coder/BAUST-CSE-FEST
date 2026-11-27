@@ -35,7 +35,6 @@ import type {
   ProfileAccountStatus,
   ProfileAuditAction,
   ProfileAuditEvent,
-  ProfileLoginEvent,
   ProfileState,
   RegistrationInput,
   RegistrationRequest,
@@ -402,6 +401,9 @@ export default function App() {
   const [showLoginPage, setShowLoginPage] = useState(true);
   const [cloudAuthReady, setCloudAuthReady] = useState(!isSupabaseConfigured);
   const [cloudUserId, setCloudUserId] = useState<string | null>(null);
+  const [passwordRecoveryMode, setPasswordRecoveryMode] = useState(false);
+  const passwordRecoveryRef = useRef(false);
+  const authActivationRequestRef = useRef(0);
   const [cloudAnnouncementsReadyFor, setCloudAnnouncementsReadyFor] =
     useState<string | null>(null);
   const [mode, setMode] = useState<WorkspaceMode>('organizer');
@@ -502,8 +504,12 @@ export default function App() {
     userId: string,
     authEmail: string
   ): Promise<string | null> => {
+    const requestId = ++authActivationRequestRef.current;
+    const isLatestRequest = () =>
+      requestId === authActivationRequestRef.current;
     try {
       const currentRow = await fetchCloudProfile(userId);
+      if (!isLatestRequest()) return null;
       if (currentRow.account_status !== 'Active') {
         await supabase?.auth.signOut();
         return currentRow.account_status === 'Pending Approval'
@@ -519,6 +525,7 @@ export default function App() {
       const profileRows = isStaff
         ? await fetchCloudProfiles()
         : [currentRow];
+      if (!isLatestRequest()) return null;
       const currentProfile = mapCloudProfile(currentRow);
       setProfileState((previous) => ({
         ...previous,
@@ -555,6 +562,7 @@ export default function App() {
       }
 
       const remoteAnnouncements = await fetchCloudAnnouncements();
+      if (!isLatestRequest()) return null;
       if (remoteAnnouncements.length === 0 && isStaff) {
         await saveCloudAnnouncements(INITIAL_ANNOUNCEMENTS, userId);
         setAnnouncements(INITIAL_ANNOUNCEMENTS);
@@ -564,6 +572,7 @@ export default function App() {
       setCloudAnnouncementsReadyFor(userId);
 
       const remoteActions = await fetchCloudNotificationActions(userId);
+      if (!isLatestRequest()) return null;
       const userStates: Record<string, PersonalNotificationState> = {};
       const userEvents: NotificationActionEvent[] = [];
       for (const row of remoteActions) {
@@ -597,6 +606,7 @@ export default function App() {
       showToast(`Signed in as ${currentProfile.fullName} (${currentProfile.role}).`);
       return null;
     } catch (error) {
+      if (!isLatestRequest()) return null;
       await supabase?.auth.signOut();
       const message = getSupabaseFailureMessage(error);
       return `Could not load your Supabase account data: ${message}`;
@@ -609,8 +619,28 @@ export default function App() {
       return;
     }
     let active = true;
+    const hashParams = new URLSearchParams(window.location.hash.slice(1));
+    const hasRecoveryCallback =
+      hashParams.get('type') === 'recovery' ||
+      new URLSearchParams(window.location.search).get('type') === 'recovery';
+    if (hasRecoveryCallback) {
+      authActivationRequestRef.current += 1;
+      passwordRecoveryRef.current = true;
+      setPasswordRecoveryMode(true);
+    }
+    const callbackError = hashParams.get('error_description');
+    if (callbackError) showToast(callbackError);
+
     const { data: authListener } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'SIGNED_OUT' && active) {
+      if (event === 'PASSWORD_RECOVERY' && active) {
+        authActivationRequestRef.current += 1;
+        passwordRecoveryRef.current = true;
+        setPasswordRecoveryMode(true);
+        setShowLoginPage(true);
+      } else if (event === 'SIGNED_OUT' && active) {
+        authActivationRequestRef.current += 1;
+        passwordRecoveryRef.current = false;
+        setPasswordRecoveryMode(false);
         setCloudUserId(null);
         setCloudAnnouncementsReadyFor(null);
         setRegisteredUser(null);
@@ -623,11 +653,15 @@ export default function App() {
       if (error) {
         showToast(`Could not restore the Supabase session: ${error.message}`);
       } else if (data.session?.user) {
-        const result = await activateSupabaseUser(
-          data.session.user.id,
-          data.session.user.email ?? ''
-        );
-        if (result) showToast(result);
+        if (passwordRecoveryRef.current) {
+          setShowLoginPage(true);
+        } else {
+          const result = await activateSupabaseUser(
+            data.session.user.id,
+            data.session.user.email ?? ''
+          );
+          if (result) showToast(result);
+        }
       }
       if (active) setCloudAuthReady(true);
     }).catch((error: unknown) => {
@@ -747,6 +781,7 @@ export default function App() {
             role: profile.role,
             affiliation: profile.institution || profile.department,
             badgeCode: profile.userId,
+            createdAt: profile.createdAt,
           }));
       }
       return DEMO_ACCESS_ROLES.map((role) => DEMO_USERS[role]).filter(
@@ -1080,6 +1115,62 @@ export default function App() {
     }
   };
 
+  const handlePromoteUserToAdmin = async (
+    userId: string
+  ): Promise<string | null> => {
+    if (activeRole !== 'Super Admin' || !isSupabaseConfigured || !supabase) {
+      return 'Only a signed-in Super Admin can promote users to Admin.';
+    }
+    const profile = managedProfiles.find((item) => item.userId === userId);
+    if (
+      !profile ||
+      profile.accountStatus !== 'Active' ||
+      ['Organizer', 'Admin', 'Super Admin'].includes(profile.role) ||
+      userId === cloudUserId
+    ) {
+      return 'Only another active non-administrator account can be promoted.';
+    }
+
+    try {
+      const { error } = await supabase.rpc(
+        'super_admin_promote_user_to_admin',
+        { target_user_id: userId }
+      );
+      if (error) {
+        return `Could not promote the user in Supabase: ${error.message}`;
+      }
+    } catch (error) {
+      return `Could not promote the user in Supabase: ${getSupabaseFailureMessage(error)}`;
+    }
+
+    const promotedProfile = { ...profile, role: 'Admin' as const, verified: true };
+    setProfileState((previous) => ({
+      ...previous,
+      profiles: previous.profiles.map((item) =>
+        item.userId === userId ? promotedProfile : item
+      ),
+    }));
+
+    try {
+      const cloudProfiles = await fetchCloudProfiles();
+      setProfileState((previous) => ({
+        ...previous,
+        profiles: cloudProfiles.map(mapCloudProfile),
+      }));
+      setRegistrationRequests(
+        cloudProfilesToRegistrationRequests(cloudProfiles)
+      );
+    } catch (error) {
+      const message = getSupabaseFailureMessage(error);
+      showToast(
+        `User promoted to Admin, but the directory refresh failed: ${message}`
+      );
+      return null;
+    }
+    showToast(`${profile.fullName} was promoted to Admin.`);
+    return null;
+  };
+
   const verifyAccountPassword = async (
     userId: string,
     password: string,
@@ -1247,23 +1338,6 @@ export default function App() {
     }
   };
 
-  const recordProfileLogin = (
-    userId: string,
-    method: ProfileLoginEvent['method']
-  ) => {
-    const event: ProfileLoginEvent = {
-      id: `profile-login-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      userId,
-      occurredAt: new Date().toISOString(),
-      method,
-    };
-    const nextState: ProfileState = {
-      ...profileState,
-      loginHistory: [event, ...profileState.loginHistory].slice(0, 500),
-    };
-    persistProfileState(nextState, 'Sign-in succeeded, but login history could not be saved.');
-  };
-
   const handleSaveOrganizerProfile = (profile: OrganizerProfile) => {
     setOrganizerProfile(profile);
     const storedProfile =
@@ -1290,250 +1364,96 @@ export default function App() {
       newPassword
     );
 
-  const handleQuickDemoAccess = (
-    role: WorkspaceRole,
-    account: SystemUser | null = null,
-    method: ProfileLoginEvent['method'] = 'demo'
-  ) => {
-    const userId = account?.id ?? DEMO_USERS[role].id;
-    const passwordChangeRequired =
-      profileState.passwordResetRequired.includes(userId);
-    setShowLoginPage(false);
-    setMobileMenuOpen(false);
-    const profile = account
-      ? managedProfiles.find((item) => item.userId === account.id)
-      : undefined;
-    setRegisteredUser(
-      account && profile
-        ? { ...account, fullName: profile.fullName, phone: profile.phone }
-        : account
-    );
-    setActiveRole(role);
-    setActiveRoute(passwordChangeRequired ? 'profile' : 'dashboard');
-    if (canAccessOrganizerWorkspace(role)) {
-      setMode('organizer');
-    } else {
-      setLastAttendeeRole(role);
-      setMode('inbox');
+  const handleRequestPasswordReset = async (
+    email: string
+  ): Promise<string | null> => {
+    if (!supabase) {
+      return 'Supabase authentication is not configured. Contact the system administrator.';
     }
-    recordProfileLogin(userId, method);
-    showToast(
-      passwordChangeRequired
-        ? 'Sign-in successful. Please change your temporary password.'
-        : `Signed in as ${profile?.fullName ?? account?.fullName ?? DEMO_USERS[role].fullName} (${role}).`
-    );
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: window.location.origin,
+      });
+      return error?.message ?? null;
+    } catch (error) {
+      return `Could not send the password reset email: ${getSupabaseFailureMessage(error)}`;
+    }
+  };
+
+  const handleCompletePasswordReset = async (
+    password: string
+  ): Promise<string | null> => {
+    if (!supabase) {
+      return 'Supabase authentication is not configured. Contact the system administrator.';
+    }
+    try {
+      const { data, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError) return sessionError.message;
+      if (!data.session || !passwordRecoveryRef.current) {
+        return 'This password reset link is invalid or expired. Request a new link and try again.';
+      }
+      const { error } = await supabase.auth.updateUser({ password });
+      if (error) return error.message;
+
+      passwordRecoveryRef.current = false;
+      setPasswordRecoveryMode(false);
+      const { error: signOutError } = await supabase.auth.signOut();
+      if (signOutError) {
+        showToast(
+          'Password updated. Sign out manually before signing in with the new password.'
+        );
+      } else {
+        showToast('Password updated. Sign in with your new password.');
+      }
+      return null;
+    } catch (error) {
+      return `Could not update the password: ${getSupabaseFailureMessage(error)}`;
+    }
   };
 
   const handleCredentialSignIn = async (
     identifier: string,
     password: string
   ): Promise<string | null> => {
-    if (isSupabaseConfigured && supabase) {
-      if (!identifier.includes('@')) {
-        return 'Sign in with the email address linked to your Supabase account. Phone sign-in is not enabled.';
-      }
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: identifier.trim().toLowerCase(),
-        password,
-      });
-      if (error) return error.message;
-      if (!data.user) return 'Supabase did not return an authenticated user.';
-      return activateSupabaseUser(data.user.id, data.user.email ?? identifier);
+    if (!isSupabaseConfigured || !supabase) {
+      return 'Supabase authentication is not configured. Contact the system administrator.';
     }
-
-    const normalized = identifier.toLowerCase();
-    const digitsOnly = identifier.replace(/\D/g, '');
-    const organizerPhone = organizerProfile.phone.replace(/\D/g, '');
-    const matchesOrganizer =
-      organizerProfile.email.toLowerCase() === normalized ||
-      (digitsOnly.length >= 8 && organizerPhone === digitsOnly);
-
-    if (matchesOrganizer) {
-      const organizerProfileRecord = managedProfiles.find(
-        (profile) => profile.userId === DEMO_USERS.Organizer.id
-      );
-      if (organizerProfileRecord?.accountStatus === 'Suspended') {
-        return 'This organizer account is suspended.';
-      }
-      let passwordMatches: boolean;
-      try {
-        passwordMatches = await verifyAccountPassword(
-          DEMO_USERS.Organizer.id,
-          password
-        );
-      } catch {
-        return 'Secure password verification is unavailable in this browser.';
-      }
-      if (!passwordMatches) {
-        return 'Email/phone or password is incorrect.';
-      }
-      handleQuickDemoAccess(
-        'Organizer',
-        null,
-        profileState.credentials[DEMO_USERS.Organizer.id] ||
-          organizerPassword !== null
-          ? 'password'
-          : 'demo'
-      );
-      return null;
+    if (!identifier.includes('@')) {
+      return 'Sign in with the email address linked to your Supabase account.';
     }
-
-    const matchedProfile = managedProfiles.find((profile) => {
-      if (profile.email.toLowerCase() === normalized) return true;
-      if (digitsOnly.length >= 6) {
-        const userDigits = profile.phone.replace(/\D/g, '');
-        return userDigits.endsWith(digitsOnly) || digitsOnly.endsWith(userDigits);
-      }
-      return false;
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: identifier.trim().toLowerCase(),
+      password,
     });
-
-    const matchedUser = matchedProfile
-      ? availableDemoUsers.find((user) => user.id === matchedProfile.userId)
-      : undefined;
-
-    if (matchedUser && matchedProfile) {
-      const blockMessage = getUserBlockMessage(
-        userBlockState.records,
-        matchedUser.id
-      );
-      if (blockMessage) return blockMessage;
-      if (matchedProfile.accountStatus === 'Suspended') {
-        return 'This account is suspended. Contact an organizer for assistance.';
-      }
-      let passwordMatches: boolean;
-      try {
-        passwordMatches = await verifyAccountPassword(matchedUser.id, password);
-      } catch {
-        return 'Secure password verification is unavailable in this browser.';
-      }
-      if (!passwordMatches) return 'Email/phone or password is incorrect.';
-      handleQuickDemoAccess(
-        matchedUser.role,
-        null,
-        profileState.credentials[matchedUser.id] ? 'password' : 'demo'
-      );
-      return null;
-    }
-
-    const registration = registrationRequests.find((request) => {
-      const profile = managedProfiles.find((item) => item.userId === request.id);
-      if ((profile?.email ?? request.email).toLowerCase() === normalized) return true;
-      const phoneDigits = (profile?.phone ?? request.phone).replace(/\D/g, '');
-      return digitsOnly.length >= 8 && phoneDigits === digitsOnly;
-    });
-    if (!registration) return 'Email/phone or password is incorrect.';
-    const blockMessage = getUserBlockMessage(
-      userBlockState.records,
-      registration.id
-    );
-    if (blockMessage) return blockMessage;
-    if (registration.status === 'Pending Approval') {
-      return 'Your registration is awaiting organizer approval. You can sign in after your request is approved.';
-    }
-    if (registration.status === 'Rejected') {
-      return 'This registration request was not approved. Please contact the organizer for assistance.';
-    }
-    const registrationProfile = managedProfiles.find(
-      (profile) => profile.userId === registration.id
-    );
-    if (registrationProfile?.accountStatus === 'Suspended') {
-      return 'This account is suspended. Contact an organizer for assistance.';
-    }
-
-    try {
-      const passwordMatches = await verifyAccountPassword(
-        registration.id,
-        password,
-        registration
-      );
-      if (!passwordMatches) return 'Email/phone or password is incorrect.';
-    } catch {
-      return 'Secure password verification is unavailable in this browser.';
-    }
-
-    const account: SystemUser = {
-      id: registration.id,
-      fullName: registration.fullName,
-      email: registration.email,
-      phone: registration.phone,
-      role: registration.role,
-      affiliation: registration.affiliation,
-      badgeCode: registration.id,
-    };
-    handleQuickDemoAccess(registration.role, account, 'password');
-    showToast('Your account has been approved. You can now sign in.');
-    return null;
+    if (error) return error.message;
+    if (!data.user) return 'Supabase did not return an authenticated user.';
+    passwordRecoveryRef.current = false;
+    setPasswordRecoveryMode(false);
+    return activateSupabaseUser(data.user.id, data.user.email ?? identifier);
   };
 
   const handleRegisterUser = async (
     input: RegistrationInput
   ): Promise<string | null> => {
-    if (isSupabaseConfigured && supabase) {
-      const { error } = await supabase.auth.signUp({
-        email: input.email.trim().toLowerCase(),
-        password: input.password,
-        options: {
-          data: {
-            full_name: input.fullName.trim(),
-            phone: input.phone.trim(),
-            requested_role: input.role,
-            institution: input.affiliation.trim(),
-          },
+    if (!isSupabaseConfigured || !supabase) {
+      return 'Supabase authentication is not configured. Contact the system administrator.';
+    }
+    const { error } = await supabase.auth.signUp({
+      email: input.email.trim().toLowerCase(),
+      password: input.password,
+      options: {
+        data: {
+          full_name: input.fullName.trim(),
+          phone: input.phone.trim(),
+          requested_role: input.role,
+          institution: input.affiliation.trim(),
         },
-      });
-      if (error) return error.message;
-      showToast(
-        'Registration submitted to Supabase. An organizer must approve your account before sign-in.'
-      );
-      return null;
-    }
-
-    const normalizedEmail = input.email.toLowerCase();
-    const phoneDigits = input.phone.replace(/\D/g, '');
-    const emailExists =
-      Object.values(DEMO_USERS).some(
-        (user) => user.email.toLowerCase() === normalizedEmail
-      ) ||
-      registrationRequests.some(
-        (request) => request.email.toLowerCase() === normalizedEmail
-      );
-    const phoneExists =
-      Object.values(DEMO_USERS).some(
-        (user) => user.phone.replace(/\D/g, '') === phoneDigits
-      ) ||
-      registrationRequests.some(
-        (request) => request.phone.replace(/\D/g, '') === phoneDigits
-      );
-    if (emailExists) return 'An account with this email address already exists.';
-    if (phoneExists) return 'An account with this mobile number already exists.';
-
-    let credential: { salt: string; hash: string };
-    try {
-      credential = await hashRegistrationPassword(input.password);
-    } catch {
-      return 'Secure password setup is unavailable in this browser. Please use a modern browser and try again.';
-    }
-
-    const request: RegistrationRequest = {
-      id: `registration-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      fullName: input.fullName,
-      email: input.email,
-      phone: input.phone,
-      role: input.role,
-      affiliation: input.affiliation,
-      registeredAt: new Date().toISOString(),
-      status: 'Pending Approval',
-      passwordSalt: credential.salt,
-      passwordHash: credential.hash,
-    };
-    const updatedRequests = [...registrationRequests, request];
-    try {
-      saveRegistrationRequests(updatedRequests);
-    } catch {
-      return 'The registration could not be saved in this browser. Check storage availability and try again.';
-    }
-    setRegistrationRequests(updatedRequests);
-    showToast('New user registration request received.');
+      },
+    });
+    if (error) return error.message;
+    showToast(
+      'Registration submitted to Supabase. An organizer must approve your account before sign-in.'
+    );
     return null;
   };
 
@@ -1877,6 +1797,35 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (isSupabaseConfigured) {
+      if (!cloudUserId) return;
+      const currentProfile = managedProfiles.find(
+        (profile) => profile.userId === cloudUserId
+      );
+      if (currentProfile?.accountStatus === 'Active') return;
+
+      authActivationRequestRef.current += 1;
+      void supabase?.auth.signOut().then(({ error }) => {
+        if (error) {
+          showToast(`Could not end the unavailable account session: ${error.message}`);
+        }
+      });
+      setCloudUserId(null);
+      setCloudAnnouncementsReadyFor(null);
+      setShowLoginPage(true);
+      setRegisteredUser(null);
+      setActiveRole('Organizer');
+      setMode('organizer');
+      setActiveRoute('dashboard');
+      setMobileMenuOpen(false);
+      showToast(
+        currentProfile?.accountStatus === 'Suspended'
+          ? 'Your account has been suspended. You have been signed out.'
+          : 'Your account profile is unavailable. You have been signed out.'
+      );
+      return;
+    }
+
     const userId =
       activeRole === 'Organizer'
         ? DEMO_USERS.Organizer.id
@@ -1912,6 +1861,7 @@ export default function App() {
     );
   }, [
     activeRole,
+    cloudUserId,
     deletedDemoUserIds,
     managedProfiles,
     registeredUser,
@@ -2589,9 +2539,12 @@ export default function App() {
     return (
       <>
         <LoginPage
-          demoUsers={isSupabaseConfigured ? [] : availableDemoUsers}
+          canRegister={isSupabaseConfigured}
+          isPasswordRecovery={passwordRecoveryMode}
           onSignIn={handleCredentialSignIn}
           onRegister={handleRegisterUser}
+          onRequestPasswordReset={handleRequestPasswordReset}
+          onCompletePasswordReset={handleCompletePasswordReset}
         />
         {toastBanner}
       </>
@@ -2823,7 +2776,7 @@ export default function App() {
                     canAccessOrganizerWorkspace(activeRole) && (
                       <UserApprovalsPage
                         requests={registrationRequests}
-                        demoUserCount={availableDemoUsers.length}
+                        existingAccountCount={availableDemoUsers.length}
                         onUpdateStatus={handleUpdateRegistrationStatus}
                       />
                     )}
@@ -2831,13 +2784,18 @@ export default function App() {
                   {activeRoute === 'users' &&
                     canAccessOrganizerWorkspace(activeRole) && (
                     <UsersPage
-                      organizer={{
-                        ...DEMO_USERS.Organizer,
-                        fullName: organizerProfile.fullName,
-                        email: organizerProfile.email,
-                        phone: organizerProfile.phone,
+                      currentUser={{
+                        id: activeProfile.userId,
+                        fullName: activeProfile.fullName,
+                        email: activeProfile.email,
+                        phone: activeProfile.phone,
+                        role: activeProfile.role,
+                        affiliation:
+                          activeProfile.institution || activeProfile.department,
+                        badgeCode: activeProfile.userId,
+                        createdAt: activeProfile.createdAt,
                       }}
-                      demoUsers={availableDemoUsers}
+                      staffUsers={availableDemoUsers}
                       requests={registrationRequests}
                       blocks={userBlockState.records}
                       onBlockUser={handleBlockUser}
@@ -2871,6 +2829,10 @@ export default function App() {
                       onBlock={handleBlockUser}
                       onUnblock={handleUnblockUser}
                       onResetPassword={handleResetUserPassword}
+                      canPromoteToAdmin={
+                        isSupabaseConfigured && activeRole === 'Super Admin'
+                      }
+                      onPromoteToAdmin={handlePromoteUserToAdmin}
                     />
                   )}
 
@@ -2888,6 +2850,10 @@ export default function App() {
                   onBlock={handleBlockUser}
                   onUnblock={handleUnblockUser}
                   onResetPassword={handleResetUserPassword}
+                  canPromoteToAdmin={
+                    isSupabaseConfigured && activeRole === 'Super Admin'
+                  }
+                  onPromoteToAdmin={handlePromoteUserToAdmin}
                 />
               ) : (
                 <UserInboxPage

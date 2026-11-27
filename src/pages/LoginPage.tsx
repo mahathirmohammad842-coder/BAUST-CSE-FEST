@@ -1,4 +1,4 @@
-import { type FormEvent, useState } from 'react';
+import { type FormEvent, useEffect, useState } from 'react';
 import {
   AlertTriangle,
   ArrowRight,
@@ -10,12 +10,15 @@ import {
   Phone,
   UserRound,
 } from 'lucide-react';
-import type { RegistrationInput, RegistrableRole, SystemUser } from '../types';
+import type { RegistrationInput, RegistrableRole } from '../types';
 
 interface LoginPageProps {
-  demoUsers: SystemUser[];
+  canRegister: boolean;
+  isPasswordRecovery: boolean;
   onSignIn: (identifier: string, password: string) => Promise<string | null>;
   onRegister: (input: RegistrationInput) => Promise<string | null>;
+  onRequestPasswordReset: (email: string) => Promise<string | null>;
+  onCompletePasswordReset: (password: string) => Promise<string | null>;
 }
 
 const PORTAL_HIGHLIGHTS = [
@@ -86,14 +89,26 @@ const REGISTRATION_ROLES: RegistrableRole[] = [
   'Mentor',
 ];
 
-export function LoginPage({ demoUsers, onSignIn, onRegister }: LoginPageProps) {
+export function LoginPage({
+  canRegister,
+  isPasswordRecovery,
+  onSignIn,
+  onRegister,
+  onRequestPasswordReset,
+  onCompletePasswordReset,
+}: LoginPageProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(true);
   const [showPassword, setShowPassword] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isRegistering, setIsRegistering] = useState(false);
+  const [isForgotPassword, setIsForgotPassword] = useState(false);
+  const [isSettingNewPassword, setIsSettingNewPassword] =
+    useState(isPasswordRecovery);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [registration, setRegistration] = useState<RegistrationInput>({
     fullName: '',
@@ -104,16 +119,22 @@ export function LoginPage({ demoUsers, onSignIn, onRegister }: LoginPageProps) {
     password: '',
   });
 
+  useEffect(() => {
+    if (!isPasswordRecovery) return;
+    setIsSettingNewPassword(true);
+    setIsForgotPassword(false);
+    setIsRegistering(false);
+    setErrorMessage(null);
+    setSuccessMessage(null);
+  }, [isPasswordRecovery]);
+
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     const trimmedEmail = email.trim();
     const isValidEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail);
-    const phoneDigits = trimmedEmail.replace(/\D/g, '');
-    const isValidPhone =
-      /^[+]?[\d\s()-]+$/.test(trimmedEmail) && phoneDigits.length >= 8;
 
-    if (!trimmedEmail || (!isValidEmail && !isValidPhone)) {
-      setErrorMessage('Enter a valid email address or phone number.');
+    if (!trimmedEmail || !isValidEmail) {
+      setErrorMessage('Enter a valid email address.');
       return;
     }
     if (!password.trim()) {
@@ -174,6 +195,76 @@ export function LoginPage({ demoUsers, onSignIn, onRegister }: LoginPageProps) {
         'Your registration request has been submitted and is awaiting organizer approval.'
       );
       setIsRegistering(false);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handlePasswordResetRequest = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const trimmedEmail = email.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+      setErrorMessage('Enter the email address linked to your account.');
+      return;
+    }
+
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    setIsSubmitting(true);
+    try {
+      const error = await onRequestPasswordReset(trimmedEmail);
+      if (error) {
+        setErrorMessage(error);
+        return;
+      }
+      setSuccessMessage(
+        'If an account exists for this email, a password reset link has been sent.'
+      );
+      setIsForgotPassword(false);
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : 'Could not send the password reset email. Try again.'
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handlePasswordRecoverySubmit = async (
+    event: FormEvent<HTMLFormElement>
+  ) => {
+    event.preventDefault();
+    if (newPassword.length < 8) {
+      setErrorMessage('New password must be at least 8 characters.');
+      return;
+    }
+    if (newPassword !== confirmNewPassword) {
+      setErrorMessage('Passwords do not match.');
+      return;
+    }
+
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    setIsSubmitting(true);
+    try {
+      const error = await onCompletePasswordReset(newPassword);
+      if (error) {
+        setErrorMessage(error);
+        return;
+      }
+      setPassword('');
+      setNewPassword('');
+      setConfirmNewPassword('');
+      setIsSettingNewPassword(false);
+      setSuccessMessage('Password updated. Sign in with your new password.');
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : 'Could not update your password. Try again.'
+      );
     } finally {
       setIsSubmitting(false);
     }
@@ -269,16 +360,29 @@ export function LoginPage({ demoUsers, onSignIn, onRegister }: LoginPageProps) {
               <div className="mx-auto mt-10 w-full max-w-[380px] sm:mt-12">
                 <header className="space-y-2">
                   <h2 className="text-[1.5rem] sm:text-[1.75rem] font-semibold tracking-[-0.025em] text-slate-950 dark:text-emerald-50">
-                    {isRegistering ? 'Create your account' : 'Sign in'}
+                    {isRegistering
+                      ? 'Create your account'
+                      : isSettingNewPassword
+                        ? 'Set a new password'
+                        : isForgotPassword
+                          ? 'Reset your password'
+                          : 'Sign in'}
                   </h2>
                   <p className="text-sm leading-relaxed text-slate-600 dark:text-emerald-200/80">
                     {isRegistering
                       ? 'Submit your details for organizer review. Access is enabled after approval.'
-                      : 'Enter your credentials to access the fest portal.'}
+                      : isSettingNewPassword
+                        ? 'Choose a new password for your account.'
+                        : isForgotPassword
+                          ? 'We will email you a secure password reset link.'
+                          : 'Enter your credentials to access the fest portal.'}
                   </p>
                 </header>
 
-                {successMessage && !isRegistering && (
+                {successMessage &&
+                  !isRegistering &&
+                  !isSettingNewPassword &&
+                  !isForgotPassword && (
                   <div
                     role="status"
                     className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs font-medium leading-relaxed text-emerald-900 dark:border-emerald-800/70 dark:bg-emerald-950/50 dark:text-emerald-200"
@@ -411,6 +515,97 @@ export function LoginPage({ demoUsers, onSignIn, onRegister }: LoginPageProps) {
                       Back to Sign In
                     </button>
                   </form>
+                ) : isSettingNewPassword ? (
+                  <form
+                    onSubmit={handlePasswordRecoverySubmit}
+                    className="form-enter mt-6 space-y-4"
+                    noValidate
+                  >
+                    {errorMessage && (
+                      <div role="alert" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-medium text-red-800 dark:border-red-800/70 dark:bg-red-950/60 dark:text-red-200">
+                        {errorMessage}
+                      </div>
+                    )}
+                    <label className="block text-[13px] font-medium text-slate-800 dark:text-emerald-100">
+                      New password
+                      <input
+                        required
+                        type="password"
+                        autoComplete="new-password"
+                        minLength={8}
+                        value={newPassword}
+                        onChange={(event) => setNewPassword(event.target.value)}
+                        className="mt-1.5 min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm outline-none focus:border-emerald-700 focus:ring-[3px] focus:ring-emerald-600/15 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50"
+                      />
+                    </label>
+                    <label className="block text-[13px] font-medium text-slate-800 dark:text-emerald-100">
+                      Confirm new password
+                      <input
+                        required
+                        type="password"
+                        autoComplete="new-password"
+                        minLength={8}
+                        value={confirmNewPassword}
+                        onChange={(event) =>
+                          setConfirmNewPassword(event.target.value)
+                        }
+                        className="mt-1.5 min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm outline-none focus:border-emerald-700 focus:ring-[3px] focus:ring-emerald-600/15 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50"
+                      />
+                    </label>
+                    <button
+                      type="submit"
+                      disabled={isSubmitting}
+                      className="inline-flex min-h-[46px] w-full items-center justify-center rounded-xl bg-[#064E3B] px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#053D2E] disabled:cursor-wait disabled:opacity-70 dark:bg-emerald-400 dark:text-[#022017]"
+                    >
+                      {isSubmitting ? 'Updating password…' : 'Update password'}
+                    </button>
+                  </form>
+                ) : isForgotPassword ? (
+                  <form
+                    onSubmit={handlePasswordResetRequest}
+                    className="form-enter mt-6 space-y-4"
+                    noValidate
+                  >
+                    {errorMessage && (
+                      <div role="alert" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-medium text-red-800 dark:border-red-800/70 dark:bg-red-950/60 dark:text-red-200">
+                        {errorMessage}
+                      </div>
+                    )}
+                    <label
+                      htmlFor="reset-email"
+                      className="block text-[13px] font-medium text-slate-800 dark:text-emerald-100"
+                    >
+                      Email address
+                      <input
+                        id="reset-email"
+                        required
+                        type="email"
+                        autoComplete="email"
+                        value={email}
+                        onChange={(event) => setEmail(event.target.value)}
+                        placeholder="Enter your account email"
+                        className="mt-1.5 min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm outline-none focus:border-emerald-700 focus:ring-[3px] focus:ring-emerald-600/15 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50"
+                      />
+                    </label>
+                    <button
+                      type="submit"
+                      disabled={isSubmitting}
+                      className="inline-flex min-h-[46px] w-full items-center justify-center rounded-xl bg-[#064E3B] px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#053D2E] disabled:cursor-wait disabled:opacity-70 dark:bg-emerald-400 dark:text-[#022017]"
+                    >
+                      {isSubmitting ? 'Sending link…' : 'Send reset link'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsForgotPassword(false);
+                        setErrorMessage(null);
+                        setSuccessMessage(null);
+                      }}
+                      className="w-full py-1 text-xs font-semibold text-emerald-800 hover:text-emerald-950 dark:text-emerald-300 dark:hover:text-emerald-100"
+                    >
+                      Back to Sign In
+                    </button>
+                  </form>
                 ) : (
                 <form onSubmit={handleSubmit} className="form-enter mt-8 space-y-5" noValidate>
                   {errorMessage && (
@@ -432,7 +627,7 @@ export function LoginPage({ demoUsers, onSignIn, onRegister }: LoginPageProps) {
                         htmlFor="login-email"
                         className="block text-[13px] font-medium text-slate-800 dark:text-emerald-100"
                       >
-                        {demoUsers.length > 0 ? 'Email or phone' : 'Email address'}
+                        Email address
                       </label>
                       <div className="relative mt-2">
                         <Mail
@@ -441,18 +636,14 @@ export function LoginPage({ demoUsers, onSignIn, onRegister }: LoginPageProps) {
                         />
                         <input
                           id="login-email"
-                          type="text"
-                          autoComplete="username"
+                          type="email"
+                          autoComplete="email"
                           value={email}
                           onChange={(e) => {
                             setEmail(e.target.value);
                             if (errorMessage) setErrorMessage(null);
                           }}
-                          placeholder={
-                            demoUsers.length > 0
-                              ? 'Enter your email or phone'
-                              : 'Enter your email address'
-                          }
+                          placeholder="Enter your email address"
                           className="min-h-[44px] w-full rounded-xl border border-slate-200/90 bg-white/90 py-2.5 pl-10 pr-4 text-sm text-slate-950 placeholder:text-slate-400 shadow-[0_1px_2px_rgba(15,23,42,0.03)] transition-all duration-150 hover:border-slate-300 focus:border-emerald-700 focus:bg-white focus:outline-none focus:ring-[3px] focus:ring-emerald-600/15 dark:border-emerald-800/70 dark:bg-[#041811]/90 dark:text-emerald-50 dark:placeholder:text-emerald-300/40 dark:hover:border-emerald-700 dark:focus:border-emerald-400 dark:focus:bg-[#041811] dark:focus:ring-emerald-400/20"
                         />
                       </div>
@@ -500,7 +691,7 @@ export function LoginPage({ demoUsers, onSignIn, onRegister }: LoginPageProps) {
                     </div>
                   </div>
 
-                  <div className="pt-0.5">
+                  <div className="flex items-center justify-between gap-3 pt-0.5">
                     <label className="inline-flex min-h-[36px] items-center gap-2.5 cursor-pointer select-none">
                       <span className="relative flex h-4 w-4 items-center justify-center">
                         <input
@@ -522,6 +713,17 @@ export function LoginPage({ demoUsers, onSignIn, onRegister }: LoginPageProps) {
                         Remember me
                       </span>
                     </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsForgotPassword(true);
+                        setErrorMessage(null);
+                        setSuccessMessage(null);
+                      }}
+                      className="text-xs font-semibold text-emerald-800 hover:underline dark:text-emerald-300"
+                    >
+                      Forgot password?
+                    </button>
                   </div>
 
                   <button
@@ -535,44 +737,13 @@ export function LoginPage({ demoUsers, onSignIn, onRegister }: LoginPageProps) {
                       aria-hidden="true"
                     />
                   </button>
-                  {demoUsers.length > 0 && (
-                  <div className="border-t border-slate-200/70 pt-4 dark:border-emerald-800/50">
-                    <label
-                      htmlFor="demo-user-select"
-                      className="block text-xs font-semibold text-slate-700 dark:text-emerald-100"
-                    >
-                      Demo users
-                    </label>
-                    <select
-                      id="demo-user-select"
-                      defaultValue=""
-                      onChange={(event) => {
-                        const selectedUser = demoUsers.find(
-                          (user) => user.email === event.target.value
-                        );
-                        if (!selectedUser) return;
-                        setEmail(selectedUser.email);
-                        setPassword('demo1234');
-                        setErrorMessage(null);
-                      }}
-                      className="mt-2 min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none transition hover:border-slate-300 focus:border-emerald-700 focus:ring-[3px] focus:ring-emerald-600/10 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50 dark:hover:border-emerald-700 dark:focus:border-emerald-400 dark:focus:ring-emerald-400/15"
-                    >
-                      <option value="">Select a demo account</option>
-                      {demoUsers.map((user) => (
-                        <option key={user.id} value={user.email}>
-                          {user.role} · {user.fullName}
-                        </option>
-                      ))}
-                    </select>
-                    <p className="mt-2 text-[11px] leading-relaxed text-slate-500 dark:text-emerald-300/60">
-                      Selection fills the sign-in fields with the demo account and password. If you set an organizer password in Settings, use that password instead.
-                    </p>
-                  </div>
-                  )}
                 </form>
                 )}
 
-                {!isRegistering && (
+                {!isRegistering &&
+                  !isForgotPassword &&
+                  !isSettingNewPassword &&
+                  canRegister && (
                   <div className="mt-5 border-t border-slate-200/70 pt-4 text-center dark:border-emerald-800/50">
                     <span className="text-xs text-slate-600 dark:text-emerald-200/75">
                       New to the fest portal?

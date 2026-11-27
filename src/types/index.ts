@@ -310,6 +310,7 @@ export interface SystemUser {
   role: UserRole;
   affiliation: string;
   badgeCode: string;
+  createdAt?: string;
   assignedRoom?: string;
   teamOrGroup?: string;
 }
