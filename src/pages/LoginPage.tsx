@@ -432,7 +432,7 @@ export function LoginPage({ demoUsers, onSignIn, onRegister }: LoginPageProps) {
                         htmlFor="login-email"
                         className="block text-[13px] font-medium text-slate-800 dark:text-emerald-100"
                       >
-                        Email or phone
+                        {demoUsers.length > 0 ? 'Email or phone' : 'Email address'}
                       </label>
                       <div className="relative mt-2">
                         <Mail
@@ -448,7 +448,11 @@ export function LoginPage({ demoUsers, onSignIn, onRegister }: LoginPageProps) {
                             setEmail(e.target.value);
                             if (errorMessage) setErrorMessage(null);
                           }}
-                          placeholder="Enter your email"
+                          placeholder={
+                            demoUsers.length > 0
+                              ? 'Enter your email or phone'
+                              : 'Enter your email address'
+                          }
                           className="min-h-[44px] w-full rounded-xl border border-slate-200/90 bg-white/90 py-2.5 pl-10 pr-4 text-sm text-slate-950 placeholder:text-slate-400 shadow-[0_1px_2px_rgba(15,23,42,0.03)] transition-all duration-150 hover:border-slate-300 focus:border-emerald-700 focus:bg-white focus:outline-none focus:ring-[3px] focus:ring-emerald-600/15 dark:border-emerald-800/70 dark:bg-[#041811]/90 dark:text-emerald-50 dark:placeholder:text-emerald-300/40 dark:hover:border-emerald-700 dark:focus:border-emerald-400 dark:focus:bg-[#041811] dark:focus:ring-emerald-400/20"
                         />
                       </div>
@@ -531,6 +535,7 @@ export function LoginPage({ demoUsers, onSignIn, onRegister }: LoginPageProps) {
                       aria-hidden="true"
                     />
                   </button>
+                  {demoUsers.length > 0 && (
                   <div className="border-t border-slate-200/70 pt-4 dark:border-emerald-800/50">
                     <label
                       htmlFor="demo-user-select"
@@ -563,6 +568,7 @@ export function LoginPage({ demoUsers, onSignIn, onRegister }: LoginPageProps) {
                       Selection fills the sign-in fields with the demo account and password. If you set an organizer password in Settings, use that password instead.
                     </p>
                   </div>
+                  )}
                 </form>
                 )}
 

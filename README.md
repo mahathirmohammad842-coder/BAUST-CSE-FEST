@@ -15,9 +15,41 @@ View your app in AI Studio: https://ai.studio/apps/f6477fb1-e20d-471a-a45e-d0e5b
 
 1. Install dependencies:
    `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+2. Set the Supabase and (if used) Gemini environment variables in `.env.local`
 3. Run the app:
    `npm run dev`
+
+## Supabase setup
+
+The client uses Supabase Auth, Postgres, and private Storage. Browser configuration uses only the project URL and publishable key; never put the database connection string or a service-role key in the frontend or a `VITE_` variable.
+
+1. Copy the Supabase values into `.env.local`:
+   ```
+   VITE_SUPABASE_URL=https://your-project.supabase.co
+   VITE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_your-key
+   ```
+2. Apply the schema and row-level security rules:
+   ```
+   npx supabase login
+   npx supabase link --project-ref your-project-ref
+   npx supabase db push
+   ```
+   The migration creates profile, announcement, personal notification action, and private attachment-storage tables/policies.
+3. In Supabase Authentication settings, set the production Site URL and add the Vercel URL to the redirect allow list. Configure email confirmation to match your registration policy.
+4. Create the first staff account using Supabase Authentication (or create one through the app and confirm its email). Then promote it in the Supabase SQL Editor:
+   ```
+   update public.user_profiles
+   set role = 'Super Admin',
+       account_status = 'Active',
+       verified = true
+   where email = 'your-admin-email@example.com';
+   ```
+   Keep this operation restricted to project owners. The app does not allow public registration as Organizer, Admin, or Super Admin.
+5. Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` as Vercel environment variables for the appropriate deployment environments, then redeploy.
+
+New registrations are created as `Pending Approval`; active staff can approve or reject them from User Approvals. After the first staff user signs in, the app seeds the initial sample notices if the announcements table is empty. Profiles, notices, notification actions, and uploaded notice attachments are then persisted in Supabase. Other prototype data (such as simulated delivery records and user-block audit history) still uses the app's local/demo state.
+
+Attachments use the private `notice-attachments` bucket and signed download URLs. The migration limits uploads to 25 MB and the supported document/image types. The browser-side file checks are not malware scanning.
 
 ## Organizer user management
 
@@ -29,7 +61,7 @@ Every signed-in role can open **My Profile** to update their photo, name, phone,
 
 The demo Organizer is Sajid Rahman and the demo Super Admin is Mahathir Mohammad. Role permissions follow the assigned role: the Organizer receives event-workspace access, while the Super Admin receives cross-profile administration. Existing browser-stored profile data, credentials, and audit history are migrated with the corresponding account identity.
 
-Profile data, audit history, sign-in history, and password credentials are stored in browser local storage. Passwords use PBKDF2 hashing in this prototype, but there is no server-side identity provider, authorization boundary, or shared database; do not use this implementation to protect production accounts or sensitive data.
+When Supabase is configured, account passwords are managed by Supabase Auth and profile fields/preferences are synchronized with the RLS-protected profile table. The local demo-only sign-in and PBKDF2 credential behavior is used only when Supabase environment variables are absent.
 
 ## Notice attachments
 

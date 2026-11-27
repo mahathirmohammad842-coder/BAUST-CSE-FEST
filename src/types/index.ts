@@ -203,6 +203,7 @@ export interface Attachment {
   viewCount?: number;
   mimeType?: string;
   dataUrl?: string;
+  storagePath?: string;
 }
 
 export interface AttachmentDeliveryOptions {
