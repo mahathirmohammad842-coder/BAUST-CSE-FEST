@@ -1,5 +1,12 @@
 import { useMemo, useState } from 'react';
-import { BarChart3, Building2, Layers, TrendingUp } from 'lucide-react';
+import {
+  Activity,
+  BarChart3,
+  Building2,
+  Download,
+  Layers,
+  TrendingUp,
+} from 'lucide-react';
 import { ChannelPill } from '../components/ChannelPill';
 import type { NotificationActionEvent } from '../utils/notificationActions';
 import {
@@ -9,22 +16,35 @@ import {
   DAILY_ENGAGEMENT_TREND,
   MONTHLY_ENGAGEMENT_TREND,
 } from '../data/mockData';
-import type { Announcement, NotificationType } from '../types';
+import type { Announcement, NotificationType, UserProfile } from '../types';
 import { formatDhakaDateTime, formatPercent } from '../utils/formatters';
+import { downloadCsv } from '../utils/csvExport';
+
+type ActivityFilter =
+  | 'all'
+  | 'reads'
+  | 'organization'
+  | 'shares'
+  | 'views'
+  | 'reminders';
 
 interface AnalyticsPageProps {
   announcements: Announcement[];
   notificationEvents: NotificationActionEvent[];
+  profiles?: UserProfile[];
 }
 
 export function AnalyticsPage({
   announcements,
   notificationEvents,
+  profiles = [],
 }: AnalyticsPageProps) {
   const [timeframe, setTimeframe] = useState<'daily' | 'monthly'>('daily');
   const [categoryFilter, setCategoryFilter] = useState<
     NotificationType | 'All'
   >('All');
+  const [activityFilter, setActivityFilter] = useState<ActivityFilter>('all');
+  const [showAllActivity, setShowAllActivity] = useState(false);
   const [activeBarIdx, setActiveBarIdx] = useState<number>(
     DAILY_ENGAGEMENT_TREND.length - 1
   );
@@ -106,23 +126,117 @@ export function AnalyticsPage({
   }, [filteredAnnouncements]);
 
   const maxTrendSent = Math.max(...trendSeries.map((d) => d.sent), 1);
+
+  const announcementMap = useMemo(
+    () => new Map(announcements.map((announcement) => [announcement.id, announcement])),
+    [announcements]
+  );
+
+  const profileMap = useMemo(
+    () => new Map(profiles.map((profile) => [profile.userId, profile])),
+    [profiles]
+  );
+
+  const sortedAndScopedEvents = useMemo(() => {
+    return [...notificationEvents]
+      .filter((event) => {
+        if (categoryFilter === 'All') return true;
+        const announcement = announcementMap.get(event.notificationId);
+        return announcement ? announcement.type === categoryFilter : false;
+      })
+      .sort((left, right) => {
+        const diff = Date.parse(right.occurredAt) - Date.parse(left.occurredAt);
+        return Number.isNaN(diff) ? 0 : diff;
+      });
+  }, [announcementMap, categoryFilter, notificationEvents]);
+
+  const filteredNotificationEvents = useMemo(() => {
+    if (activityFilter === 'all') return sortedAndScopedEvents;
+    return sortedAndScopedEvents.filter((event) => {
+      if (activityFilter === 'reads') {
+        return event.action === 'read' || event.action === 'unread';
+      }
+      if (activityFilter === 'organization') {
+        return [
+          'starred',
+          'unstarred',
+          'saved',
+          'unsaved',
+          'pinned',
+          'unpinned',
+          'archived',
+          'unarchived',
+          'deleted',
+          'label-added',
+          'label-removed',
+        ].includes(event.action);
+      }
+      if (activityFilter === 'shares') {
+        return ['shared', 'copied', 'printed', 'exported'].includes(
+          event.action
+        );
+      }
+      if (activityFilter === 'views') {
+        return event.action === 'viewed' || event.action === 'read-time';
+      }
+      return [
+        'snoozed',
+        'unsnoozed',
+        'reminder-triggered',
+        'follow-up-set',
+        'follow-up-cleared',
+        'response-draft-saved',
+      ].includes(event.action);
+    });
+  }, [activityFilter, sortedAndScopedEvents]);
+
   const notificationActionSummary = useMemo(
     () => ({
-      reads: notificationEvents.filter((event) => event.action === 'read').length,
-      unread: notificationEvents.filter((event) => event.action === 'unread').length,
-      organized: notificationEvents.filter((event) =>
-        ['starred', 'unstarred', 'saved', 'unsaved', 'pinned', 'unpinned', 'archived', 'unarchived'].includes(event.action)
+      reads: sortedAndScopedEvents.filter((event) => event.action === 'read')
+        .length,
+      organized: sortedAndScopedEvents.filter((event) =>
+        [
+          'starred',
+          'unstarred',
+          'saved',
+          'unsaved',
+          'pinned',
+          'unpinned',
+          'archived',
+          'unarchived',
+          'label-added',
+          'label-removed',
+        ].includes(event.action)
       ).length,
-      shared: notificationEvents.filter((event) =>
+      shared: sortedAndScopedEvents.filter((event) =>
         ['shared', 'copied', 'printed', 'exported'].includes(event.action)
       ).length,
     }),
-    [notificationEvents]
+    [sortedAndScopedEvents]
   );
-  const announcementTitles = useMemo(
-    () => new Map(announcements.map((announcement) => [announcement.id, announcement.title])),
-    [announcements]
-  );
+
+  const visibleNotificationEvents = showAllActivity
+    ? filteredNotificationEvents.slice(0, 50)
+    : filteredNotificationEvents.slice(0, 12);
+
+  const handleExportActivityCsv = () => {
+    downloadCsv(
+      `baust-personal-notification-activity-${new Date().toISOString().slice(0, 10)}.csv`,
+      ['Action', 'Detail', 'Notification', 'User', 'Email', 'Timestamp'],
+      filteredNotificationEvents.map((event) => {
+        const actor = profileMap.get(event.userId);
+        const announcement = announcementMap.get(event.notificationId);
+        return [
+          event.action.replaceAll('-', ' '),
+          event.detail ?? '',
+          announcement?.title ?? `Archived notice (${event.notificationId})`,
+          actor?.fullName ?? event.userId,
+          actor?.email ?? '',
+          event.occurredAt,
+        ];
+      })
+    );
+  };
 
   return (
     <div className="space-y-4">
@@ -373,20 +487,61 @@ export function AnalyticsPage({
           </div>
         </section>
 
-        <section className="overflow-hidden rounded-xl border border-emerald-200/70 bg-white dark:border-emerald-800/60 dark:bg-[#061D15]">
-          <div className="border-b border-emerald-100 px-4 py-3 dark:border-emerald-800/60">
-            <h3 className="font-display text-sm font-bold text-emerald-950 dark:text-emerald-50">
-              Personal Notification Activity
-            </h3>
-            <p className="mt-0.5 text-xs text-emerald-900/60 dark:text-emerald-300/65">
-              Recent user actions recorded by this browser
-            </p>
+        <section className="lg:col-span-12 overflow-hidden rounded-xl border border-emerald-200/70 bg-white dark:border-emerald-800/60 dark:bg-[#061D15]">
+          <div className="flex flex-col gap-3 border-b border-emerald-100 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between dark:border-emerald-800/60">
+            <div className="flex items-start gap-2.5">
+              <Activity
+                className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700 dark:text-emerald-400"
+                aria-hidden="true"
+              />
+              <div>
+                <h3 className="font-display text-sm font-bold text-emerald-950 dark:text-emerald-50">
+                  Personal Notification Activity
+                </h3>
+                <p className="mt-0.5 text-xs text-emerald-900/60 dark:text-emerald-300/65">
+                  Chronological audit of personal read, organization, export, and reminder actions
+                  {categoryFilter !== 'All' ? ` in ${categoryFilter}` : ''}.
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                aria-label="Filter personal notification activity by action type"
+                value={activityFilter}
+                onChange={(event) => {
+                  setActivityFilter(event.target.value as ActivityFilter);
+                  setShowAllActivity(false);
+                }}
+                className="rounded-lg border border-emerald-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-emerald-950 focus:border-emerald-700 focus:outline-none dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50 dark:focus:border-emerald-400"
+              >
+                <option value="all">All Actions</option>
+                <option value="reads">Reads &amp; Unreads</option>
+                <option value="organization">Organization &amp; Labels</option>
+                <option value="shares">Shares &amp; Exports</option>
+                <option value="views">Views &amp; Reading</option>
+                <option value="reminders">Reminders &amp; Drafts</option>
+              </select>
+              {filteredNotificationEvents.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleExportActivityCsv}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-100 dark:hover:bg-emerald-950/50"
+                >
+                  <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                  Export CSV
+                </button>
+              )}
+            </div>
           </div>
+
           <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-4">
             {[
-              { label: 'Tracked actions', value: notificationEvents.length },
+              { label: 'Tracked actions', value: sortedAndScopedEvents.length },
               { label: 'Marked read', value: notificationActionSummary.reads },
-              { label: 'Organization actions', value: notificationActionSummary.organized },
+              {
+                label: 'Organization actions',
+                value: notificationActionSummary.organized,
+              },
               { label: 'Shares & exports', value: notificationActionSummary.shared },
             ].map((metric) => (
               <div
@@ -402,44 +557,94 @@ export function AnalyticsPage({
               </div>
             ))}
           </div>
+
           <div className="overflow-x-auto border-t border-emerald-100 dark:border-emerald-800/60">
-            <table className="w-full min-w-[640px] text-left text-xs">
+            <table className="w-full min-w-[680px] text-left text-xs">
               <thead>
                 <tr className="bg-emerald-50/45 font-semibold text-emerald-900/70 dark:bg-[#041811] dark:text-emerald-200/80">
                   <th className="px-4 py-2.5">Action</th>
                   <th className="px-4 py-2.5">Notification</th>
-                  <th className="px-4 py-2.5">User ID</th>
+                  <th className="px-4 py-2.5">User</th>
                   <th className="px-4 py-2.5">Time</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-emerald-100/70 dark:divide-emerald-800/50">
-                {notificationEvents.slice(0, 12).map((event) => (
-                  <tr key={event.id}>
-                    <td className="px-4 py-3 font-semibold text-emerald-800 dark:text-emerald-300">
-                      {event.action.replaceAll('-', ' ')}
-                      {event.detail ? <span className="ml-1 font-normal text-emerald-900/55 dark:text-emerald-300/60">· {event.detail}</span> : null}
-                    </td>
-                    <td className="max-w-[280px] truncate px-4 py-3 text-emerald-950 dark:text-emerald-100">
-                      {announcementTitles.get(event.notificationId) ?? event.notificationId}
-                    </td>
-                    <td className="px-4 py-3 font-mono text-emerald-900/70 dark:text-emerald-200/75">
-                      {event.userId}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-emerald-900/65 dark:text-emerald-300/65">
-                      {formatDhakaDateTime(event.occurredAt)}
-                    </td>
-                  </tr>
-                ))}
-                {notificationEvents.length === 0 && (
+                {visibleNotificationEvents.map((event) => {
+                  const actor = profileMap.get(event.userId);
+                  const announcement = announcementMap.get(event.notificationId);
+                  return (
+                    <tr
+                      key={event.id}
+                      className="hover:bg-emerald-50/35 dark:hover:bg-[#09291E]/60"
+                    >
+                      <td className="px-4 py-3 font-semibold capitalize text-emerald-800 dark:text-emerald-300 whitespace-nowrap">
+                        {event.action.replaceAll('-', ' ')}
+                        {event.detail ? (
+                          <span className="ml-1 font-normal normal-case text-emerald-900/55 dark:text-emerald-300/60">
+                            · {event.detail}
+                          </span>
+                        ) : null}
+                      </td>
+                      <td className="max-w-[320px] truncate px-4 py-3 text-emerald-950 dark:text-emerald-100">
+                        {announcement?.title ?? (
+                          <span className="text-emerald-900/55 dark:text-emerald-300/60">
+                            Archived notice ({event.notificationId})
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-emerald-900/80 dark:text-emerald-200/80">
+                        {actor ? (
+                          <div className="min-w-0">
+                            <div className="font-semibold text-emerald-950 dark:text-emerald-50 truncate">
+                              {actor.fullName}
+                            </div>
+                            <div className="text-[11px] text-emerald-900/60 dark:text-emerald-300/65 truncate">
+                              {actor.email}
+                            </div>
+                          </div>
+                        ) : (
+                          <span className="font-mono text-[11px] text-emerald-900/70 dark:text-emerald-200/75">
+                            {event.userId}
+                          </span>
+                        )}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 font-mono text-[11px] text-emerald-900/65 dark:text-emerald-300/65 tabular-nums">
+                        {formatDhakaDateTime(event.occurredAt)}
+                      </td>
+                    </tr>
+                  );
+                })}
+                {filteredNotificationEvents.length === 0 && (
                   <tr>
-                    <td colSpan={4} className="px-4 py-6 text-center text-emerald-900/55 dark:text-emerald-300/60">
-                      No user notification actions have been recorded yet.
+                    <td
+                      colSpan={4}
+                      className="px-4 py-6 text-center text-emerald-900/55 dark:text-emerald-300/60"
+                    >
+                      {sortedAndScopedEvents.length === 0
+                        ? 'No user notification actions have been recorded yet.'
+                        : 'No notification actions match the selected filter.'}
                     </td>
                   </tr>
                 )}
               </tbody>
             </table>
           </div>
+
+          {filteredNotificationEvents.length > 12 && (
+            <div className="flex items-center justify-between border-t border-emerald-100 px-4 py-2.5 text-xs dark:border-emerald-800/60">
+              <span className="text-emerald-900/60 dark:text-emerald-300/65 tabular-nums">
+                Showing {visibleNotificationEvents.length} of{' '}
+                {filteredNotificationEvents.length} recorded actions
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowAllActivity((prev) => !prev)}
+                className="font-semibold text-emerald-800 hover:underline dark:text-emerald-300"
+              >
+                {showAllActivity ? 'Show latest 12' : 'Show up to 50'}
+              </button>
+            </div>
+          )}
         </section>
       </div>
 

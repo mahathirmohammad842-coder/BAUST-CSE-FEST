@@ -223,6 +223,8 @@ export function UserInboxPage({
   const readSessionRef = useRef<{ notificationId: string; startedAt: number } | null>(null);
   const onReadTimeRef = useRef(onRecordNotificationReadTime);
   onReadTimeRef.current = onRecordNotificationReadTime;
+  const onUpdateActionRef = useRef(onUpdateNotificationAction);
+  onUpdateActionRef.current = onUpdateNotificationAction;
   const touchStartXRef = useRef<number | null>(null);
   const suppressNextClickRef = useRef(false);
 
@@ -253,7 +255,7 @@ export function UserInboxPage({
 
     const notifiedAt = new Date(reminderTime).toISOString();
     dueReminders.forEach(([notificationId]) => {
-      onUpdateNotificationAction(
+      onUpdateActionRef.current(
         notificationId,
         { reminderNotifiedAt: notifiedAt },
         'reminder-triggered'
@@ -264,7 +266,7 @@ export function UserInboxPage({
         ? 'A snoozed notification is ready for follow-up.'
         : `${dueReminders.length} snoozed notifications are ready for follow-up.`
     );
-  }, [notificationStates, onUpdateNotificationAction, reminderTime]);
+  }, [notificationStates, reminderTime]);
 
   useEffect(() => () => {
     const session = readSessionRef.current;
@@ -1917,11 +1919,15 @@ export function UserInboxPage({
                   <ol className="mt-2 space-y-1.5">
                     {notificationEvents
                       .filter((event) => event.notificationId === selectedNotice.id)
+                      .sort(
+                        (a, b) =>
+                          Date.parse(b.occurredAt) - Date.parse(a.occurredAt)
+                      )
                       .slice(0, 5)
                       .map((event) => (
                         <li key={event.id} className="flex flex-wrap justify-between gap-2 text-[10px] text-slate-500 dark:text-emerald-200/60">
-                          <span>{event.action.replace(/-/g, ' ')}{event.detail ? ` · ${event.detail}` : ''}</span>
-                          <time>{formatDhakaDateTime(event.occurredAt)}</time>
+                          <span className="capitalize">{event.action.replace(/-/g, ' ')}{event.detail ? ` · ${event.detail}` : ''}</span>
+                          <time className="font-mono tabular-nums">{formatDhakaDateTime(event.occurredAt)}</time>
                         </li>
                       ))}
                   </ol>

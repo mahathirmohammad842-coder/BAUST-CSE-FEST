@@ -19,6 +19,7 @@ import { DashboardPage } from './pages/DashboardPage';
 import { DeliveryDetailPage } from './pages/DeliveryDetailPage';
 import { LoginPage } from './pages/LoginPage';
 import { ProfileManagementPage } from './pages/ProfileManagementPage';
+import { RejectedTrashPage } from './pages/RejectedTrashPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { SystemHealthPage } from './pages/SystemHealthPage';
 import { UserInboxPage } from './pages/UserInboxPage';
@@ -453,6 +454,12 @@ export default function App() {
     mainContentRef.current?.scrollTo(0, 0);
   }, [activeRoute, mode]);
 
+  useEffect(() => {
+    if (activeRoute === 'rejected-trash' && activeRole !== 'Super Admin') {
+      setActiveRoute('dashboard');
+    }
+  }, [activeRole, activeRoute]);
+
   const [darkMode, setDarkMode] = useState<boolean>(() => {
     try {
       const saved = window.localStorage.getItem('baust_theme');
@@ -624,13 +631,26 @@ export default function App() {
           );
         }
       }
+      userEvents.sort((left, right) => {
+        const diff = Date.parse(right.occurredAt) - Date.parse(left.occurredAt);
+        return Number.isNaN(diff) ? 0 : diff;
+      });
       setNotificationActionStore((previous) => ({
         ...previous,
         byUserId: { ...previous.byUserId, [userId]: userStates },
         events: [
-          ...previous.events.filter((event) => event.userId !== userId),
           ...userEvents,
-        ].slice(0, 5000),
+          ...previous.events.filter(
+            (event) =>
+              event.userId !== userId && !event.userId.startsWith('user-demo-')
+          ),
+        ]
+          .sort((left, right) => {
+            const diff =
+              Date.parse(right.occurredAt) - Date.parse(left.occurredAt);
+            return Number.isNaN(diff) ? 0 : diff;
+          })
+          .slice(0, 5000),
       }));
       setCloudUserId(userId);
       setShowLoginPage(false);
@@ -1703,12 +1723,27 @@ export default function App() {
   const handleTrashRejectedUser = async (
     userId: string
   ): Promise<string | null> => {
-    if (activeRole !== 'Super Admin' || !supabase) {
+    if (activeRole !== 'Super Admin') {
       return 'Only a Super Admin can move rejected accounts to Trash.';
     }
     const request = registrationRequests.find((item) => item.id === userId);
     if (!request || request.status !== 'Rejected' || request.trashedAt) {
       return 'Only a rejected account can be moved to Trash.';
+    }
+
+    const trashedAt = new Date().toISOString();
+    if (!isSupabaseConfigured || !supabase) {
+      const updatedRequests = registrationRequests.map((item) =>
+        item.id === userId ? { ...item, trashedAt } : item
+      );
+      try {
+        saveRegistrationRequests(updatedRequests);
+      } catch {
+        return 'Could not save Trash update. Check browser storage.';
+      }
+      setRegistrationRequests(updatedRequests);
+      showToast(`${request.fullName} moved to Trash.`);
+      return null;
     }
 
     try {
@@ -1717,7 +1752,6 @@ export default function App() {
         { target_user_id: userId }
       );
       if (error) return `Could not move the account to Trash: ${error.message}`;
-      const trashedAt = new Date().toISOString();
       setRegistrationRequests((previous) =>
         previous.map((item) =>
           item.id === userId ? { ...item, trashedAt } : item
@@ -1749,11 +1783,25 @@ export default function App() {
   const handleRestoreTrashedUser = async (
     userId: string
   ): Promise<string | null> => {
-    if (activeRole !== 'Super Admin' || !supabase) {
+    if (activeRole !== 'Super Admin') {
       return 'Only a Super Admin can restore accounts from Trash.';
     }
     const request = registrationRequests.find((item) => item.id === userId);
     if (!request?.trashedAt) return 'This account is not in Trash.';
+
+    if (!isSupabaseConfigured || !supabase) {
+      const updatedRequests = registrationRequests.map((item) =>
+        item.id === userId ? { ...item, trashedAt: undefined } : item
+      );
+      try {
+        saveRegistrationRequests(updatedRequests);
+      } catch {
+        return 'Could not restore account. Check browser storage.';
+      }
+      setRegistrationRequests(updatedRequests);
+      showToast(`${request.fullName} restored to Rejected users.`);
+      return null;
+    }
 
     try {
       const { error } = await supabase.rpc(
@@ -1789,6 +1837,122 @@ export default function App() {
       );
       return null;
     }
+  };
+
+  const handleBulkTrashRejectedUsers = async (
+    userIds: string[]
+  ): Promise<string | null> => {
+    if (activeRole !== 'Super Admin') {
+      return 'Only a Super Admin can move rejected accounts to Trash.';
+    }
+    const targets = userIds.filter((id) => {
+      const req = registrationRequests.find((item) => item.id === id);
+      return Boolean(req && req.status === 'Rejected' && !req.trashedAt);
+    });
+    if (targets.length === 0) return null;
+
+    if (!isSupabaseConfigured || !supabase) {
+      const trashedAt = new Date().toISOString();
+      const targetSet = new Set(targets);
+      const updated = registrationRequests.map((item) =>
+        targetSet.has(item.id) ? { ...item, trashedAt } : item
+      );
+      try {
+        saveRegistrationRequests(updated);
+      } catch {
+        return 'Could not save Trash updates. Check browser storage.';
+      }
+      setRegistrationRequests(updated);
+      showToast(
+        `${targets.length} rejected account${targets.length === 1 ? '' : 's'} moved to Trash.`
+      );
+      return null;
+    }
+
+    let succeeded = 0;
+    let firstError: string | null = null;
+    for (const id of targets) {
+      const { error } = await supabase.rpc('super_admin_trash_rejected_user', {
+        target_user_id: id,
+      });
+      if (error) {
+        if (!firstError) firstError = error.message;
+      } else {
+        succeeded += 1;
+      }
+    }
+    const refreshError = await handleRefreshCloudProfiles();
+    if (firstError) {
+      return `Moved ${succeeded}/${targets.length} accounts to Trash. Error: ${firstError}`;
+    }
+    if (refreshError) {
+      showToast(
+        `Moved ${succeeded} accounts to Trash, but directory refresh failed: ${refreshError}`
+      );
+      return null;
+    }
+    showToast(
+      `${succeeded} rejected account${succeeded === 1 ? '' : 's'} moved to Trash.`
+    );
+    return null;
+  };
+
+  const handleBulkRestoreTrashedUsers = async (
+    userIds: string[]
+  ): Promise<string | null> => {
+    if (activeRole !== 'Super Admin') {
+      return 'Only a Super Admin can restore accounts from Trash.';
+    }
+    const targets = userIds.filter((id) => {
+      const req = registrationRequests.find((item) => item.id === id);
+      return Boolean(req?.trashedAt);
+    });
+    if (targets.length === 0) return null;
+
+    if (!isSupabaseConfigured || !supabase) {
+      const targetSet = new Set(targets);
+      const updated = registrationRequests.map((item) =>
+        targetSet.has(item.id) ? { ...item, trashedAt: undefined } : item
+      );
+      try {
+        saveRegistrationRequests(updated);
+      } catch {
+        return 'Could not restore accounts. Check browser storage.';
+      }
+      setRegistrationRequests(updated);
+      showToast(
+        `${targets.length} account${targets.length === 1 ? '' : 's'} restored from Trash.`
+      );
+      return null;
+    }
+
+    let succeeded = 0;
+    let firstError: string | null = null;
+    for (const id of targets) {
+      const { error } = await supabase.rpc(
+        'super_admin_restore_rejected_user',
+        { target_user_id: id }
+      );
+      if (error) {
+        if (!firstError) firstError = error.message;
+      } else {
+        succeeded += 1;
+      }
+    }
+    const refreshError = await handleRefreshCloudProfiles();
+    if (firstError) {
+      return `Restored ${succeeded}/${targets.length} accounts. Error: ${firstError}`;
+    }
+    if (refreshError) {
+      showToast(
+        `Restored ${succeeded} accounts, but directory refresh failed: ${refreshError}`
+      );
+      return null;
+    }
+    showToast(
+      `${succeeded} account${succeeded === 1 ? '' : 's'} restored to Rejected users.`
+    );
+    return null;
   };
 
   const handleDeleteUser = (userId: string) => {
@@ -2088,6 +2252,22 @@ export default function App() {
       ).length,
     [registrationRequests]
   );
+  const trashedRejectedCount = useMemo(
+    () =>
+      registrationRequests.filter((request) => Boolean(request.trashedAt))
+        .length,
+    [registrationRequests]
+  );
+  const analyticsNotificationEvents = useMemo(() => {
+    if (!isSupabaseConfigured || !cloudUserId) {
+      return notificationActionStore.events;
+    }
+    const validUserIds = new Set(managedProfiles.map((p) => p.userId));
+    validUserIds.add(cloudUserId);
+    return notificationActionStore.events.filter((event) =>
+      validUserIds.has(event.userId)
+    );
+  }, [cloudUserId, managedProfiles, notificationActionStore.events]);
   const blockedUserCount = useMemo(
     () =>
       userBlockState.records
@@ -2917,10 +3097,12 @@ export default function App() {
       <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
         {mode === 'organizer' && (
           <Sidebar
+            activeRole={activeRole}
             activeRoute={activeRoute}
             failedDeliveryCount={failedDeliveryCount}
             pendingRequestCount={pendingRequestCount}
             blockedUserCount={blockedUserCount}
+            trashedRejectedCount={trashedRejectedCount}
             mobileOpen={mobileMenuOpen}
             onCloseMobile={() => setMobileMenuOpen(false)}
             onNavigate={(route) => setActiveRoute(route)}
@@ -3113,7 +3295,8 @@ export default function App() {
                   {activeRoute === 'analytics' && (
                     <AnalyticsPage
                       announcements={announcements}
-                      notificationEvents={notificationActionStore.events}
+                      notificationEvents={analyticsNotificationEvents}
+                      profiles={managedProfiles}
                     />
                   )}
 
@@ -3122,13 +3305,31 @@ export default function App() {
                       <UserApprovalsPage
                         requests={registrationRequests}
                         existingAccountCount={availableDemoUsers.length}
-                        canManageTrash={
-                          isSupabaseConfigured && activeRole === 'Super Admin'
-                        }
+                        canManageTrash={activeRole === 'Super Admin'}
                         onUpdateStatus={handleUpdateRegistrationStatus}
                         onBulkUpdateStatus={handleBulkUpdateRegistrationStatus}
                         onTrashRejectedUser={handleTrashRejectedUser}
                         onRestoreTrashedUser={handleRestoreTrashedUser}
+                        onRefreshProfiles={
+                          isSupabaseConfigured
+                            ? handleRefreshCloudProfiles
+                            : undefined
+                        }
+                        onNotify={showToast}
+                      />
+                    )}
+
+                  {activeRoute === 'rejected-trash' &&
+                    activeRole === 'Super Admin' && (
+                      <RejectedTrashPage
+                        requests={registrationRequests}
+                        onTrashRejectedUser={handleTrashRejectedUser}
+                        onRestoreTrashedUser={handleRestoreTrashedUser}
+                        onBulkTrashRejectedUsers={handleBulkTrashRejectedUsers}
+                        onBulkRestoreTrashedUsers={handleBulkRestoreTrashedUsers}
+                        onReapproveRejectedUser={(userId) =>
+                          handleUpdateRegistrationStatus(userId, 'Approved')
+                        }
                         onRefreshProfiles={
                           isSupabaseConfigured
                             ? handleRefreshCloudProfiles

@@ -8,10 +8,11 @@ import {
   ShieldAlert,
   ShieldCheck,
   Settings,
+  Trash2,
   UsersRound,
   X,
 } from 'lucide-react';
-import type { SettingsSection } from '../types';
+import type { SettingsSection, WorkspaceRole } from '../types';
 
 export type OrganizerRoute =
   | 'dashboard'
@@ -20,6 +21,7 @@ export type OrganizerRoute =
   | 'delivery-detail'
   | 'analytics'
   | 'user-approvals'
+  | 'rejected-trash'
   | 'blocked-users'
   | 'users'
   | 'profiles'
@@ -28,10 +30,12 @@ export type OrganizerRoute =
   | 'settings';
 
 interface SidebarProps {
+  activeRole: WorkspaceRole;
   activeRoute: OrganizerRoute;
   failedDeliveryCount: number;
   pendingRequestCount: number;
   blockedUserCount: number;
+  trashedRejectedCount: number;
   mobileOpen: boolean;
   onCloseMobile: () => void;
   onNavigate: (route: OrganizerRoute) => void;
@@ -39,10 +43,12 @@ interface SidebarProps {
 }
 
 export function Sidebar({
+  activeRole,
   activeRoute,
   failedDeliveryCount,
   pendingRequestCount,
   blockedUserCount,
+  trashedRejectedCount,
   mobileOpen,
   onCloseMobile,
   onNavigate,
@@ -54,6 +60,7 @@ export function Sidebar({
     icon: typeof LayoutDashboard;
     badge?: number;
     badgeTitle?: string;
+    badgeTone?: 'danger' | 'subtle';
   }[] = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     {
@@ -78,6 +85,21 @@ export function Sidebar({
           ? `${pendingRequestCount} pending registration${pendingRequestCount === 1 ? '' : 's'}`
           : undefined,
     },
+    ...(activeRole === 'Super Admin'
+      ? [
+          {
+            id: 'rejected-trash' as const,
+            label: 'Rejected Trash',
+            icon: Trash2,
+            badge: trashedRejectedCount > 0 ? trashedRejectedCount : undefined,
+            badgeTitle:
+              trashedRejectedCount > 0
+                ? `${trashedRejectedCount} trashed rejected user${trashedRejectedCount === 1 ? '' : 's'}`
+                : undefined,
+            badgeTone: 'subtle' as const,
+          },
+        ]
+      : []),
     {
       id: 'blocked-users',
       label: 'Blocked Users',
@@ -150,7 +172,11 @@ export function Sidebar({
                 {item.badge !== undefined && (
                   <span
                     title={item.badgeTitle}
-                    className="rounded bg-red-600 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-white tabular-nums shrink-0"
+                    className={`rounded px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums shrink-0 ${
+                      item.badgeTone === 'subtle'
+                        ? 'bg-emerald-800/80 text-emerald-100'
+                        : 'bg-red-600 text-white'
+                    }`}
                   >
                     {item.badge}
                   </span>
