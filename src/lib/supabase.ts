@@ -46,6 +46,7 @@ export interface CloudProfile {
   created_at: string;
   updated_at: string;
   requested_role: string;
+  trashed_at: string | null;
 }
 
 export function mapCloudProfile(row: CloudProfile): UserProfile {
@@ -70,6 +71,7 @@ export function mapCloudProfile(row: CloudProfile): UserProfile {
     accountStatus: row.account_status,
     verified: row.verified,
     createdAt: row.created_at,
+    trashedAt: row.trashed_at ?? undefined,
   };
 }
 

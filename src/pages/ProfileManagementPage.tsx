@@ -40,6 +40,7 @@ interface ProfileManagementPageProps {
   onUnblock: (blockId: string) => void;
   onResetPassword: (userId: string) => Promise<string | null>;
   canPromoteToAdmin: boolean;
+  currentUserId: string;
   onPromoteToAdmin: (userId: string) => Promise<string | null>;
 }
 
@@ -80,6 +81,7 @@ export function ProfileManagementPage({
   onUnblock,
   onResetPassword,
   canPromoteToAdmin,
+  currentUserId,
   onPromoteToAdmin,
 }: ProfileManagementPageProps) {
   const [query, setQuery] = useState('');
@@ -344,9 +346,8 @@ export function ProfileManagementPage({
               )}
               {canPromoteToAdmin &&
                 selectedProfile.accountStatus === 'Active' &&
-                !['Organizer', 'Admin', 'Super Admin'].includes(
-                  selectedProfile.role
-                ) && (
+                selectedProfile.userId !== currentUserId &&
+                !['Admin', 'Super Admin'].includes(selectedProfile.role) && (
                   <button
                     type="button"
                     onClick={() => {

@@ -45,7 +45,9 @@ Attachments use the private `notice-attachments` bucket and signed download URLs
 
 ## User and role management
 
-The Supabase **Users** directory displays actual profiles rather than demo identities. The **Super Admin** can promote another active, non-administrator account to **Admin** from **Profile Management → View → Promote to Admin**. The target must first have a Supabase Auth account and an active profile; new people can register with an eligible non-admin role and be approved before promotion. The promotion is enforced by a database RPC that only an active Super Admin can call. It does not create Auth users or set passwords; use Supabase Auth invitations for new accounts.
+The Supabase **Users** directory displays actual profiles rather than demo identities. The **Super Admin** can promote another active account (except another Super Admin or their own account) to **Admin** from **Profile Management → View → Promote to Admin**. The target must first have a Supabase Auth account and an active profile; new people can register with an eligible non-admin role and be approved before promotion. The promotion is enforced by a database RPC that only an active Super Admin can call. It does not create Auth users or set passwords; use Supabase Auth invitations for new accounts.
+
+Active staff can re-approve a rejected registration from **User Approvals**. Active Super Admins can also move rejected registrations to the reversible **Trash** filter and restore them later. Trash is a soft-delete of the profile record; it does not delete the Supabase Auth user. Apply the latest Supabase migrations with `npx supabase db push --remote` to enable this workflow.
 
 Timed and permanent blocks, block reasons, notes, and history still use browser-local prototype state. They are not a production security boundary and do not disable backend/API access.
 

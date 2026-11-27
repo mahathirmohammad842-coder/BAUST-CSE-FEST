@@ -361,6 +361,13 @@ function getSupabaseFailureMessage(error: unknown): string {
   return `${message}${details}${hint}`;
 }
 
+function getAuthEmailErrorMessage(message: string): string {
+  if (/rate.?limit|too many requests/i.test(message)) {
+    return 'Supabase has temporarily rate-limited Auth emails for this project. Wait before trying again. To prevent this for production, configure a custom SMTP provider in Supabase Dashboard → Authentication → SMTP Settings; the project email limit cannot be raised from this app.';
+  }
+  return message;
+}
+
 function cloudProfilesToRegistrationRequests(
   profiles: CloudProfile[]
 ): RegistrationRequest[] {
@@ -390,6 +397,7 @@ function cloudProfilesToRegistrationRequests(
             : 'Approved',
       passwordSalt: '',
       passwordHash: '',
+      ...(profile.trashed_at ? { trashedAt: profile.trashed_at } : {}),
       ...(profile.updated_at !== profile.created_at
         ? { reviewedAt: profile.updated_at }
         : {}),
@@ -770,8 +778,10 @@ export default function App() {
     () => {
       if (isSupabaseConfigured) {
         return profileState.profiles
-          .filter((profile) =>
-            ['Organizer', 'Admin', 'Super Admin'].includes(profile.role)
+          .filter(
+            (profile) =>
+              !profile.trashedAt &&
+              ['Organizer', 'Admin', 'Super Admin'].includes(profile.role)
           )
           .map((profile) => ({
             id: profile.userId,
@@ -799,20 +809,22 @@ export default function App() {
       createdAt?: string;
       approved?: boolean;
     }[] = isSupabaseConfigured
-      ? profileState.profiles.map((profile) => ({
-          user: {
-            id: profile.userId,
-            fullName: profile.fullName,
-            email: profile.email,
-            phone: profile.phone,
-            role: profile.role,
-            affiliation: profile.institution || profile.department,
-            badgeCode: profile.userId,
-          },
-          status: profile.accountStatus,
-          createdAt: profile.createdAt,
-          approved: profile.accountStatus === 'Active',
-        }))
+      ? profileState.profiles
+          .filter((profile) => !profile.trashedAt)
+          .map((profile) => ({
+            user: {
+              id: profile.userId,
+              fullName: profile.fullName,
+              email: profile.email,
+              phone: profile.phone,
+              role: profile.role,
+              affiliation: profile.institution || profile.department,
+              badgeCode: profile.userId,
+            },
+            status: profile.accountStatus,
+            createdAt: profile.createdAt,
+            approved: profile.accountStatus === 'Active',
+          }))
       : [
       ...availableDemoUsers.map((user) => ({
         user:
@@ -1125,10 +1137,10 @@ export default function App() {
     if (
       !profile ||
       profile.accountStatus !== 'Active' ||
-      ['Organizer', 'Admin', 'Super Admin'].includes(profile.role) ||
+      profile.role === 'Super Admin' ||
       userId === cloudUserId
     ) {
-      return 'Only another active non-administrator account can be promoted.';
+      return 'Only another active account that is not a Super Admin can be promoted.';
     }
 
     try {
@@ -1300,11 +1312,36 @@ export default function App() {
     const target = managedProfiles.find((profile) => profile.userId === userId);
     if (!target) return null;
     try {
-      const randomBytes = window.crypto.getRandomValues(new Uint8Array(8));
-      const temporaryPassword = `BAUST-${Array.from(randomBytes, (byte) =>
-        byte.toString(16).padStart(2, '0')
-      ).join('')}`;
-      const credential = await hashRegistrationPassword(temporaryPassword);
+      const isCloudAuth = Boolean(isSupabaseConfigured && supabase);
+      let temporaryPassword: string;
+      let credential: Awaited<ReturnType<typeof hashRegistrationPassword>> | null =
+        null;
+      if (isCloudAuth && supabase) {
+        const { data, error } = await supabase.functions.invoke<{
+          temporaryPassword?: string;
+          error?: string;
+        }>('admin-reset-user-password', {
+          body: { userId },
+        });
+        if (error) {
+          showToast(
+            `Could not reset the Supabase password: ${getSupabaseFailureMessage(error)}`
+          );
+          return null;
+        }
+        if (!data || typeof data.temporaryPassword !== 'string') {
+          showToast(data?.error ?? 'Supabase did not return a temporary password.');
+          return null;
+        }
+        temporaryPassword = data.temporaryPassword;
+      } else {
+        const randomBytes = window.crypto.getRandomValues(new Uint8Array(8));
+        temporaryPassword = `BAUST-${Array.from(randomBytes, (byte) =>
+          byte.toString(16).padStart(2, '0')
+        ).join('')}`;
+        credential = await hashRegistrationPassword(temporaryPassword);
+      }
+
       const actor = getProfileActor();
       const event = createProfileAuditEvent(
         userId,
@@ -1315,25 +1352,32 @@ export default function App() {
       );
       const nextState: ProfileState = {
         ...profileState,
-        credentials: {
-          ...profileState.credentials,
-          [userId]: { salt: credential.salt, hash: credential.hash },
-        },
-        passwordResetRequired: [
-          ...new Set([...profileState.passwordResetRequired, userId]),
-        ],
+        credentials: credential
+          ? {
+              ...profileState.credentials,
+              [userId]: { salt: credential.salt, hash: credential.hash },
+            }
+          : profileState.credentials,
+        passwordResetRequired: credential
+          ? [...new Set([...profileState.passwordResetRequired, userId])]
+          : profileState.passwordResetRequired,
         events: [event, ...profileState.events].slice(0, 1000),
       };
-      if (
-        !persistProfileState(
-          nextState,
-          'Could not reset the password. Check browser storage.'
-        )
-      ) return null;
-      showToast(`Temporary password created for ${target.fullName}.`);
+          const activitySaved = persistProfileState(
+            nextState,
+            isCloudAuth
+              ? 'Password was reset in Supabase, but local activity history could not be saved.'
+              : 'Could not reset the password. Check browser storage.'
+          );
+          if (!activitySaved && !isCloudAuth) return null;
+          showToast(
+            isCloudAuth
+              ? `Temporary password set in Supabase Auth for ${target.fullName}.`
+              : `Temporary password created for ${target.fullName}.`
+          );
       return temporaryPassword;
-    } catch {
-      showToast('Secure password reset is unavailable in this browser.');
+    } catch (error) {
+          showToast(`Could not reset the password: ${getSupabaseFailureMessage(error)}`);
       return null;
     }
   };
@@ -1374,7 +1418,7 @@ export default function App() {
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
         redirectTo: window.location.origin,
       });
-      return error?.message ?? null;
+      return error ? getAuthEmailErrorMessage(error.message) : null;
     } catch (error) {
       return `Could not send the password reset email: ${getSupabaseFailureMessage(error)}`;
     }
@@ -1450,7 +1494,7 @@ export default function App() {
         },
       },
     });
-    if (error) return error.message;
+    if (error) return getAuthEmailErrorMessage(error.message);
     showToast(
       'Registration submitted to Supabase. An organizer must approve your account before sign-in.'
     );
@@ -1495,7 +1539,10 @@ export default function App() {
     }
 
     const updatedRequests = registrationRequests.map((request) =>
-      request.id === requestId && request.status === 'Pending Approval'
+      request.id === requestId &&
+      !request.trashedAt &&
+      (request.status === 'Pending Approval' ||
+        (status === 'Approved' && request.status === 'Rejected'))
         ? { ...request, status, reviewedAt: new Date().toISOString() }
         : request
     );
@@ -1511,6 +1558,97 @@ export default function App() {
         ? 'User approved. They can now sign in and will see the approval notification.'
         : 'User rejected. The account remains inactive and the applicant will see the decision when signing in.'
     );
+  };
+
+  const handleTrashRejectedUser = async (
+    userId: string
+  ): Promise<string | null> => {
+    if (activeRole !== 'Super Admin' || !supabase) {
+      return 'Only a Super Admin can move rejected accounts to Trash.';
+    }
+    const request = registrationRequests.find((item) => item.id === userId);
+    if (!request || request.status !== 'Rejected' || request.trashedAt) {
+      return 'Only a rejected account can be moved to Trash.';
+    }
+
+    try {
+      const { error } = await supabase.rpc(
+        'super_admin_trash_rejected_user',
+        { target_user_id: userId }
+      );
+      if (error) return `Could not move the account to Trash: ${error.message}`;
+      const trashedAt = new Date().toISOString();
+      setRegistrationRequests((previous) =>
+        previous.map((item) =>
+          item.id === userId ? { ...item, trashedAt } : item
+        )
+      );
+      setProfileState((previous) => ({
+        ...previous,
+        profiles: previous.profiles.map((profile) =>
+          profile.userId === userId ? { ...profile, trashedAt } : profile
+        ),
+      }));
+      const profiles = await fetchCloudProfiles();
+      setProfileState((previous) => ({
+        ...previous,
+        profiles: profiles.map(mapCloudProfile),
+      }));
+      setRegistrationRequests(cloudProfilesToRegistrationRequests(profiles));
+      showToast(`${request.fullName} moved to Trash.`);
+      return null;
+    } catch (error) {
+      const message = getSupabaseFailureMessage(error);
+      showToast(
+        `The account was moved to Trash, but the list could not refresh: ${message}`
+      );
+      return null;
+    }
+  };
+
+  const handleRestoreTrashedUser = async (
+    userId: string
+  ): Promise<string | null> => {
+    if (activeRole !== 'Super Admin' || !supabase) {
+      return 'Only a Super Admin can restore accounts from Trash.';
+    }
+    const request = registrationRequests.find((item) => item.id === userId);
+    if (!request?.trashedAt) return 'This account is not in Trash.';
+
+    try {
+      const { error } = await supabase.rpc(
+        'super_admin_restore_rejected_user',
+        { target_user_id: userId }
+      );
+      if (error) return `Could not restore the account: ${error.message}`;
+      setRegistrationRequests((previous) =>
+        previous.map((item) =>
+          item.id === userId ? { ...item, trashedAt: undefined } : item
+        )
+      );
+      setProfileState((previous) => ({
+        ...previous,
+        profiles: previous.profiles.map((profile) =>
+          profile.userId === userId
+            ? { ...profile, trashedAt: undefined }
+            : profile
+        ),
+      }));
+      const profiles = await fetchCloudProfiles();
+      setProfileState((previous) => ({
+        ...previous,
+        profiles: profiles.map(mapCloudProfile),
+      }));
+      setRegistrationRequests(cloudProfilesToRegistrationRequests(profiles));
+      showToast(`${request.fullName} restored to Rejected users.`);
+      return null;
+    } catch (error) {
+      const message = getSupabaseFailureMessage(error);
+      showToast(
+        `The account was restored, but the list could not refresh: ${message}`
+      );
+      return null;
+    }
   };
 
   const handleDeleteUser = (userId: string) => {
@@ -2777,7 +2915,12 @@ export default function App() {
                       <UserApprovalsPage
                         requests={registrationRequests}
                         existingAccountCount={availableDemoUsers.length}
+                        canManageTrash={
+                          isSupabaseConfigured && activeRole === 'Super Admin'
+                        }
                         onUpdateStatus={handleUpdateRegistrationStatus}
+                        onTrashRejectedUser={handleTrashRejectedUser}
+                        onRestoreTrashedUser={handleRestoreTrashedUser}
                       />
                     )}
 
@@ -2832,6 +2975,7 @@ export default function App() {
                       canPromoteToAdmin={
                         isSupabaseConfigured && activeRole === 'Super Admin'
                       }
+                      currentUserId={activeProfileUserId}
                       onPromoteToAdmin={handlePromoteUserToAdmin}
                     />
                   )}
@@ -2853,6 +2997,7 @@ export default function App() {
                   canPromoteToAdmin={
                     isSupabaseConfigured && activeRole === 'Super Admin'
                   }
+                  currentUserId={activeProfileUserId}
                   onPromoteToAdmin={handlePromoteUserToAdmin}
                 />
               ) : (

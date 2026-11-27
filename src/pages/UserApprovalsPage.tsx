@@ -7,7 +7,9 @@ import {
   Eye,
   Mail,
   Phone,
+  RotateCcw,
   ShieldCheck,
+  Trash2,
   UserRound,
   UserX,
   X,
@@ -19,15 +21,18 @@ import type {
   RegistrationStatus,
 } from '../types';
 
-type RequestFilter = 'All' | RegistrationStatus;
+type RequestFilter = 'All' | RegistrationStatus | 'Trash';
 
 interface UserApprovalsPageProps {
   requests: RegistrationRequest[];
   existingAccountCount: number;
+  canManageTrash: boolean;
   onUpdateStatus: (
     requestId: string,
     status: 'Approved' | 'Rejected'
   ) => void;
+  onTrashRejectedUser: (requestId: string) => Promise<string | null>;
+  onRestoreTrashedUser: (requestId: string) => Promise<string | null>;
 }
 
 function formatRegistrationDate(value: string) {
@@ -51,29 +56,45 @@ function statusStyle(status: RegistrationStatus) {
 export function UserApprovalsPage({
   requests,
   existingAccountCount,
+  canManageTrash,
   onUpdateStatus,
+  onTrashRejectedUser,
+  onRestoreTrashedUser,
 }: UserApprovalsPageProps) {
   const [filter, setFilter] = useState<RequestFilter>('All');
   const [selectedRequest, setSelectedRequest] =
     useState<RegistrationRequest | null>(null);
+  const [workingRequestId, setWorkingRequestId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const counts = useMemo(
-    () => ({
-      total: existingAccountCount + requests.length,
-      pending: requests.filter((request) => request.status === 'Pending Approval')
-        .length,
-      approved:
-        existingAccountCount +
-        requests.filter((request) => request.status === 'Approved').length,
-      rejected: requests.filter((request) => request.status === 'Rejected')
-        .length,
-    }),
+    () => {
+      const activeRequests = requests.filter((request) => !request.trashedAt);
+      return {
+        total: existingAccountCount + activeRequests.length,
+        pending: activeRequests.filter(
+          (request) => request.status === 'Pending Approval'
+        ).length,
+        approved:
+          existingAccountCount +
+          activeRequests.filter((request) => request.status === 'Approved')
+            .length,
+        rejected: activeRequests.filter(
+          (request) => request.status === 'Rejected'
+        ).length,
+      };
+    },
     [existingAccountCount, requests]
   );
   const visibleRequests = useMemo(
     () =>
       requests
-        .filter((request) => filter === 'All' || request.status === filter)
+        .filter((request) =>
+          filter === 'Trash'
+            ? Boolean(request.trashedAt)
+            : !request.trashedAt &&
+              (filter === 'All' || request.status === filter)
+        )
         .sort(
           (left, right) =>
             new Date(right.registeredAt).getTime() -
@@ -86,6 +107,38 @@ export function UserApprovalsPage({
     onUpdateStatus(request.id, status);
     setSelectedRequest(null);
   };
+
+  const updateTrashStatus = async (
+    request: RegistrationRequest,
+    restore: boolean
+  ) => {
+    setWorkingRequestId(request.id);
+    setActionError(null);
+    try {
+      const error = restore
+        ? await onRestoreTrashedUser(request.id)
+        : await onTrashRejectedUser(request.id);
+      if (error) {
+        setActionError(error);
+      } else {
+        setSelectedRequest(null);
+      }
+    } catch (error) {
+      setActionError(
+        error instanceof Error ? error.message : 'Could not update Trash status.'
+      );
+    } finally {
+      setWorkingRequestId(null);
+    }
+  };
+
+  const filters: RequestFilter[] = [
+    'All',
+    'Pending Approval',
+    'Approved',
+    'Rejected',
+  ];
+  if (canManageTrash) filters.push('Trash');
 
   return (
     <div className="space-y-5">
@@ -155,25 +208,36 @@ export function UserApprovalsPage({
             role="group"
             aria-label="Filter registration requests"
           >
-            {(['All', 'Pending Approval', 'Approved', 'Rejected'] as const).map(
-              (option) => (
-                <button
-                  key={option}
-                  type="button"
-                  onClick={() => setFilter(option)}
-                  aria-pressed={filter === option}
-                  className={`rounded-md px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${
-                    filter === option
-                      ? 'bg-white text-emerald-900 shadow-sm dark:bg-emerald-800 dark:text-white'
-                      : 'text-emerald-800/70 hover:text-emerald-950 dark:text-emerald-200/70 dark:hover:text-white'
-                  }`}
-                >
-                  {option === 'Pending Approval' ? 'Pending' : option}
-                </button>
-              )
-            )}
+            {filters.map((option) => (
+              <button
+                key={option}
+                type="button"
+                onClick={() => setFilter(option)}
+                aria-pressed={filter === option}
+                className={`rounded-md px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${
+                  filter === option
+                    ? 'bg-white text-emerald-900 shadow-sm dark:bg-emerald-800 dark:text-white'
+                    : 'text-emerald-800/70 hover:text-emerald-950 dark:text-emerald-200/70 dark:hover:text-white'
+                }`}
+              >
+                {option === 'Pending Approval'
+                  ? 'Pending'
+                  : option === 'Trash'
+                    ? `Trash (${requests.filter((request) => request.trashedAt).length})`
+                    : option}
+              </button>
+            ))}
           </div>
         </div>
+
+        {actionError && (
+          <p
+            role="alert"
+            className="mx-4 mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800 dark:border-red-900/70 dark:bg-red-950/40 dark:text-red-200"
+          >
+            {actionError}
+          </p>
+        )}
 
         {visibleRequests.length === 0 ? (
           <div className="flex flex-col items-center px-6 py-14 text-center">
@@ -222,7 +286,7 @@ export function UserApprovalsPage({
                       <span
                         className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-semibold ${statusStyle(request.status)}`}
                       >
-                        {request.status}
+                        {request.trashedAt ? 'Trash' : request.status}
                       </span>
                     </td>
                     <td className="px-4 py-3.5">
@@ -255,6 +319,44 @@ export function UserApprovalsPage({
                             </button>
                           </>
                         )}
+                        {request.status === 'Rejected' && !request.trashedAt && (
+                          <button
+                            type="button"
+                            onClick={() => review(request, 'Approved')}
+                            className="inline-flex items-center gap-1 rounded-lg bg-emerald-700 px-2.5 py-1.5 font-semibold text-white hover:bg-emerald-600 dark:bg-emerald-600"
+                          >
+                            <Check className="h-3.5 w-3.5" />
+                            Re-approve
+                          </button>
+                        )}
+                        {request.status === 'Rejected' &&
+                          !request.trashedAt &&
+                          canManageTrash && (
+                            <button
+                              type="button"
+                              disabled={workingRequestId === request.id}
+                              onClick={() => void updateTrashStatus(request, false)}
+                              className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2.5 py-1.5 font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                              {workingRequestId === request.id
+                                ? 'Moving…'
+                                : 'Move to Trash'}
+                            </button>
+                          )}
+                        {request.trashedAt && canManageTrash && (
+                          <button
+                            type="button"
+                            disabled={workingRequestId === request.id}
+                            onClick={() => void updateTrashStatus(request, true)}
+                            className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 px-2.5 py-1.5 font-semibold text-emerald-800 hover:bg-emerald-50 disabled:opacity-60 dark:border-emerald-800/70 dark:text-emerald-200 dark:hover:bg-emerald-900/40"
+                          >
+                            <RotateCcw className="h-3.5 w-3.5" />
+                            {workingRequestId === request.id
+                              ? 'Restoring…'
+                              : 'Restore'}
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -271,23 +373,50 @@ export function UserApprovalsPage({
         title="Registration details"
         subtitle="Review the applicant information and approval status."
         footer={
-          selectedRequest?.status === 'Pending Approval' ? (
+          selectedRequest?.trashedAt && canManageTrash ? (
+            <button
+              type="button"
+              disabled={workingRequestId === selectedRequest.id}
+              onClick={() => void updateTrashStatus(selectedRequest, true)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 px-3 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-50 disabled:opacity-60 dark:border-emerald-800/70 dark:text-emerald-200"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              Restore from Trash
+            </button>
+          ) : selectedRequest &&
+            (selectedRequest.status === 'Pending Approval' ||
+              selectedRequest.status === 'Rejected') ? (
             <>
+              {selectedRequest.status === 'Pending Approval' && (
+                <button
+                  type="button"
+                  onClick={() => review(selectedRequest, 'Rejected')}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-50 dark:border-red-800/70 dark:text-red-300 dark:hover:bg-red-950/40"
+                >
+                  <X className="h-3.5 w-3.5" />
+                  Reject
+                </button>
+              )}
+              {selectedRequest.status === 'Rejected' && canManageTrash && (
+                <button
+                  type="button"
+                  disabled={workingRequestId === selectedRequest.id}
+                  onClick={() => void updateTrashStatus(selectedRequest, false)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60 dark:border-slate-700 dark:text-slate-200"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Move to Trash
+                </button>
+              )}
               <button
                 type="button"
-                onClick={() => selectedRequest && review(selectedRequest, 'Rejected')}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-50 dark:border-red-800/70 dark:text-red-300 dark:hover:bg-red-950/40"
-              >
-                <X className="h-3.5 w-3.5" />
-                Reject
-              </button>
-              <button
-                type="button"
-                onClick={() => selectedRequest && review(selectedRequest, 'Approved')}
+                onClick={() => review(selectedRequest, 'Approved')}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-600 dark:bg-emerald-600"
               >
                 <Check className="h-3.5 w-3.5" />
-                Approve User
+                {selectedRequest.status === 'Rejected'
+                  ? 'Re-approve User'
+                  : 'Approve User'}
               </button>
             </>
           ) : undefined
@@ -295,6 +424,14 @@ export function UserApprovalsPage({
       >
         {selectedRequest && (
           <div className="space-y-4">
+            {actionError && (
+              <p
+                role="alert"
+                className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800 dark:border-red-900/70 dark:bg-red-950/40 dark:text-red-200"
+              >
+                {actionError}
+              </p>
+            )}
             <div className="flex items-center gap-3 rounded-xl bg-emerald-50 p-4 dark:bg-emerald-950/40">
               <span className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-white text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200">
                 <UserRound className="h-5 w-5" />
@@ -317,7 +454,9 @@ export function UserApprovalsPage({
                 Account status
               </span>
               <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold ${statusStyle(selectedRequest.status)}`}>
-                {selectedRequest.status}
+                {selectedRequest.trashedAt
+                  ? 'Trash'
+                  : selectedRequest.status}
               </span>
             </div>
             {selectedRequest.reviewedAt && (

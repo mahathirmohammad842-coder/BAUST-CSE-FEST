@@ -28,6 +28,7 @@ export interface RegistrationRequest {
   passwordSalt: string;
   passwordHash: string;
   reviewedAt?: string;
+  trashedAt?: string;
 }
 
 export interface RegistrationInput {
@@ -104,6 +105,7 @@ export interface UserProfile {
   accountStatus: ProfileAccountStatus;
   verified: boolean;
   createdAt: string;
+  trashedAt?: string;
 }
 
 export type ProfileAuditAction =
