@@ -61,13 +61,19 @@ export function isAnnouncementVisibleToRole(
   announcement: Announcement,
   role: UserRole
 ): boolean {
-  if (announcement.status !== 'Delivered') {
+  if (announcement.trashedAt || announcement.status !== 'Delivered') {
     return false;
   }
   if (announcement.targeting.everyoneAttending) {
     return true;
   }
   if (announcement.targeting.roles.includes(role)) {
+    return true;
+  }
+  if (
+    role === 'Super Admin' &&
+    announcement.targeting.roles.includes('Organizer')
+  ) {
     return true;
   }
   return false;
@@ -77,13 +83,17 @@ export function isAnnouncementVisibleToRbacRoles(
   announcement: Announcement,
   rbacRoles: UserRole[]
 ): boolean {
-  if (announcement.status !== 'Delivered') {
+  if (announcement.trashedAt || announcement.status !== 'Delivered') {
     return false;
   }
   if (announcement.targeting.everyoneAttending) {
     return true;
   }
-  return rbacRoles.some((r) => announcement.targeting.roles.includes(r));
+  return rbacRoles.some(
+    (r) =>
+      announcement.targeting.roles.includes(r) ||
+      (r === 'Super Admin' && announcement.targeting.roles.includes('Organizer'))
+  );
 }
 
 export function getPriorityWeight(priority: NotificationPriority): number {

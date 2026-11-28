@@ -502,9 +502,16 @@ export default function App() {
         ? { byUserId: {}, events: [] }
         : loadNotificationActionStore()
     );
+  const notificationActionStoreRef = useRef<NotificationActionStore>(
+    notificationActionStore
+  );
+  notificationActionStoreRef.current = notificationActionStore;
   const [lastAttendeeRole, setLastAttendeeRole] =
     useState<WorkspaceRole>('Participant');
   const [activeRoute, setActiveRoute] = useState<AppRoute>('dashboard');
+  const [inboxTargetNoticeId, setInboxTargetNoticeId] = useState<string | null>(
+    null
+  );
   const mainContentRef = useRef<HTMLElement>(null);
   const [settingsSection, setSettingsSection] =
     useState<SettingsSection>('account');
@@ -614,7 +621,9 @@ export default function App() {
     setRegistrationRequests([]);
     setDeletedDemoUserIds([]);
     setUserBlockState({ records: [], events: [] });
-    setNotificationActionStore({ byUserId: {}, events: [] });
+    const emptyActionsStore: NotificationActionStore = { byUserId: {}, events: [] };
+    notificationActionStoreRef.current = emptyActionsStore;
+    setNotificationActionStore(emptyActionsStore);
     setOrganizerContacts([]);
     setOrganizerMessages([]);
     setIncidentReports([]);
@@ -628,6 +637,7 @@ export default function App() {
     setMode(isSupabaseConfigured ? 'inbox' : 'organizer');
     setLastAttendeeRole('Participant');
     setActiveRoute('dashboard');
+    setInboxTargetNoticeId(null);
     setEditingAnnouncement(null);
     setMobileMenuOpen(false);
     setAnnouncements(isSupabaseConfigured ? [] : INITIAL_ANNOUNCEMENTS);
@@ -1193,15 +1203,18 @@ export default function App() {
     }
     setMode(nextMode);
     setMobileMenuOpen(false);
+    setInboxTargetNoticeId(null);
     setActiveRoute('dashboard');
   };
 
   const handleNavigateProfile = () => {
     setSettingsSection('account');
-    setMode(
-      canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)
-        ? 'organizer'
-        : 'inbox'
+    setMode((currentMode) =>
+      currentMode === 'inbox'
+        ? 'inbox'
+        : canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)
+          ? 'organizer'
+          : 'inbox'
     );
     setActiveRoute('profile');
     setMobileMenuOpen(false);
@@ -1209,10 +1222,12 @@ export default function App() {
 
   const handleNavigateSettings = (section: SettingsSection) => {
     setSettingsSection(section);
-    setMode(
-      canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)
-        ? 'organizer'
-        : 'inbox'
+    setMode((currentMode) =>
+      currentMode === 'inbox'
+        ? 'inbox'
+        : canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)
+          ? 'organizer'
+          : 'inbox'
     );
     setActiveRoute('settings');
     setMobileMenuOpen(false);
@@ -1375,10 +1390,12 @@ export default function App() {
         const diff = Date.parse(right.occurredAt) - Date.parse(left.occurredAt);
         return Number.isNaN(diff) ? 0 : diff;
       });
-      setNotificationActionStore({
+      const refreshedStore: NotificationActionStore = {
         byUserId: { [cloudUserId]: userStates },
         events: userEvents.slice(0, 5000),
-      });
+      };
+      notificationActionStoreRef.current = refreshedStore;
+      setNotificationActionStore(refreshedStore);
     } catch (error) {
       console.warn('Could not refresh notification actions:', error);
     }
@@ -2281,7 +2298,7 @@ export default function App() {
   const handleAssignUserRole = async (
     userId: string,
     newRole: WorkspaceRole,
-    notes: string
+    notes = ''
   ): Promise<string | null> => {
     if (activeRole !== 'Super Admin') {
       return 'Only Super Admins can assign or change user roles.';
@@ -2359,7 +2376,7 @@ export default function App() {
   const handleBulkAssignUserRoles = async (
     userIds: string[],
     newRole: WorkspaceRole,
-    notes: string
+    notes = ''
   ): Promise<string | null> => {
     if (activeRole !== 'Super Admin') {
       return 'Only Super Admins can bulk assign user roles.';
@@ -2402,7 +2419,7 @@ export default function App() {
   const handleUpdateVerificationStatus = async (
     userId: string,
     newStatus: VerificationStatus,
-    notes: string
+    notes = ''
   ): Promise<string | null> => {
     if (!canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)) {
       return 'Only approved Organizers or Super Admins can verify user information.';
@@ -2480,7 +2497,7 @@ export default function App() {
   const handleBulkVerifyUsers = async (
     userIds: string[],
     newStatus: VerificationStatus,
-    notes: string
+    notes = ''
   ): Promise<string | null> => {
     if (!canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)) {
       return 'Only staff can bulk verify users.';
@@ -3662,6 +3679,15 @@ export default function App() {
     ...inboxUserBase,
     fullName: inboxUserProfile?.fullName ?? inboxUserBase.fullName,
     phone: inboxUserProfile?.phone ?? inboxUserBase.phone,
+    affiliation:
+      inboxUserProfile?.institution ||
+      inboxUserProfile?.department ||
+      inboxUserBase.affiliation ||
+      'BAUST CSE Fest 2026',
+    assignedRoom:
+      inboxUserBase.assignedRoom ||
+      inboxUserProfile?.department ||
+      undefined,
   };
 
   // Instant Real-Time Sync + Presence Tracker hooks (no polling)
@@ -3946,9 +3972,11 @@ export default function App() {
     const userNotifications =
       notificationActionStore.byUserId[inboxUser.id] ?? {};
     const isPending = (activeProfile.approvalStatus ?? 'Approved') === 'Pending';
+    const nowMs = Date.now();
     return activeAnnouncements.filter((a) => {
       if (isPending) {
         if (
+          a.trashedAt ||
           a.status !== 'Delivered' ||
           (!a.targeting.everyoneAttending &&
             !a.targeting.roles.includes('Participant'))
@@ -3958,8 +3986,19 @@ export default function App() {
       } else if (!isAnnouncementVisibleToRole(a, inboxRole)) {
         return false;
       }
+      const personalState = userNotifications[a.id];
+      if (personalState?.deleted || personalState?.archived) {
+        return false;
+      }
+      if (
+        typeof personalState?.snoozedUntil === 'string' &&
+        personalState.snoozedUntil.length > 0 &&
+        Date.parse(personalState.snoozedUntil) > nowMs
+      ) {
+        return false;
+      }
       const isRead =
-        userNotifications[a.id]?.read ??
+        personalState?.read ??
         a.isReadByUserId?.[inboxUser.id] ??
         a.isReadByCurrentRole?.[inboxRole] ??
         false;
@@ -4431,39 +4470,38 @@ export default function App() {
   };
 
   const handlePublishScheduledNow = (announcementId: string) => {
+    const existingAnnouncement = announcements.find(
+      (a) => a.id === announcementId
+    );
+    if (!existingAnnouncement) return;
     const nowIso = new Date().toISOString();
-    let updatedAnnouncement: Announcement | null = null;
+    const delivered = existingAnnouncement.totalRecipients;
+    const updatedAnnouncement: Announcement = {
+      ...existingAnnouncement,
+      status: 'Delivered',
+      publishedAt: nowIso,
+      pendingCount: 0,
+      deliveredCount: delivered,
+      readCount: Math.floor(delivered * 0.45),
+      clickCount: Math.floor(delivered * 0.18),
+      channelBreakdown: existingAnnouncement.channelBreakdown.map((ch) => ({
+        ...ch,
+        deliveredCount: ch.targetedCount,
+        pendingCount: 0,
+        readCount: Math.floor(ch.targetedCount * 0.45),
+        clickCount: Math.floor(ch.targetedCount * 0.18),
+      })),
+    };
     skipNextAnnouncementSyncRef.current = true;
     setAnnouncements((prev) =>
-      prev.map((a) => {
-        if (a.id !== announcementId) return a;
-        const delivered = a.totalRecipients;
-        updatedAnnouncement = {
-          ...a,
-          status: 'Delivered',
-          publishedAt: nowIso,
-          pendingCount: 0,
-          deliveredCount: delivered,
-          readCount: Math.floor(delivered * 0.45),
-          clickCount: Math.floor(delivered * 0.18),
-          channelBreakdown: a.channelBreakdown.map((ch) => ({
-            ...ch,
-            deliveredCount: ch.targetedCount,
-            pendingCount: 0,
-            readCount: Math.floor(ch.targetedCount * 0.45),
-            clickCount: Math.floor(ch.targetedCount * 0.18),
-          })),
-        };
-        return updatedAnnouncement;
-      })
+      prev.map((a) => (a.id === announcementId ? updatedAnnouncement : a))
     );
-    if (updatedAnnouncement && isSupabaseConfigured && supabase && cloudUserId) {
-      const saved = updatedAnnouncement;
-      void saveCloudAnnouncements([saved], cloudUserId)
+    if (isSupabaseConfigured && supabase && cloudUserId) {
+      void saveCloudAnnouncements([updatedAnnouncement], cloudUserId)
         .then(async () => {
           await rpcLogAnnouncementAudit(
-            saved.id,
-            saved.title,
+            updatedAnnouncement.id,
+            updatedAnnouncement.title,
             'published',
             'Published scheduled announcement immediately'
           );
@@ -4499,16 +4537,18 @@ export default function App() {
       )
     );
 
-    let updatedAnnouncement: Announcement | null = null;
-    skipNextAnnouncementSyncRef.current = true;
-    setAnnouncements((prev) =>
-      prev.map((ann) => {
-        if (ann.id !== target.announcementId) return ann;
-        updatedAnnouncement = {
-          ...ann,
-          deliveredCount: Math.min(ann.totalRecipients, ann.deliveredCount + 1),
-          failedCount: Math.max(0, ann.failedCount - 1),
-          channelBreakdown: ann.channelBreakdown.map((ch) =>
+    const existingAnnouncement = announcements.find(
+      (ann) => ann.id === target.announcementId
+    );
+    const updatedAnnouncement: Announcement | null = existingAnnouncement
+      ? {
+          ...existingAnnouncement,
+          deliveredCount: Math.min(
+            existingAnnouncement.totalRecipients,
+            existingAnnouncement.deliveredCount + 1
+          ),
+          failedCount: Math.max(0, existingAnnouncement.failedCount - 1),
+          channelBreakdown: existingAnnouncement.channelBreakdown.map((ch) =>
             ch.channel === target.channel
               ? {
                   ...ch,
@@ -4520,10 +4560,16 @@ export default function App() {
                 }
               : ch
           ),
-        };
-        return updatedAnnouncement;
-      })
-    );
+        }
+      : null;
+    skipNextAnnouncementSyncRef.current = true;
+    if (updatedAnnouncement) {
+      setAnnouncements((prev) =>
+        prev.map((ann) =>
+          ann.id === target.announcementId ? updatedAnnouncement : ann
+        )
+      );
+    }
 
     if (updatedAnnouncement && isSupabaseConfigured && supabase && cloudUserId) {
       void saveCloudAnnouncements([updatedAnnouncement], cloudUserId)
@@ -4580,19 +4626,21 @@ export default function App() {
       )
     );
 
-    let updatedAnnouncement: Announcement | null = null;
-    skipNextAnnouncementSyncRef.current = true;
-    setAnnouncements((prev) =>
-      prev.map((ann) => {
-        if (ann.id !== announcementId) return ann;
-        updatedAnnouncement = {
-          ...ann,
+    const existingAnnouncement = announcements.find(
+      (ann) => ann.id === announcementId
+    );
+    const updatedAnnouncement: Announcement | null = existingAnnouncement
+      ? {
+          ...existingAnnouncement,
           deliveredCount: Math.min(
-            ann.totalRecipients,
-            ann.deliveredCount + targets.length
+            existingAnnouncement.totalRecipients,
+            existingAnnouncement.deliveredCount + targets.length
           ),
-          failedCount: Math.max(0, ann.failedCount - targets.length),
-          channelBreakdown: ann.channelBreakdown.map((ch) => {
+          failedCount: Math.max(
+            0,
+            existingAnnouncement.failedCount - targets.length
+          ),
+          channelBreakdown: existingAnnouncement.channelBreakdown.map((ch) => {
             const recovered = countByChannel[ch.channel] ?? 0;
             if (recovered === 0) return ch;
             return {
@@ -4604,10 +4652,16 @@ export default function App() {
               failedCount: Math.max(0, ch.failedCount - recovered),
             };
           }),
-        };
-        return updatedAnnouncement;
-      })
-    );
+        }
+      : null;
+    skipNextAnnouncementSyncRef.current = true;
+    if (updatedAnnouncement) {
+      setAnnouncements((prev) =>
+        prev.map((ann) =>
+          ann.id === announcementId ? updatedAnnouncement : ann
+        )
+      );
+    }
 
     if (updatedAnnouncement && isSupabaseConfigured && supabase && cloudUserId) {
       void saveCloudAnnouncements([updatedAnnouncement], cloudUserId)
@@ -4793,15 +4847,16 @@ export default function App() {
     nextRead: boolean,
     userId: string
   ) => {
+    const currentStore = notificationActionStoreRef.current;
     const previousState =
-      notificationActionStore.byUserId[userId]?.[announcementId] ??
+      currentStore.byUserId[userId]?.[announcementId] ??
       createDefaultPersonalNotificationState();
-    const nextState = {
-      ...notificationActionStore,
+    const nextState: NotificationActionStore = {
+      ...currentStore,
       byUserId: {
-        ...notificationActionStore.byUserId,
+        ...currentStore.byUserId,
         [userId]: {
-          ...notificationActionStore.byUserId[userId],
+          ...currentStore.byUserId[userId],
           [announcementId]: {
             ...previousState,
             read: nextRead,
@@ -4813,10 +4868,10 @@ export default function App() {
           id: `notification-action-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           userId,
           notificationId: announcementId,
-          action: nextRead ? 'read' as const : 'unread' as const,
+          action: nextRead ? ('read' as const) : ('unread' as const),
           occurredAt: new Date().toISOString(),
         },
-        ...notificationActionStore.events,
+        ...currentStore.events,
       ].slice(0, 5000),
     };
     if (!isSupabaseConfigured) {
@@ -4827,6 +4882,7 @@ export default function App() {
         return;
       }
     }
+    notificationActionStoreRef.current = nextState;
     setNotificationActionStore(nextState);
     persistCloudNotificationActions(userId, [announcementId], nextState);
 
@@ -4862,8 +4918,9 @@ export default function App() {
     action: NotificationActionName,
     detail?: string
   ) => {
+    const currentStore = notificationActionStoreRef.current;
     const previous =
-      notificationActionStore.byUserId[userId]?.[notificationId] ??
+      currentStore.byUserId[userId]?.[notificationId] ??
       createDefaultPersonalNotificationState();
     const event = {
       id: `notification-action-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -4874,15 +4931,15 @@ export default function App() {
       detail,
     };
     const nextState: NotificationActionStore = {
-      ...notificationActionStore,
+      ...currentStore,
       byUserId: {
-        ...notificationActionStore.byUserId,
+        ...currentStore.byUserId,
         [userId]: {
-          ...notificationActionStore.byUserId[userId],
+          ...currentStore.byUserId[userId],
           [notificationId]: { ...previous, ...patch },
         },
       },
-      events: [event, ...notificationActionStore.events].slice(0, 5000),
+      events: [event, ...currentStore.events].slice(0, 5000),
     };
     if (!isSupabaseConfigured) {
       try {
@@ -4892,6 +4949,7 @@ export default function App() {
         return;
       }
     }
+    notificationActionStoreRef.current = nextState;
     setNotificationActionStore(nextState);
     persistCloudNotificationActions(userId, [notificationId], nextState);
   };
@@ -4900,13 +4958,15 @@ export default function App() {
     userId: string,
     notificationIds: string[],
     patch: Partial<PersonalNotificationState>,
-    action: NotificationActionName
+    action: NotificationActionName,
+    role: WorkspaceRole = inboxRole
   ) => {
     if (notificationIds.length === 0) return;
+    const currentStore = notificationActionStoreRef.current;
     const userNotifications = {
-      ...notificationActionStore.byUserId[userId],
+      ...currentStore.byUserId[userId],
     };
-    const events = [...notificationActionStore.events];
+    const events = [...currentStore.events];
     const changedIds = new Set(notificationIds);
     for (const notificationId of notificationIds) {
       const previous =
@@ -4924,7 +4984,7 @@ export default function App() {
 
     const nextState: NotificationActionStore = {
       byUserId: {
-        ...notificationActionStore.byUserId,
+        ...currentStore.byUserId,
         [userId]: userNotifications,
       },
       events: events.slice(0, 5000),
@@ -4937,25 +4997,31 @@ export default function App() {
         return;
       }
     }
+    notificationActionStoreRef.current = nextState;
     setNotificationActionStore(nextState);
     persistCloudNotificationActions(userId, notificationIds, nextState);
 
     if (typeof patch.read === 'boolean') {
+      const nextRead = patch.read;
       setAnnouncements((previous) =>
         previous.map((announcement) => {
           if (!changedIds.has(announcement.id)) return announcement;
           const wasRead =
             announcement.isReadByUserId?.[userId] ??
-            announcement.isReadByCurrentRole?.[activeRole] ??
+            announcement.isReadByCurrentRole?.[role] ??
             false;
           const delta =
-            patch.read && !wasRead ? 1 : !patch.read && wasRead ? -1 : 0;
+            nextRead && !wasRead ? 1 : !nextRead && wasRead ? -1 : 0;
           return {
             ...announcement,
             readCount: Math.max(0, announcement.readCount + delta),
             isReadByUserId: {
               ...(announcement.isReadByUserId ?? {}),
-              [userId]: patch.read,
+              [userId]: nextRead,
+            },
+            isReadByCurrentRole: {
+              ...(announcement.isReadByCurrentRole ?? {}),
+              [role]: nextRead,
             },
           };
         })
@@ -4965,7 +5031,7 @@ export default function App() {
 
   const handleRecordNotificationView = (userId: string, notificationId: string) => {
     const previous =
-      notificationActionStore.byUserId[userId]?.[notificationId] ??
+      notificationActionStoreRef.current.byUserId[userId]?.[notificationId] ??
       createDefaultPersonalNotificationState();
     handleUpdateNotificationAction(
       userId,
@@ -4985,7 +5051,7 @@ export default function App() {
   ) => {
     if (seconds <= 0) return;
     const previous =
-      notificationActionStore.byUserId[userId]?.[notificationId] ??
+      notificationActionStoreRef.current.byUserId[userId]?.[notificationId] ??
       createDefaultPersonalNotificationState();
     handleUpdateNotificationAction(
       userId,
@@ -4998,16 +5064,18 @@ export default function App() {
 
   const handleMarkAllRead = (role: WorkspaceRole, userId: string) => {
     const now = new Date().toISOString();
+    const currentStore = notificationActionStoreRef.current;
     const nextByUser = {
-      ...notificationActionStore.byUserId,
-      [userId]: { ...notificationActionStore.byUserId[userId] },
+      ...currentStore.byUserId,
+      [userId]: { ...currentStore.byUserId[userId] },
     };
-    const events = [...notificationActionStore.events];
+    const events = [...currentStore.events];
     const nextAnnouncements = announcements.map((ann) => {
       if (!isAnnouncementVisibleToRole(ann, role)) return ann;
       const previous =
         nextByUser[userId][ann.id] ??
         createDefaultPersonalNotificationState();
+      if (previous.deleted || previous.archived) return ann;
       nextByUser[userId][ann.id] = { ...previous, read: true };
       events.unshift({
         id: `notification-action-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -5045,6 +5113,7 @@ export default function App() {
         return;
       }
     }
+    notificationActionStoreRef.current = nextState;
     setNotificationActionStore(nextState);
     persistCloudNotificationActions(
       userId,
@@ -5160,7 +5229,10 @@ export default function App() {
         avatarUrl={activeProfile.photoDataUrl || undefined}
         onToggleTheme={() => setDarkMode((prev) => !prev)}
         onChangeMode={handleChangeMode}
-        onNavigateAttendeeRoute={(route) => setActiveRoute(route)}
+        onNavigateAttendeeRoute={(route) => {
+          setInboxTargetNoticeId(null);
+          setActiveRoute(route);
+        }}
         onOpenLogin={handleSignOut}
         onOpenMobileMenu={() => setMobileMenuOpen(true)}
         onNavigateProfile={handleNavigateProfile}
@@ -5308,11 +5380,15 @@ export default function App() {
                     }
                     onChangeSection={(nextSection) => {
                       setSettingsSection(nextSection);
-                      setActiveRoute(
-                        nextSection === 'security'
-                          ? 'security-settings'
-                          : 'system-settings'
-                      );
+                      if (mode === 'organizer') {
+                        setActiveRoute(
+                          nextSection === 'security'
+                            ? 'security-settings'
+                            : 'system-settings'
+                        );
+                      } else {
+                        setActiveRoute('settings');
+                      }
                     }}
                     onToggleTheme={() => setDarkMode((prev) => !prev)}
                   />
@@ -5371,7 +5447,11 @@ export default function App() {
                       approvalStatus={activeProfile.approvalStatus ?? 'Approved'}
                       activeUser={inboxUser}
                       announcements={activeAnnouncements}
-                      preferences={preferencesByRole[inboxRole]}
+                      initialSelectedNoticeId={inboxTargetNoticeId}
+                      preferences={
+                        preferencesByRole[inboxRole] ??
+                        createDefaultPreferencesForRole(inboxRole)
+                      }
                       notificationStates={
                         notificationActionStore.byUserId[inboxUser.id] ?? {}
                       }
@@ -5379,9 +5459,15 @@ export default function App() {
                         (event) => event.userId === inboxUser.id
                       )}
                       organizerContacts={organizerContacts}
-                      messageThreads={organizerMessages}
-                      incidentReports={incidentReports}
-                      infoRequests={infoRequests}
+                      messageThreads={organizerMessages.filter(
+                        (thread) => thread.senderId === inboxUser.id
+                      )}
+                      incidentReports={incidentReports.filter(
+                        (report) => report.reporterId === inboxUser.id
+                      )}
+                      infoRequests={infoRequests.filter(
+                        (request) => request.requesterId === inboxUser.id
+                      )}
                       presenceByUserId={livePresenceMap}
                       onSendOrganizerMessage={handleSendOrganizerMessage}
                       onReplyOrganizerMessage={handleReplyOrganizerMessage}
@@ -5840,8 +5926,14 @@ export default function App() {
                   }
                   approvalLogs={profileState.approvalLogs ?? []}
                   activityLogs={profileState.activityLogs ?? []}
-                  onNavigate={(route) => setActiveRoute(route)}
-                  onOpenNotification={() => setActiveRoute('inbox')}
+                  onNavigate={(route) => {
+                    setInboxTargetNoticeId(null);
+                    setActiveRoute(route);
+                  }}
+                  onOpenNotification={(id) => {
+                    setInboxTargetNoticeId(id);
+                    setActiveRoute('inbox');
+                  }}
                 />
               ) : (
                 <UserInboxPage
@@ -5849,7 +5941,11 @@ export default function App() {
                   approvalStatus={activeProfile.approvalStatus ?? 'Approved'}
                   activeUser={inboxUser}
                   announcements={activeAnnouncements}
-                  preferences={preferencesByRole[inboxRole]}
+                  initialSelectedNoticeId={inboxTargetNoticeId}
+                  preferences={
+                    preferencesByRole[inboxRole] ??
+                    createDefaultPreferencesForRole(inboxRole)
+                  }
                   notificationStates={
                     notificationActionStore.byUserId[inboxUser.id] ?? {}
                   }
@@ -5857,9 +5953,15 @@ export default function App() {
                     (event) => event.userId === inboxUser.id
                   )}
                   organizerContacts={organizerContacts}
-                  messageThreads={organizerMessages}
-                  incidentReports={incidentReports}
-                  infoRequests={infoRequests}
+                  messageThreads={organizerMessages.filter(
+                    (thread) => thread.senderId === inboxUser.id
+                  )}
+                  incidentReports={incidentReports.filter(
+                    (report) => report.reporterId === inboxUser.id
+                  )}
+                  infoRequests={infoRequests.filter(
+                    (request) => request.requesterId === inboxUser.id
+                  )}
                   presenceByUserId={livePresenceMap}
                   onSendOrganizerMessage={handleSendOrganizerMessage}
                   onReplyOrganizerMessage={handleReplyOrganizerMessage}

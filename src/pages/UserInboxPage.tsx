@@ -13,7 +13,6 @@ import {
   Download,
   ExternalLink,
   FileDown,
-  Flag,
   HelpCircle,
   History,
   Inbox,
@@ -81,6 +80,7 @@ interface UserInboxPageProps {
   approvalStatus?: ApprovalStatus;
   activeUser: SystemUser;
   announcements: Announcement[];
+  initialSelectedNoticeId?: string | null;
   preferences: UserPreferenceMatrix;
   notificationStates: Record<string, PersonalNotificationState>;
   notificationEvents: NotificationActionEvent[];
@@ -188,7 +188,7 @@ function saveRecentSearches(role: WorkspaceRole, queries: string[]) {
   }
 }
 
-function toLocalDateTimeValue(value: string | null) {
+function toLocalDateTimeValue(value?: string | null) {
   if (!value) return '';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
@@ -201,6 +201,7 @@ export function UserInboxPage({
   approvalStatus = 'Approved',
   activeUser,
   announcements,
+  initialSelectedNoticeId = null,
   preferences,
   notificationStates,
   notificationEvents,
@@ -300,7 +301,8 @@ export function UserInboxPage({
   useEffect(() => {
     const dueReminders = Object.entries(notificationStates).filter(
       ([, state]) =>
-        state.snoozedUntil !== null &&
+        typeof state.snoozedUntil === 'string' &&
+        state.snoozedUntil.length > 0 &&
         Date.parse(state.snoozedUntil) <= reminderTime &&
         state.reminderNotifiedAt === null
     );
@@ -480,7 +482,8 @@ export function UserInboxPage({
       const state = notificationStateFor(n);
       const isRead = state.read;
       const isSnoozed =
-        state.snoozedUntil !== null &&
+        typeof state.snoozedUntil === 'string' &&
+        state.snoozedUntil.length > 0 &&
         Date.parse(state.snoozedUntil) > reminderTime;
 
       if (filterPill === 'trash') {
@@ -521,6 +524,12 @@ export function UserInboxPage({
       if (
         filterPill === 'my-department' &&
         !n.targeting.rooms.includes(activeUser.assignedRoom || '') &&
+        !(
+          activeUser.assignedRoom &&
+          `${n.title} ${n.body} ${n.category}`
+            .toLowerCase()
+            .includes(activeUser.assignedRoom.toLowerCase())
+        ) &&
         !(activeUser.affiliation && `${n.title} ${n.body} ${n.category}`.toLowerCase().includes(activeUser.affiliation.toLowerCase()))
       ) return false;
       if (
@@ -602,13 +611,31 @@ export function UserInboxPage({
     }
   };
 
+  const appliedTargetNoticeRef = useRef<string | null>(null);
+
   useEffect(() => {
-    const sharedId = new URLSearchParams(
+    const hashId = new URLSearchParams(
       window.location.hash.replace(/^#/, '')
     ).get('notification');
-    const sharedNotice = roleNotices.find((notice) => notice.id === sharedId);
-    if (sharedNotice) handleOpenNotice(sharedNotice);
-  }, []);
+    const targetId = initialSelectedNoticeId || hashId;
+    if (!targetId || appliedTargetNoticeRef.current === targetId) return;
+    const targetNotice = roleNotices.find((notice) => notice.id === targetId);
+    if (targetNotice) {
+      appliedTargetNoticeRef.current = targetId;
+      handleOpenNotice(targetNotice);
+    }
+  }, [initialSelectedNoticeId, roleNotices]);
+
+  useEffect(() => {
+    if (!selectedNotice) {
+      setDraftResponse('');
+      setFollowUpDueAt('');
+      return;
+    }
+    const state = notificationStateFor(selectedNotice);
+    setDraftResponse(state.draftResponse ?? '');
+    setFollowUpDueAt(toLocalDateTimeValue(state.dueAt));
+  }, [selectedNotice?.id]);
 
   const handleSelectRecentSearch = (query: string) => {
     setSearchQuery(query);
@@ -965,10 +992,17 @@ export function UserInboxPage({
               {activeUser.fullName} · {activeRole} Inbox
             </h1>
             <p className="text-xs text-emerald-900/60 dark:text-emerald-300/65">
-              {activeUser.affiliation} · Venue: {activeUser.assignedRoom}
-              {approvalStatus === 'Pending'
-                ? ' · Approval pending (showing public & participant notices)'
-                : ''}
+              {[
+                activeUser.affiliation,
+                activeUser.assignedRoom
+                  ? `Venue: ${activeUser.assignedRoom}`
+                  : null,
+                approvalStatus === 'Pending'
+                  ? 'Approval pending (showing public & participant notices)'
+                  : null,
+              ]
+                .filter(Boolean)
+                .join(' · ') || 'Personal Notification Feed'}
             </p>
           </div>
 
@@ -1826,11 +1860,18 @@ export function UserInboxPage({
                       checked={Boolean(selectedNotificationState?.followUp)}
                       onChange={(event) => {
                         const followUp = event.target.checked;
+                        const parsedDue = followUpDueAt
+                          ? new Date(followUpDueAt)
+                          : null;
+                        const validDueIso =
+                          parsedDue && !Number.isNaN(parsedDue.getTime())
+                            ? parsedDue.toISOString()
+                            : null;
                         onUpdateNotificationAction(
                           selectedNotice.id,
                           {
                             followUp,
-                            dueAt: followUp ? (followUpDueAt ? new Date(followUpDueAt).toISOString() : null) : null,
+                            dueAt: followUp ? validDueIso : null,
                           },
                           followUp ? 'follow-up-set' : 'follow-up-cleared'
                         );
@@ -1847,9 +1888,11 @@ export function UserInboxPage({
                       onChange={(event) => setFollowUpDueAt(event.target.value)}
                       onBlur={() => {
                         if (!selectedNotificationState?.followUp || !followUpDueAt) return;
+                        const parsedDue = new Date(followUpDueAt);
+                        if (Number.isNaN(parsedDue.getTime())) return;
                         onUpdateNotificationAction(
                           selectedNotice.id,
-                          { dueAt: new Date(followUpDueAt).toISOString() },
+                          { dueAt: parsedDue.toISOString() },
                           'follow-up-set',
                           followUpDueAt
                         );

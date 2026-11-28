@@ -19,7 +19,11 @@ import type {
   ApprovalLog,
   UserProfile,
 } from '../types';
-import { formatDhakaDateOnly, formatDhakaDateTime } from '../utils/formatters';
+import {
+  formatDhakaDateOnly,
+  formatDhakaDateTime,
+  isAnnouncementVisibleToRole,
+} from '../utils/formatters';
 import type { PersonalNotificationState } from '../utils/notificationActions';
 import { calculateProfileCompletion } from '../utils/profileStore';
 
@@ -64,24 +68,32 @@ export function PendingApprovalDashboard({
   // Pending users strictly only see Delivered public ('everyoneAttending') or 'Participant' notices
   const visibleNotices = announcements
     .filter((a) => {
-      if (a.trashedAt || a.status !== 'Delivered') return false;
+      const state = notificationStates[a.id];
+      if (state?.deleted) return false;
       if (isPending) {
         return (
-          a.targeting.everyoneAttending ||
-          a.targeting.roles.includes('Participant')
+          isAnnouncementVisibleToRole(a, 'Participant') &&
+          (a.targeting.everyoneAttending ||
+            a.targeting.roles.includes('Participant'))
         );
       }
-      return (
-        a.targeting.everyoneAttending || a.targeting.roles.includes(assignedRole)
-      );
+      return isAnnouncementVisibleToRole(a, assignedRole);
     })
     .sort((a, b) =>
       (b.publishedAt || b.createdAt).localeCompare(a.publishedAt || a.createdAt)
     );
 
-  const unreadCount = visibleNotices.filter(
-    (a) => !(notificationStates[a.id]?.read ?? false)
-  ).length;
+  const isNoticeRead = (notice: Announcement) =>
+    notificationStates[notice.id]?.read ??
+    notice.isReadByUserId?.[profile.userId] ??
+    notice.isReadByCurrentRole?.[assignedRole] ??
+    false;
+
+  const unreadCount = visibleNotices.filter((a) => {
+    const state = notificationStates[a.id];
+    if (state?.archived || state?.deleted) return false;
+    return !isNoticeRead(a);
+  }).length;
 
   const recentNotices = visibleNotices.slice(0, 4);
   const userApprovalLogs = approvalLogs
@@ -128,7 +140,9 @@ export function PendingApprovalDashboard({
             Welcome, {profile.fullName}
           </h1>
           <p className="mt-1 text-xs text-slate-600 dark:text-emerald-200/70">
-            Manage your profile, follow public event updates, and track your role approval progress.
+            {isPending
+              ? 'Manage your profile, follow public event updates, and track your role approval progress.'
+              : `Manage your personal profile, notification inbox, and event schedule as ${assignedRole}.`}
           </p>
         </div>
 
@@ -302,7 +316,7 @@ export function PendingApprovalDashboard({
           ) : (
             <ul className="divide-y divide-emerald-100 dark:divide-emerald-900/50">
               {recentNotices.map((notice) => {
-                const isRead = notificationStates[notice.id]?.read ?? false;
+                const isRead = isNoticeRead(notice);
                 return (
                   <li key={notice.id}>
                     <button
@@ -438,7 +452,7 @@ export function PendingApprovalDashboard({
                     1. Account Created &amp; Active
                   </p>
                   <p className="text-[11px] text-slate-500 dark:text-emerald-300/65">
-                    Assigned Role: Participant · Requested: {requestedRole}
+                    Assigned Role: {assignedRole} · Requested: {requestedRole}
                   </p>
                 </div>
               </li>
