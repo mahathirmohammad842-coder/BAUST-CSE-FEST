@@ -21,6 +21,7 @@ import { LoginPage } from './pages/LoginPage';
 import { ProfileManagementPage } from './pages/ProfileManagementPage';
 import { RejectedTrashPage } from './pages/RejectedTrashPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { SuperAdminUsersPage } from './pages/SuperAdminUsersPage';
 import { SystemHealthPage } from './pages/SystemHealthPage';
 import { UserInboxPage } from './pages/UserInboxPage';
 import { UserApprovalsPage } from './pages/UserApprovalsPage';
@@ -30,6 +31,7 @@ import { UsersPage } from './pages/UsersPage';
 import type {
   ActivityFeedEntry,
   Announcement,
+  ApprovalLog,
   DeliveryStatus,
   NotificationDelivery,
   OrganizerProfile,
@@ -41,10 +43,13 @@ import type {
   RegistrationInput,
   RegistrationRequest,
   RegistrableRole,
+  RoleChangeLog,
   SettingsSection,
   SystemUser,
   UserProfile,
   UserPreferenceMatrix,
+  VerificationLog,
+  VerificationStatus,
   WorkspaceRole,
 } from './types';
 import {
@@ -87,11 +92,22 @@ import {
   deleteCloudAnnouncement,
   extractFunctionsInvokeError,
   fetchCloudAnnouncements,
+  fetchCloudApprovalLogs,
   fetchCloudNotificationActions,
   fetchCloudProfile,
   fetchCloudProfiles,
+  fetchCloudRoleChangeLogs,
+  fetchCloudVerificationLogs,
   isSupabaseConfigured,
   mapCloudProfile,
+  rpcRecommendRegistration,
+  rpcRecordMyLastLogin,
+  rpcReviewUserRegistration,
+  rpcStaffBulkVerifyUsers,
+  rpcStaffUpdateVerification,
+  rpcSuperAdminAssignRole,
+  rpcSuperAdminBulkAssignRoles,
+  rpcSuperAdminSetOrganizerPermission,
   saveCloudAnnouncements,
   saveCloudNotificationAction,
   saveCloudProfile,
@@ -180,6 +196,9 @@ function createDefaultUserProfile(
   return {
     userId: user.id,
     role: user.role,
+    requestedRole: isAdministrator
+      ? 'Participant'
+      : (user.role as RegistrableRole),
     fullName: user.fullName,
     email: user.email,
     phone: user.phone,
@@ -200,7 +219,11 @@ function createDefaultUserProfile(
     },
     accountStatus,
     verified: isAdministrator || accountStatus === 'Active',
+    verificationStatus:
+      isAdministrator || accountStatus === 'Active' ? 'Verified' : 'Pending',
     createdAt,
+    lastLoginAt: null,
+    canManageApprovals: user.role === 'Super Admin',
   };
 }
 
@@ -383,13 +406,36 @@ function cloudProfilesToRegistrationRequests(
     'Mentor',
   ];
   return profiles.flatMap((profile) => {
-    if (!registrableRoles.includes(profile.role as RegistrableRole)) return [];
+    if (profile.role === 'Super Admin') return [];
+    const isStaffActive =
+      ['Organizer', 'Admin'].includes(profile.role) &&
+      profile.account_status === 'Active';
+    if (isStaffActive) return [];
+
+    const requestedRole: RegistrableRole = registrableRoles.includes(
+      profile.requested_role as RegistrableRole
+    )
+      ? (profile.requested_role as RegistrableRole)
+      : registrableRoles.includes(profile.role as RegistrableRole)
+        ? (profile.role as RegistrableRole)
+        : 'Participant';
+
+    const verificationStatus: VerificationStatus =
+      profile.verification_status === 'Verified' ||
+      profile.verification_status === 'Rejected' ||
+      profile.verification_status === 'Pending'
+        ? profile.verification_status
+        : profile.verified
+          ? 'Verified'
+          : 'Pending';
+
     return [{
       id: profile.id,
       fullName: profile.full_name,
       email: profile.email,
       phone: profile.phone,
-      role: profile.role as RegistrableRole,
+      role: requestedRole,
+      assignedRole: profile.role,
       affiliation: profile.institution || profile.department,
       registeredAt: profile.created_at,
       status:
@@ -398,6 +444,14 @@ function cloudProfilesToRegistrationRequests(
           : profile.account_status === 'Pending Approval'
             ? 'Pending Approval'
             : 'Approved',
+      verificationStatus,
+      lastLoginAt: profile.last_login_at ?? undefined,
+      recommendedAction: profile.recommended_action ?? null,
+      recommendedRole: profile.recommended_role ?? null,
+      recommendedById: profile.recommended_by ?? null,
+      recommendedByName: profile.recommended_by_name ?? null,
+      recommendationNotes: profile.recommendation_notes ?? null,
+      recommendedAt: profile.recommended_at ?? null,
       passwordSalt: '',
       passwordHash: '',
       ...(profile.trashed_at ? { trashedAt: profile.trashed_at } : {}),
@@ -455,7 +509,11 @@ export default function App() {
   }, [activeRoute, mode]);
 
   useEffect(() => {
-    if (activeRoute === 'rejected-trash' && activeRole !== 'Super Admin') {
+    if (
+      (activeRoute === 'rejected-trash' ||
+        activeRoute === 'super-admin-users') &&
+      activeRole !== 'Super Admin'
+    ) {
       setActiveRoute('dashboard');
     }
   }, [activeRole, activeRoute]);
@@ -537,12 +595,19 @@ export default function App() {
             : 'This account is currently suspended. Contact the organizer.';
       }
 
+      void rpcRecordMyLastLogin();
       const isStaff = ['Organizer', 'Admin', 'Super Admin'].includes(
         currentRow.role
       );
-      const profileRows = isStaff
-        ? await fetchCloudProfiles()
-        : [currentRow];
+      const [profileRows, roleChangeLogs, approvalLogs, verificationLogs] =
+        isStaff
+          ? await Promise.all([
+              fetchCloudProfiles(),
+              fetchCloudRoleChangeLogs(),
+              fetchCloudApprovalLogs(),
+              fetchCloudVerificationLogs(),
+            ])
+          : [[currentRow], [], [], []];
       if (!isLatestRequest()) return null;
       const currentProfile = mapCloudProfile(currentRow);
       setProfileState((previous) => ({
@@ -550,6 +615,9 @@ export default function App() {
         profiles: profileRows.map(mapCloudProfile),
         credentials: {},
         passwordResetRequired: [],
+        roleChangeLogs,
+        approvalLogs,
+        verificationLogs,
       }));
       setRegistrationRequests(cloudProfilesToRegistrationRequests(profileRows));
       const authAccount: SystemUser = {
@@ -892,7 +960,9 @@ export default function App() {
           fullName: request.fullName,
           email: request.email,
           phone: request.phone,
-          role: request.role,
+          role:
+            request.assignedRole ??
+            (request.status === 'Approved' ? request.role : 'Participant'),
           affiliation: request.affiliation,
           badgeCode: request.id,
         },
@@ -910,20 +980,44 @@ export default function App() {
       const stored = profileState.profiles.find(
         (profile) => profile.userId === user.id
       );
+      const request = registrationRequests.find((item) => item.id === user.id);
       const accountStatus =
         stored?.accountStatus === 'Suspended'
           ? 'Suspended'
           : status;
+      const verificationStatus: VerificationStatus =
+        stored?.verificationStatus ??
+        request?.verificationStatus ??
+        ((stored?.verified ?? approved ?? base.verified) ? 'Verified' : 'Pending');
       return {
         ...base,
         ...stored,
         userId: user.id,
-        role: user.role,
+        role: isSupabaseConfigured ? user.role : stored?.role ?? user.role,
+        requestedRole:
+          stored?.requestedRole ?? request?.role ?? base.requestedRole,
         fullName: stored?.fullName ?? user.fullName,
         email: stored?.email ?? user.email,
         phone: stored?.phone ?? user.phone,
         accountStatus,
-        verified: stored?.verified ?? (approved ?? base.verified),
+        verified: verificationStatus === 'Verified',
+        verificationStatus,
+        lastLoginAt: stored?.lastLoginAt ?? request?.lastLoginAt ?? base.lastLoginAt,
+        canManageApprovals:
+          stored?.canManageApprovals ??
+          ((stored?.role ?? user.role) === 'Super Admin'),
+        recommendedAction:
+          stored?.recommendedAction ?? request?.recommendedAction ?? null,
+        recommendedRole:
+          stored?.recommendedRole ?? request?.recommendedRole ?? null,
+        recommendedById:
+          stored?.recommendedById ?? request?.recommendedById ?? null,
+        recommendedByName:
+          stored?.recommendedByName ?? request?.recommendedByName ?? null,
+        recommendationNotes:
+          stored?.recommendationNotes ?? request?.recommendationNotes ?? null,
+        recommendedAt:
+          stored?.recommendedAt ?? request?.recommendedAt ?? null,
         createdAt: createdAt ?? stored?.createdAt ?? base.createdAt,
       };
     });
@@ -1006,10 +1100,19 @@ export default function App() {
       return 'Supabase is not configured.';
     }
     try {
-      const cloudProfiles = await fetchCloudProfiles();
+      const [cloudProfiles, roleChangeLogs, approvalLogs, verificationLogs] =
+        await Promise.all([
+          fetchCloudProfiles(),
+          fetchCloudRoleChangeLogs(),
+          fetchCloudApprovalLogs(),
+          fetchCloudVerificationLogs(),
+        ]);
       setProfileState((previous) => ({
         ...previous,
         profiles: cloudProfiles.map(mapCloudProfile),
+        roleChangeLogs,
+        approvalLogs,
+        verificationLogs,
       }));
       setRegistrationRequests(
         cloudProfilesToRegistrationRequests(cloudProfiles)
@@ -1597,31 +1700,56 @@ export default function App() {
 
   const handleUpdateRegistrationStatus = async (
     requestId: string,
-    status: 'Approved' | 'Rejected'
+    status: 'Approved' | 'Rejected',
+    options?: {
+      assignedRole?: WorkspaceRole;
+      approvalNotes?: string;
+      markVerified?: boolean;
+    }
   ) => {
-    if (!canAccessOrganizerWorkspace(activeRole)) return;
+    const canApproveDirectly =
+      activeRole === 'Super Admin' ||
+      (activeRole === 'Organizer' && Boolean(activeProfile.canManageApprovals));
+    if (!canApproveDirectly) {
+      showToast(
+        'Only Super Admins or Organizers with delegated approval permission can change approval status.'
+      );
+      return;
+    }
+    if (requestId === activeProfileUserId) {
+      showToast('You cannot approve, reject, or assign roles to your own account.');
+      return;
+    }
+    const requestedAssignedRole = options?.assignedRole;
+    if (
+      requestedAssignedRole &&
+      ['Organizer', 'Admin', 'Super Admin'].includes(requestedAssignedRole) &&
+      activeRole !== 'Super Admin'
+    ) {
+      showToast('Only a Super Admin can assign Organizer, Admin, or Super Admin roles.');
+      return;
+    }
+
     if (isSupabaseConfigured && supabase) {
-      const { error } = await supabase.rpc('review_user_registration', {
-        target_user_id: requestId,
-        approve: status === 'Approved',
-      });
-      if (error) {
-        showToast(`Could not update registration in Supabase: ${error.message}`);
-        return;
-      }
       try {
-        const cloudProfiles = await fetchCloudProfiles();
-        setProfileState((previous) => ({
-          ...previous,
-          profiles: cloudProfiles.map(mapCloudProfile),
-        }));
-        setRegistrationRequests(
-          cloudProfilesToRegistrationRequests(cloudProfiles)
+        await rpcReviewUserRegistration(
+          requestId,
+          status === 'Approved',
+          requestedAssignedRole ?? null,
+          options?.approvalNotes ?? '',
+          Boolean(options?.markVerified)
         );
       } catch (error) {
-        const message =
-          error instanceof Error ? error.message : 'Unexpected Supabase error.';
-        showToast(`Registration updated, but profiles could not refresh: ${message}`);
+        showToast(
+          `Could not update registration in Supabase: ${getSupabaseFailureMessage(error)}`
+        );
+        return;
+      }
+      const refreshError = await handleRefreshCloudProfiles();
+      if (refreshError) {
+        showToast(
+          `Registration updated, but profiles could not refresh: ${refreshError}`
+        );
         return;
       }
       showToast(
@@ -1632,12 +1760,35 @@ export default function App() {
       return;
     }
 
+    const nowIso = new Date().toISOString();
+    const actor = getProfileActor();
+    const targetReq = registrationRequests.find((r) => r.id === requestId);
+    if (
+      !targetReq ||
+      targetReq.trashedAt ||
+      (targetReq.status !== 'Pending Approval' &&
+        !(status === 'Approved' && targetReq.status === 'Rejected'))
+    ) {
+      return;
+    }
+    const finalAssignedRole: WorkspaceRole =
+      status === 'Approved'
+        ? requestedAssignedRole ?? targetReq.role
+        : 'Participant';
+    const nextVerification: VerificationStatus =
+      status === 'Approved' && options?.markVerified
+        ? 'Verified'
+        : targetReq.verificationStatus ?? 'Pending';
+
     const updatedRequests = registrationRequests.map((request) =>
-      request.id === requestId &&
-      !request.trashedAt &&
-      (request.status === 'Pending Approval' ||
-        (status === 'Approved' && request.status === 'Rejected'))
-        ? { ...request, status, reviewedAt: new Date().toISOString() }
+      request.id === requestId
+        ? {
+            ...request,
+            status,
+            assignedRole: finalAssignedRole,
+            verificationStatus: nextVerification,
+            reviewedAt: nowIso,
+          }
         : request
     );
     try {
@@ -1647,55 +1798,526 @@ export default function App() {
       return;
     }
     setRegistrationRequests(updatedRequests);
+
+    const existingProfile =
+      managedProfiles.find((p) => p.userId === requestId) ??
+      createDefaultUserProfile({
+        id: targetReq.id,
+        fullName: targetReq.fullName,
+        email: targetReq.email,
+        phone: targetReq.phone,
+        role: finalAssignedRole,
+        affiliation: targetReq.affiliation,
+        badgeCode: targetReq.id,
+      });
+    const prevRole = existingProfile.role;
+    const nextProfile: UserProfile = {
+      ...existingProfile,
+      role: finalAssignedRole,
+      requestedRole: targetReq.role,
+      accountStatus: status === 'Approved' ? 'Active' : 'Rejected',
+      verificationStatus: nextVerification,
+      verified: nextVerification === 'Verified',
+    };
+    const approvalEntry: ApprovalLog = {
+      id: `app-log-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      userId: requestId,
+      userEmail: targetReq.email,
+      userName: targetReq.fullName,
+      action: status === 'Approved' ? 'approved' : 'rejected',
+      requestedRole: targetReq.role,
+      assignedRole: finalAssignedRole,
+      previousStatus: targetReq.status,
+      newStatus: status === 'Approved' ? 'Active' : 'Rejected',
+      actorId: actor.actorId,
+      actorName: actor.actorName,
+      createdAt: nowIso,
+      approvalNotes: options?.approvalNotes ?? '',
+    };
+    const roleLogEntry: RoleChangeLog[] =
+      prevRole !== finalAssignedRole
+        ? [
+            {
+              id: `role-log-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+              userId: requestId,
+              userEmail: targetReq.email,
+              userName: targetReq.fullName,
+              previousRole: prevRole,
+              newRole: finalAssignedRole,
+              changedById: actor.actorId,
+              changedByName: actor.actorName,
+              changedAt: nowIso,
+              notes: options?.approvalNotes || `Assigned on registration ${status.toLowerCase()}`,
+            },
+          ]
+        : [];
+    persistProfileState(
+      {
+        ...profileState,
+        profiles: [
+          ...profileState.profiles.filter((p) => p.userId !== requestId),
+          nextProfile,
+        ],
+        approvalLogs: [approvalEntry, ...(profileState.approvalLogs ?? [])].slice(0, 500),
+        roleChangeLogs: [
+          ...roleLogEntry,
+          ...(profileState.roleChangeLogs ?? []),
+        ].slice(0, 500),
+      },
+      'Approval decision saved, but audit logs could not be written locally.'
+    );
     showToast(
       status === 'Approved'
-        ? 'User approved. They can now sign in and will see the approval notification.'
-        : 'User rejected. The account remains inactive and the applicant will see the decision when signing in.'
+        ? `${targetReq.fullName} approved as ${finalAssignedRole}.`
+        : `${targetReq.fullName} rejected.`
     );
   };
 
   const handleBulkUpdateRegistrationStatus = async (
     requestIds: string[],
-    status: 'Approved' | 'Rejected'
-  ) => {
-    if (!canAccessOrganizerWorkspace(activeRole) || requestIds.length === 0) {
-      return;
+    status: 'Approved' | 'Rejected',
+    notes = ''
+  ): Promise<string | null> => {
+    const canApproveDirectly =
+      activeRole === 'Super Admin' ||
+      (activeRole === 'Organizer' && Boolean(activeProfile.canManageApprovals));
+    if (!canApproveDirectly || requestIds.length === 0) {
+      return 'You do not have permission to change approval statuses.';
+    }
+    const filteredIds = requestIds.filter((id) => id !== activeProfileUserId);
+    if (filteredIds.length === 0) {
+      return 'Self-approval is not permitted.';
     }
     if (isSupabaseConfigured && supabase) {
       let succeeded = 0;
       let firstError: string | null = null;
-      for (const id of requestIds) {
-        const { error } = await supabase.rpc('review_user_registration', {
-          target_user_id: id,
-          approve: status === 'Approved',
-        });
-        if (error) {
-          if (!firstError) firstError = error.message;
-        } else {
+      for (const id of filteredIds) {
+        try {
+          await rpcReviewUserRegistration(
+            id,
+            status === 'Approved',
+            null,
+            notes,
+            status === 'Approved'
+          );
           succeeded += 1;
+        } catch (error) {
+          if (!firstError) firstError = getSupabaseFailureMessage(error);
         }
       }
       const refreshError = await handleRefreshCloudProfiles();
       if (firstError) {
-        showToast(
-          `Processed ${succeeded}/${requestIds.length} requests. Error: ${firstError}`
-        );
-      } else if (refreshError) {
+        const msg = `Processed ${succeeded}/${filteredIds.length} requests. Error: ${firstError}`;
+        showToast(msg);
+        return msg;
+      }
+      if (refreshError) {
         showToast(
           `Updated ${succeeded} requests, but directory refresh failed: ${refreshError}`
         );
-      } else {
-        showToast(
-          `${succeeded} registration${succeeded === 1 ? '' : 's'} ${
-            status === 'Approved' ? 'approved' : 'rejected'
-          } in Supabase.`
-        );
+        return null;
       }
-      return;
+      showToast(
+        `${succeeded} registration${succeeded === 1 ? '' : 's'} ${
+          status === 'Approved' ? 'approved' : 'rejected'
+        } in Supabase.`
+      );
+      return null;
     }
-    for (const id of requestIds) {
-      await handleUpdateRegistrationStatus(id, status);
+    for (const id of filteredIds) {
+      await handleUpdateRegistrationStatus(id, status, {
+        approvalNotes: notes,
+        markVerified: status === 'Approved',
+      });
     }
+    return null;
+  };
+
+  const handleAssignUserRole = async (
+    userId: string,
+    newRole: WorkspaceRole,
+    notes: string
+  ): Promise<string | null> => {
+    if (activeRole !== 'Super Admin') {
+      return 'Only Super Admins can assign or change user roles.';
+    }
+    if (userId === activeProfileUserId) {
+      return 'Users cannot change or promote their own role.';
+    }
+    const target = managedProfiles.find((p) => p.userId === userId);
+    if (!target) return 'Target user not found.';
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await rpcSuperAdminAssignRole(userId, newRole, notes);
+      } catch (error) {
+        return `Could not assign role: ${getSupabaseFailureMessage(error)}`;
+      }
+      const refreshError = await handleRefreshCloudProfiles();
+      if (refreshError) {
+        showToast(`Role assigned, but directory refresh failed: ${refreshError}`);
+      } else {
+        showToast(`${target.fullName} is now ${newRole}.`);
+      }
+      return null;
+    }
+
+    const nowIso = new Date().toISOString();
+    const actor = getProfileActor();
+    const updatedProfile: UserProfile = {
+      ...target,
+      role: newRole,
+      canManageApprovals:
+        newRole === 'Super Admin' ? true : target.canManageApprovals ?? false,
+    };
+    const roleLog: RoleChangeLog = {
+      id: `role-log-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      userId,
+      userEmail: target.email,
+      userName: target.fullName,
+      previousRole: target.role,
+      newRole,
+      changedById: actor.actorId,
+      changedByName: actor.actorName,
+      changedAt: nowIso,
+      notes,
+    };
+    const updatedRequests = registrationRequests.map((r) =>
+      r.id === userId ? { ...r, assignedRole: newRole } : r
+    );
+    saveRegistrationRequests(updatedRequests);
+    setRegistrationRequests(updatedRequests);
+    persistProfileState(
+      {
+        ...profileState,
+        profiles: [
+          ...profileState.profiles.filter((p) => p.userId !== userId),
+          updatedProfile,
+        ],
+        roleChangeLogs: [roleLog, ...(profileState.roleChangeLogs ?? [])].slice(
+          0,
+          500
+        ),
+      },
+      'Could not save role change locally.'
+    );
+    showToast(`${target.fullName} role updated to ${newRole}.`);
+    return null;
+  };
+
+  const handleBulkAssignUserRoles = async (
+    userIds: string[],
+    newRole: WorkspaceRole,
+    notes: string
+  ): Promise<string | null> => {
+    if (activeRole !== 'Super Admin') {
+      return 'Only Super Admins can bulk assign user roles.';
+    }
+    const eligibleIds = userIds.filter((id) => id !== activeProfileUserId);
+    if (eligibleIds.length === 0) {
+      return 'Select at least one other user (self role modification is blocked).';
+    }
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const count = await rpcSuperAdminBulkAssignRoles(
+          eligibleIds,
+          newRole,
+          notes
+        );
+        const refreshError = await handleRefreshCloudProfiles();
+        if (refreshError) {
+          showToast(
+            `Updated ${count} roles, but refresh failed: ${refreshError}`
+          );
+        } else {
+          showToast(`Assigned ${newRole} to ${count} user(s).`);
+        }
+        return null;
+      } catch (error) {
+        return `Bulk role assignment failed: ${getSupabaseFailureMessage(error)}`;
+      }
+    }
+    for (const id of eligibleIds) {
+      await handleAssignUserRole(id, newRole, notes);
+    }
+    return null;
+  };
+
+  const handleUpdateVerificationStatus = async (
+    userId: string,
+    newStatus: VerificationStatus,
+    notes: string
+  ): Promise<string | null> => {
+    if (!['Organizer', 'Admin', 'Super Admin'].includes(activeRole)) {
+      return 'Only Organizers, Admins, or Super Admins can verify user information.';
+    }
+    if (userId === activeProfileUserId) {
+      return 'You cannot change your own verification status.';
+    }
+    const target = managedProfiles.find((p) => p.userId === userId);
+    if (!target) return 'User not found.';
+    if (target.role === 'Super Admin' && activeRole !== 'Super Admin') {
+      return 'Only a Super Admin can modify another Super Admin verification state.';
+    }
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await rpcStaffUpdateVerification(userId, newStatus, notes);
+      } catch (error) {
+        return `Verification update failed: ${getSupabaseFailureMessage(error)}`;
+      }
+      const refreshError = await handleRefreshCloudProfiles();
+      if (refreshError) {
+        showToast(
+          `Verification saved, but refresh failed: ${refreshError}`
+        );
+      } else {
+        showToast(`${target.fullName} verification set to ${newStatus}.`);
+      }
+      return null;
+    }
+
+    const nowIso = new Date().toISOString();
+    const actor = getProfileActor();
+    const prevStatus: VerificationStatus = target.verificationStatus ?? 'Pending';
+    const updatedProfile: UserProfile = {
+      ...target,
+      verificationStatus: newStatus,
+      verified: newStatus === 'Verified',
+    };
+    const vLog: VerificationLog = {
+      id: `ver-log-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      userId,
+      userEmail: target.email,
+      userName: target.fullName,
+      previousStatus: prevStatus,
+      newStatus,
+      verifiedById: actor.actorId,
+      verifiedByName: actor.actorName,
+      verifiedAt: nowIso,
+      verificationNotes: notes,
+    };
+    const updatedRequests = registrationRequests.map((r) =>
+      r.id === userId ? { ...r, verificationStatus: newStatus } : r
+    );
+    saveRegistrationRequests(updatedRequests);
+    setRegistrationRequests(updatedRequests);
+    persistProfileState(
+      {
+        ...profileState,
+        profiles: [
+          ...profileState.profiles.filter((p) => p.userId !== userId),
+          updatedProfile,
+        ],
+        verificationLogs: [
+          vLog,
+          ...(profileState.verificationLogs ?? []),
+        ].slice(0, 500),
+      },
+      'Could not save verification update locally.'
+    );
+    showToast(`${target.fullName} marked ${newStatus}.`);
+    return null;
+  };
+
+  const handleBulkVerifyUsers = async (
+    userIds: string[],
+    newStatus: VerificationStatus,
+    notes: string
+  ): Promise<string | null> => {
+    if (!['Organizer', 'Admin', 'Super Admin'].includes(activeRole)) {
+      return 'Only staff can bulk verify users.';
+    }
+    const eligibleIds = userIds.filter((id) => id !== activeProfileUserId);
+    if (eligibleIds.length === 0) {
+      return 'Select at least one other user.';
+    }
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const count = await rpcStaffBulkVerifyUsers(
+          eligibleIds,
+          newStatus,
+          notes
+        );
+        const refreshError = await handleRefreshCloudProfiles();
+        if (refreshError) {
+          showToast(
+            `Verified ${count} users, but refresh failed: ${refreshError}`
+          );
+        } else {
+          showToast(`Updated verification (${newStatus}) for ${count} user(s).`);
+        }
+        return null;
+      } catch (error) {
+        return `Bulk verification failed: ${getSupabaseFailureMessage(error)}`;
+      }
+    }
+    for (const id of eligibleIds) {
+      await handleUpdateVerificationStatus(id, newStatus, notes);
+    }
+    return null;
+  };
+
+  const handleRecommendRegistration = async (
+    requestId: string,
+    recommendation: 'Approve' | 'Reject',
+    suggestedRole?: RegistrableRole,
+    notes = ''
+  ): Promise<string | null> => {
+    if (!['Organizer', 'Admin', 'Super Admin'].includes(activeRole)) {
+      return 'Only Organizers or Super Admins can submit recommendations.';
+    }
+    if (requestId === activeProfileUserId) {
+      return 'You cannot recommend your own registration.';
+    }
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await rpcRecommendRegistration(
+          requestId,
+          recommendation,
+          suggestedRole ?? null,
+          notes
+        );
+      } catch (error) {
+        return `Could not save recommendation: ${getSupabaseFailureMessage(error)}`;
+      }
+      await handleRefreshCloudProfiles();
+      showToast(`Recommendation (${recommendation}) saved.`);
+      return null;
+    }
+
+    const nowIso = new Date().toISOString();
+    const actor = getProfileActor();
+    const req = registrationRequests.find((r) => r.id === requestId);
+    if (!req) return 'Registration request not found.';
+    const finalSuggestedRole = suggestedRole ?? req.role;
+    const updatedRequests = registrationRequests.map((item) =>
+      item.id === requestId
+        ? {
+            ...item,
+            recommendedAction: recommendation,
+            recommendedRole: finalSuggestedRole,
+            recommendedById: actor.actorId,
+            recommendedByName: actor.actorName,
+            recommendationNotes: notes,
+            recommendedAt: nowIso,
+          }
+        : item
+    );
+    saveRegistrationRequests(updatedRequests);
+    setRegistrationRequests(updatedRequests);
+
+    const existing = managedProfiles.find((p) => p.userId === requestId);
+    const appLog: ApprovalLog = {
+      id: `app-log-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      userId: requestId,
+      userEmail: req.email,
+      userName: req.fullName,
+      action: 'recommended',
+      requestedRole: req.role,
+      assignedRole: finalSuggestedRole,
+      previousStatus: req.status,
+      newStatus: `Recommended ${recommendation}`,
+      actorId: actor.actorId,
+      actorName: actor.actorName,
+      createdAt: nowIso,
+      approvalNotes: notes,
+    };
+    persistProfileState(
+      {
+        ...profileState,
+        profiles: existing
+          ? [
+              ...profileState.profiles.filter((p) => p.userId !== requestId),
+              {
+                ...existing,
+                recommendedAction: recommendation,
+                recommendedRole: finalSuggestedRole,
+                recommendedById: actor.actorId,
+                recommendedByName: actor.actorName,
+                recommendationNotes: notes,
+                recommendedAt: nowIso,
+              },
+            ]
+          : profileState.profiles,
+        approvalLogs: [appLog, ...(profileState.approvalLogs ?? [])].slice(
+          0,
+          500
+        ),
+      },
+      'Could not save recommendation audit log.'
+    );
+    showToast(`Recommendation (${recommendation}) recorded for ${req.fullName}.`);
+    return null;
+  };
+
+  const handleSetOrganizerPermission = async (
+    userId: string,
+    granted: boolean,
+    notes = ''
+  ): Promise<string | null> => {
+    if (activeRole !== 'Super Admin') {
+      return 'Only Super Admins can grant or revoke Organizer approval permissions.';
+    }
+    if (userId === activeProfileUserId) {
+      return 'You cannot change your own permissions.';
+    }
+    const target = managedProfiles.find((p) => p.userId === userId);
+    if (!target || target.role !== 'Organizer') {
+      return 'Approval delegation applies only to Organizer accounts.';
+    }
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await rpcSuperAdminSetOrganizerPermission(userId, granted, notes);
+      } catch (error) {
+        return `Could not update permission: ${getSupabaseFailureMessage(error)}`;
+      }
+      await handleRefreshCloudProfiles();
+      showToast(
+        granted
+          ? `Granted direct approval permission to ${target.fullName}.`
+          : `Revoked direct approval permission from ${target.fullName}.`
+      );
+      return null;
+    }
+
+    const nowIso = new Date().toISOString();
+    const actor = getProfileActor();
+    const appLog: ApprovalLog = {
+      id: `app-log-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      userId,
+      userEmail: target.email,
+      userName: target.fullName,
+      action: granted ? 'permission_granted' : 'permission_revoked',
+      requestedRole: target.requestedRole ?? target.role,
+      assignedRole: target.role,
+      previousStatus: String(Boolean(target.canManageApprovals)),
+      newStatus: String(granted),
+      actorId: actor.actorId,
+      actorName: actor.actorName,
+      createdAt: nowIso,
+      approvalNotes: notes,
+    };
+    persistProfileState(
+      {
+        ...profileState,
+        profiles: [
+          ...profileState.profiles.filter((p) => p.userId !== userId),
+          { ...target, canManageApprovals: granted },
+        ],
+        approvalLogs: [appLog, ...(profileState.approvalLogs ?? [])].slice(
+          0,
+          500
+        ),
+      },
+      'Could not save permission update locally.'
+    );
+    showToast(
+      granted
+        ? `Granted direct approval permission to ${target.fullName}.`
+        : `Revoked direct approval permission from ${target.fullName}.`
+    );
+    return null;
   };
 
   const handleBulkSetProfileStatus = async (
@@ -2278,6 +2900,14 @@ export default function App() {
         .size,
     [userBlockState.records]
   );
+  const activeAnnouncements = useMemo(
+    () => announcements.filter((item) => !item.trashedAt),
+    [announcements]
+  );
+  const trashedNoticeCount = useMemo(
+    () => announcements.filter((item) => Boolean(item.trashedAt)).length,
+    [announcements]
+  );
   const announcementById = useMemo(
     () => new Map(announcements.map((item) => [item.id, item])),
     [announcements]
@@ -2287,7 +2917,9 @@ export default function App() {
       deliveries.filter((d) => {
         if (d.status !== 'Failed') return false;
         const ann = announcementById.get(d.announcementId);
-        return Boolean(ann && (ann.failedCount > 0 || ann.status === 'Failed'));
+        return Boolean(
+          ann && !ann.trashedAt && (ann.failedCount > 0 || ann.status === 'Failed')
+        );
       }).length,
     [announcementById, deliveries]
   );
@@ -2396,7 +3028,7 @@ export default function App() {
   const unreadCount = useMemo(() => {
     const userNotifications =
       notificationActionStore.byUserId[inboxUser.id] ?? {};
-    return announcements.filter((a) => {
+    return activeAnnouncements.filter((a) => {
       if (!isAnnouncementVisibleToRole(a, inboxRole)) {
         return false;
       }
@@ -2407,13 +3039,14 @@ export default function App() {
         false;
       return !isRead;
     }).length;
-  }, [announcements, inboxRole, inboxUser.id, notificationActionStore]);
+  }, [activeAnnouncements, inboxRole, inboxUser.id, notificationActionStore]);
 
   const selectedAnnouncement = useMemo(
     () =>
       announcements.find((a) => a.id === selectedAnnouncementId) ??
+      activeAnnouncements[0] ??
       announcements[0],
-    [announcements, selectedAnnouncementId]
+    [activeAnnouncements, announcements, selectedAnnouncementId]
   );
 
   const handleInspectAnnouncement = (id: string) => {
@@ -2445,12 +3078,38 @@ export default function App() {
       readCount: 0,
       clickCount: 0,
       channelBreakdown: [],
+      trashedAt: undefined,
+      trashedBy: undefined,
     };
     setEditingAnnouncement(duplicate);
     setActiveRoute('composer');
   };
 
   const handleDeleteAnnouncement = (id: string) => {
+    const actor = getProfileActor();
+    const trashedAt = new Date().toISOString();
+    setAnnouncements((prev) =>
+      prev.map((a) =>
+        a.id === id ? { ...a, trashedAt, trashedBy: actor.actorName } : a
+      )
+    );
+    if (selectedAnnouncementId === id) {
+      const next = activeAnnouncements.find((a) => a.id !== id);
+      if (next) setSelectedAnnouncementId(next.id);
+    }
+    showToast('Announcement moved to Notification Trash Bin.');
+  };
+
+  const handleRestoreAnnouncement = (id: string) => {
+    setAnnouncements((prev) =>
+      prev.map((a) =>
+        a.id === id ? { ...a, trashedAt: undefined, trashedBy: undefined } : a
+      )
+    );
+    showToast('Announcement restored from Notification Trash Bin.');
+  };
+
+  const handlePermanentDeleteAnnouncement = (id: string) => {
     setAnnouncements((prev) => prev.filter((a) => a.id !== id));
     setDeliveries((prev) => prev.filter((d) => d.announcementId !== id));
     setActivityFeed((prev) => prev.filter((entry) => entry.announcementId !== id));
@@ -2461,14 +3120,35 @@ export default function App() {
         showToast(`Could not delete the announcement from Supabase: ${message}`);
       });
     }
-    if (selectedAnnouncementId === id && announcements.length > 1) {
-      const next = announcements.find((a) => a.id !== id);
+    if (selectedAnnouncementId === id) {
+      const next = activeAnnouncements.find((a) => a.id !== id);
       if (next) setSelectedAnnouncementId(next.id);
     }
+    showToast('Announcement permanently deleted.');
+  };
+
+  const handleEmptyAnnouncementTrash = () => {
+    const trashedIds = announcements
+      .filter((a) => Boolean(a.trashedAt))
+      .map((a) => a.id);
+    if (trashedIds.length === 0) return;
+    const trashedSet = new Set(trashedIds);
+    setAnnouncements((prev) => prev.filter((a) => !trashedSet.has(a.id)));
+    setDeliveries((prev) => prev.filter((d) => !trashedSet.has(d.announcementId)));
+    setActivityFeed((prev) =>
+      prev.filter((entry) => !trashedSet.has(entry.announcementId))
+    );
+    if (supabase && cloudUserId) {
+      for (const id of trashedIds) {
+        void deleteCloudAnnouncement(id).catch((error: unknown) => {
+          const message =
+            error instanceof Error ? error.message : 'Unexpected Supabase error.';
+          showToast(`Could not purge announcement from Supabase: ${message}`);
+        });
+      }
+    }
     showToast(
-      isSupabaseConfigured
-        ? 'Announcement removed.'
-        : 'Announcement removed from local demo state.'
+      `Permanently deleted ${trashedIds.length} trashed announcement${trashedIds.length === 1 ? '' : 's'}.`
     );
   };
 
@@ -3100,6 +3780,7 @@ export default function App() {
             activeRole={activeRole}
             activeRoute={activeRoute}
             failedDeliveryCount={failedDeliveryCount}
+            trashedNoticeCount={trashedNoticeCount}
             pendingRequestCount={pendingRequestCount}
             blockedUserCount={blockedUserCount}
             trashedRejectedCount={trashedRejectedCount}
@@ -3205,7 +3886,7 @@ export default function App() {
                           ? 'Super Admin Dashboard'
                           : 'Organizer Dashboard'
                       }
-                      announcements={announcements}
+                      announcements={activeAnnouncements}
                       activityFeed={activityFeed}
                       failedCount={failedDeliveryCount}
                       onCreateAnnouncement={handleCreateNew}
@@ -3216,13 +3897,23 @@ export default function App() {
                     />
                   )}
 
-                  {activeRoute === 'announcements' && (
+                  {(activeRoute === 'announcements' ||
+                    activeRoute === 'notification-trash') && (
                     <AnnouncementsPage
+                      key={activeRoute}
                       announcements={announcements}
+                      initialTab={
+                        activeRoute === 'notification-trash' ? 'Trash' : 'All'
+                      }
                       onInspectAnnouncement={handleInspectAnnouncement}
                       onEditAnnouncement={handleEditAnnouncement}
                       onDuplicateAnnouncement={handleDuplicateAnnouncement}
                       onDeleteAnnouncement={handleDeleteAnnouncement}
+                      onRestoreAnnouncement={handleRestoreAnnouncement}
+                      onPermanentDeleteAnnouncement={
+                        handlePermanentDeleteAnnouncement
+                      }
+                      onEmptyAnnouncementTrash={handleEmptyAnnouncementTrash}
                       onCreateNew={handleCreateNew}
                     />
                   )}
@@ -3242,7 +3933,7 @@ export default function App() {
                   {activeRoute === 'delivery-detail' &&
                     selectedAnnouncement && (
                       <DeliveryDetailPage
-                        announcements={announcements}
+                        announcements={activeAnnouncements}
                         selectedAnnouncement={selectedAnnouncement}
                         deliveries={deliveries}
                         onSelectAnnouncement={(id) =>
@@ -3294,7 +3985,7 @@ export default function App() {
 
                   {activeRoute === 'analytics' && (
                     <AnalyticsPage
-                      announcements={announcements}
+                      announcements={activeAnnouncements}
                       notificationEvents={analyticsNotificationEvents}
                       profiles={managedProfiles}
                     />
@@ -3306,11 +3997,73 @@ export default function App() {
                         requests={registrationRequests}
                         existingAccountCount={availableDemoUsers.length}
                         canManageTrash={activeRole === 'Super Admin'}
+                        currentUserRole={activeRole}
+                        canChangeApprovalStatus={
+                          activeRole === 'Super Admin' ||
+                          Boolean(activeProfile.canManageApprovals)
+                        }
+                        currentUserId={activeProfileUserId}
                         onUpdateStatus={handleUpdateRegistrationStatus}
-                        onBulkUpdateStatus={handleBulkUpdateRegistrationStatus}
+                        onBulkUpdateStatus={async (ids, status) => {
+                          await handleBulkUpdateRegistrationStatus(ids, status);
+                        }}
+                        onRecommendRegistration={handleRecommendRegistration}
+                        onUpdateVerification={handleUpdateVerificationStatus}
                         onTrashRejectedUser={handleTrashRejectedUser}
                         onRestoreTrashedUser={handleRestoreTrashedUser}
                         onRefreshProfiles={
+                          isSupabaseConfigured
+                            ? handleRefreshCloudProfiles
+                            : undefined
+                        }
+                        onNotify={showToast}
+                      />
+                    )}
+
+                  {activeRoute === 'super-admin-users' &&
+                    activeRole === 'Super Admin' && (
+                      <SuperAdminUsersPage
+                        profiles={managedProfiles}
+                        currentUserId={activeProfileUserId}
+                        roleChangeLogs={profileState.roleChangeLogs ?? []}
+                        approvalLogs={profileState.approvalLogs ?? []}
+                        verificationLogs={profileState.verificationLogs ?? []}
+                        onAssignRole={handleAssignUserRole}
+                        onBulkAssignRoles={handleBulkAssignUserRoles}
+                        onReviewRegistration={async (
+                          userId,
+                          approve,
+                          assignedRole,
+                          notes,
+                          markVerified
+                        ) => {
+                          await handleUpdateRegistrationStatus(
+                            userId,
+                            approve ? 'Approved' : 'Rejected',
+                            {
+                              assignedRole,
+                              approvalNotes: notes,
+                              markVerified,
+                            }
+                          );
+                          return null;
+                        }}
+                        onBulkReviewRegistrations={async (
+                          userIds,
+                          approve,
+                          notes
+                        ) =>
+                          handleBulkUpdateRegistrationStatus(
+                            userIds,
+                            approve ? 'Approved' : 'Rejected',
+                            notes ?? ''
+                          )
+                        }
+                        onUpdateVerification={handleUpdateVerificationStatus}
+                        onBulkVerifyUsers={handleBulkVerifyUsers}
+                        onSetOrganizerPermission={handleSetOrganizerPermission}
+                        onSetAccountStatus={handleSetProfileStatus}
+                        onRefreshData={
                           isSupabaseConfigured
                             ? handleRefreshCloudProfiles
                             : undefined
@@ -3369,9 +4122,9 @@ export default function App() {
                           ? handleRefreshCloudProfiles
                           : undefined
                       }
-                      onBulkUpdateRegistrationStatus={
-                        handleBulkUpdateRegistrationStatus
-                      }
+                      onBulkUpdateRegistrationStatus={async (ids, status) => {
+                        await handleBulkUpdateRegistrationStatus(ids, status);
+                      }}
                       onBulkSetProfileStatus={handleBulkSetProfileStatus}
                       onNotify={showToast}
                     />
@@ -3472,7 +4225,7 @@ export default function App() {
                 <UserInboxPage
                   activeRole={inboxRole}
                   activeUser={inboxUser}
-                  announcements={announcements}
+                  announcements={activeAnnouncements}
                   preferences={preferencesByRole[inboxRole]}
                   notificationStates={
                     notificationActionStore.byUserId[inboxUser.id] ?? {}

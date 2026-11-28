@@ -1,9 +1,12 @@
 import type {
+  ApprovalLog,
   ProfileAuditEvent,
   ProfileCredential,
   ProfileLoginEvent,
   ProfileState,
+  RoleChangeLog,
   UserProfile,
+  VerificationLog,
 } from '../types';
 
 export const PROFILE_STORAGE_KEY = 'baust_user_profiles';
@@ -42,6 +45,9 @@ const EMPTY_PROFILE_STATE: ProfileState = {
   loginHistory: [],
   credentials: {},
   passwordResetRequired: [],
+  roleChangeLogs: [],
+  approvalLogs: [],
+  verificationLogs: [],
 };
 
 function isValidDate(value: unknown): value is string {
@@ -118,6 +124,41 @@ function isProfileCredential(value: unknown): value is ProfileCredential {
   );
 }
 
+function isRoleChangeLog(value: unknown): value is RoleChangeLog {
+  if (typeof value !== 'object' || value === null) return false;
+  const log = value as Partial<RoleChangeLog>;
+  return (
+    typeof log.id === 'string' &&
+    typeof log.userId === 'string' &&
+    typeof log.previousRole === 'string' &&
+    typeof log.newRole === 'string' &&
+    isValidDate(log.changedAt)
+  );
+}
+
+function isApprovalLog(value: unknown): value is ApprovalLog {
+  if (typeof value !== 'object' || value === null) return false;
+  const log = value as Partial<ApprovalLog>;
+  return (
+    typeof log.id === 'string' &&
+    typeof log.userId === 'string' &&
+    typeof log.action === 'string' &&
+    isValidDate(log.createdAt)
+  );
+}
+
+function isVerificationLog(value: unknown): value is VerificationLog {
+  if (typeof value !== 'object' || value === null) return false;
+  const log = value as Partial<VerificationLog>;
+  return (
+    typeof log.id === 'string' &&
+    typeof log.userId === 'string' &&
+    typeof log.previousStatus === 'string' &&
+    typeof log.newStatus === 'string' &&
+    isValidDate(log.verifiedAt)
+  );
+}
+
 export function loadProfileState(): ProfileState {
   try {
     const stored = window.localStorage.getItem(PROFILE_STORAGE_KEY);
@@ -154,6 +195,15 @@ export function loadProfileState(): ProfileState {
         ? state.passwordResetRequired.filter(
             (userId): userId is string => typeof userId === 'string'
           )
+        : [],
+      roleChangeLogs: Array.isArray(state.roleChangeLogs)
+        ? state.roleChangeLogs.filter(isRoleChangeLog)
+        : [],
+      approvalLogs: Array.isArray(state.approvalLogs)
+        ? state.approvalLogs.filter(isApprovalLog)
+        : [],
+      verificationLogs: Array.isArray(state.verificationLogs)
+        ? state.verificationLogs.filter(isVerificationLog)
         : [],
     };
   } catch {

@@ -9,6 +9,7 @@ import {
   ShieldCheck,
   Settings,
   Trash2,
+  UserCog,
   UsersRound,
   X,
 } from 'lucide-react';
@@ -17,10 +18,12 @@ import type { SettingsSection, WorkspaceRole } from '../types';
 export type OrganizerRoute =
   | 'dashboard'
   | 'announcements'
+  | 'notification-trash'
   | 'composer'
   | 'delivery-detail'
   | 'analytics'
   | 'user-approvals'
+  | 'super-admin-users'
   | 'rejected-trash'
   | 'blocked-users'
   | 'users'
@@ -33,6 +36,7 @@ interface SidebarProps {
   activeRole: WorkspaceRole;
   activeRoute: OrganizerRoute;
   failedDeliveryCount: number;
+  trashedNoticeCount: number;
   pendingRequestCount: number;
   blockedUserCount: number;
   trashedRejectedCount: number;
@@ -46,6 +50,7 @@ export function Sidebar({
   activeRole,
   activeRoute,
   failedDeliveryCount,
+  trashedNoticeCount,
   pendingRequestCount,
   blockedUserCount,
   trashedRejectedCount,
@@ -73,6 +78,17 @@ export function Sidebar({
           ? `${failedDeliveryCount} failed delivery dispatch${failedDeliveryCount === 1 ? '' : 'es'}`
           : undefined,
     },
+    {
+      id: 'notification-trash',
+      label: 'Notification Trash',
+      icon: Trash2,
+      badge: trashedNoticeCount > 0 ? trashedNoticeCount : undefined,
+      badgeTitle:
+        trashedNoticeCount > 0
+          ? `${trashedNoticeCount} trashed announcement${trashedNoticeCount === 1 ? '' : 's'}`
+          : undefined,
+      badgeTone: 'subtle',
+    },
     { id: 'composer', label: 'Create Notice', icon: PenSquare },
     { id: 'analytics', label: 'Analytics', icon: BarChart3 },
     {
@@ -87,6 +103,11 @@ export function Sidebar({
     },
     ...(activeRole === 'Super Admin'
       ? [
+          {
+            id: 'super-admin-users' as const,
+            label: 'Role Governance',
+            icon: UserCog,
+          },
           {
             id: 'rejected-trash' as const,
             label: 'Rejected Trash',

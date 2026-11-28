@@ -124,7 +124,8 @@ type InboxFilterPill =
   | 'frequently-accessed'
   | 'history'
   | 'schedule-rooms'
-  | 'competitions';
+  | 'competitions'
+  | 'trash';
 
 const MAX_RECENT_SEARCHES = 5;
 
@@ -399,6 +400,20 @@ export function UserInboxPage({
     [roleNotices, activeRole, notificationStates, activeUser.id]
   );
 
+  const trashedCount = useMemo(
+    () =>
+      roleNotices.filter((notice) => notificationStateFor(notice).deleted)
+        .length,
+    [roleNotices, notificationStates, activeRole, activeUser.id]
+  );
+
+  const activeInboxCount = useMemo(
+    () =>
+      roleNotices.filter((notice) => !notificationStateFor(notice).deleted)
+        .length,
+    [roleNotices, notificationStates, activeRole, activeUser.id]
+  );
+
   const filteredNotices = useMemo(() => {
     return roleNotices.filter((n) => {
       const state = notificationStateFor(n);
@@ -407,13 +422,17 @@ export function UserInboxPage({
         state.snoozedUntil !== null &&
         Date.parse(state.snoozedUntil) > reminderTime;
 
-      if (state.deleted) return false;
-      if (filterPill === 'archived' ? !state.archived : state.archived) return false;
-      if (
-        filterPill === 'snoozed'
-          ? !isSnoozed
-          : isSnoozed
-      ) return false;
+      if (filterPill === 'trash') {
+        if (!state.deleted) return false;
+      } else {
+        if (state.deleted) return false;
+        if (filterPill === 'archived' ? !state.archived : state.archived) return false;
+        if (
+          filterPill === 'snoozed'
+            ? !isSnoozed
+            : isSnoozed
+        ) return false;
+      }
       if (filterPill === 'unread' && isRead) return false;
       if (filterPill === 'starred' && !state.starred) return false;
       if (filterPill === 'saved' && !state.saved) return false;
@@ -486,15 +505,16 @@ export function UserInboxPage({
   ]);
 
   const selectedNotice = useMemo(() => {
+    const allowDeleted = filterPill === 'trash';
     if (selectedNoticeId) {
       const found = filteredNotices.find((n) => n.id === selectedNoticeId);
-      if (found) return notificationStateFor(found).deleted ? null : found;
+      if (found) return allowDeleted || !notificationStateFor(found).deleted ? found : null;
       const inRole = roleNotices.find((n) => n.id === selectedNoticeId);
-      if (inRole) return notificationStateFor(inRole).deleted ? null : inRole;
+      if (inRole) return allowDeleted || !notificationStateFor(inRole).deleted ? inRole : null;
     }
-    const first = filteredNotices[0] ?? roleNotices[0] ?? null;
-    return first && !notificationStateFor(first).deleted ? first : null;
-  }, [filteredNotices, roleNotices, selectedNoticeId, notificationStates]);
+    const first = filteredNotices[0] ?? (allowDeleted ? null : roleNotices.find((n) => !notificationStateFor(n).deleted) ?? null);
+    return first && (allowDeleted || !notificationStateFor(first).deleted) ? first : null;
+  }, [filteredNotices, filterPill, roleNotices, selectedNoticeId, notificationStates]);
 
   const handleOpenNotice = (notice: Announcement) => {
     if (searchQuery.trim()) {
@@ -682,7 +702,7 @@ export function UserInboxPage({
     new Set(Object.values(notificationStates).flatMap((state) => state.labels))
   ).sort((left, right) => left.localeCompare(right));
   const filterPills: { id: InboxFilterPill; label: string }[] = [
-    { id: 'all', label: `All (${roleNotices.length})` },
+    { id: 'all', label: `All (${activeInboxCount})` },
     { id: 'unread', label: `Unread (${unreadCount})` },
     { id: 'starred', label: 'Starred' },
     { id: 'saved', label: 'Saved' },
@@ -697,6 +717,7 @@ export function UserInboxPage({
     { id: 'frequently-accessed', label: 'Frequently accessed' },
     { id: 'schedule-rooms', label: 'Schedule & Rooms' },
     { id: 'competitions', label: 'Competitions' },
+    { id: 'trash', label: `Trash (${trashedCount})` },
     { id: 'history', label: 'History' },
   ];
 
@@ -1085,8 +1106,20 @@ export function UserInboxPage({
             <button type="button" onClick={() => applyBulkAction({ read: false }, 'unread')} className="rounded-lg border border-emerald-200 px-2.5 py-1.5 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-100">Mark unread</button>
             <button type="button" onClick={() => applyBulkAction({ starred: true }, 'starred')} className="rounded-lg border border-emerald-200 px-2.5 py-1.5 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-100">Star selected</button>
             <button type="button" onClick={() => applyBulkAction({ saved: true }, 'saved')} className="rounded-lg border border-emerald-200 px-2.5 py-1.5 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-100">Save selected</button>
-            <button type="button" onClick={() => applyBulkAction({ archived: true }, 'archived')} className="rounded-lg border border-emerald-200 px-2.5 py-1.5 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-100">Archive selected</button>
-            <button type="button" onClick={() => applyBulkAction({ deleted: true }, 'deleted')} className="rounded-lg border border-red-200 px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 dark:border-red-900/70 dark:text-red-300">Delete selected</button>
+            {filterPill === 'trash' ? (
+              <button
+                type="button"
+                onClick={() => applyBulkAction({ deleted: false }, 'restored')}
+                className="rounded-lg border border-emerald-200 px-2.5 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-200"
+              >
+                Restore selected
+              </button>
+            ) : (
+              <>
+                <button type="button" onClick={() => applyBulkAction({ archived: true }, 'archived')} className="rounded-lg border border-emerald-200 px-2.5 py-1.5 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-100">Archive selected</button>
+                <button type="button" onClick={() => applyBulkAction({ deleted: true }, 'deleted')} className="rounded-lg border border-red-200 px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 dark:border-red-900/70 dark:text-red-300">Move to Trash</button>
+              </>
+            )}
             <button type="button" onClick={exportSelected} className="rounded-lg bg-emerald-700 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-600 dark:bg-emerald-600">Export selected</button>
             <button type="button" onClick={() => setSelectedNotificationIds([])} className="ml-auto rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-500 hover:bg-slate-100 dark:text-emerald-300 dark:hover:bg-emerald-950/50">Clear</button>
           </div>
@@ -1397,22 +1430,44 @@ export function UserInboxPage({
                     >
                       <Archive className="h-4 w-4" />
                     </button>
-                    <button
-                      type="button"
-                      aria-label={`Delete ${notice.title}`}
-                      title="Delete"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onUpdateNotificationAction(
-                          notice.id,
-                          { deleted: true },
-                          'deleted'
-                        );
-                      }}
-                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-red-700 hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/40"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
+                    {status.deleted ? (
+                      <button
+                        type="button"
+                        aria-label={`Restore ${notice.title} from trash`}
+                        title="Restore from Trash"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onUpdateNotificationAction(
+                            notice.id,
+                            { deleted: false },
+                            'restored'
+                          );
+                          flashFeedback('Notification restored to inbox.');
+                        }}
+                        className="inline-flex h-8 items-center gap-1 rounded-lg px-2 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-950/40"
+                      >
+                        <RotateCcw className="h-3.5 w-3.5" />
+                        Restore
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        aria-label={`Move ${notice.title} to trash`}
+                        title="Move to Trash"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onUpdateNotificationAction(
+                            notice.id,
+                            { deleted: true },
+                            'deleted'
+                          );
+                          flashFeedback('Notification moved to trash.');
+                        }}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-red-700 hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/40"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    )}
                     <button
                       type="button"
                       aria-label={`Snooze ${notice.title} for one hour`}
@@ -1553,21 +1608,41 @@ export function UserInboxPage({
                   <Archive className="h-3.5 w-3.5" />
                   {selectedNotificationState?.archived ? 'Restore' : 'Archive'}
                 </button>
-                <button
-                  type="button"
-                  aria-label="Delete notification"
-                  onClick={() =>
-                    onUpdateNotificationAction(
-                      selectedNotice.id,
-                      { deleted: true },
-                      'deleted'
-                    )
-                  }
-                  className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-red-200 px-2.5 text-xs font-semibold text-red-700 hover:bg-red-50 dark:border-red-900/70 dark:text-red-300 dark:hover:bg-red-950/40"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                  Delete
-                </button>
+                {selectedNotificationState?.deleted ? (
+                  <button
+                    type="button"
+                    aria-label="Restore notification from trash"
+                    onClick={() => {
+                      onUpdateNotificationAction(
+                        selectedNotice.id,
+                        { deleted: false },
+                        'restored'
+                      );
+                      flashFeedback('Notification restored to inbox.');
+                    }}
+                    className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 dark:border-emerald-800/70 dark:bg-emerald-950/50 dark:text-emerald-200 dark:hover:bg-emerald-900/60"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    Restore to Inbox
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    aria-label="Move notification to trash"
+                    onClick={() => {
+                      onUpdateNotificationAction(
+                        selectedNotice.id,
+                        { deleted: true },
+                        'deleted'
+                      );
+                      flashFeedback('Notification moved to trash.');
+                    }}
+                    className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-red-200 px-2.5 text-xs font-semibold text-red-700 hover:bg-red-50 dark:border-red-900/70 dark:text-red-300 dark:hover:bg-red-950/40"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Trash
+                  </button>
+                )}
                 <button
                   type="button"
                   aria-label="Copy notification link"

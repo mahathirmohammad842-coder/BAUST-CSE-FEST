@@ -767,6 +767,9 @@ export function LoginPage({
                           ))}
                         </select>
                       </div>
+                      <p className="mt-1 text-[11px] leading-snug text-slate-500 dark:text-emerald-300/65">
+                        New accounts start as Participant (Pending Approval) until verified &amp; approved.
+                      </p>
                     </div>
 
                     <div>

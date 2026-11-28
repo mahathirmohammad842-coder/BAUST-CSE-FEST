@@ -28,6 +28,7 @@ export type NotificationActionName =
   | 'archived'
   | 'unarchived'
   | 'deleted'
+  | 'restored'
   | 'snoozed'
   | 'unsnoozed'
   | 'follow-up-set'

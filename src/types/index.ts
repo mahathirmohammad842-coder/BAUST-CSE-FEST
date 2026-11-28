@@ -14,6 +14,10 @@ export type RegistrableRole = Exclude<
   'Organizer' | 'Admin' | 'Super Admin'
 >;
 
+export type VerificationStatus = 'Pending' | 'Verified' | 'Rejected';
+
+export type AssignableRole = WorkspaceRole;
+
 export type RegistrationStatus = 'Pending Approval' | 'Approved' | 'Rejected';
 
 export interface RegistrationRequest {
@@ -22,9 +26,18 @@ export interface RegistrationRequest {
   email: string;
   phone: string;
   role: RegistrableRole;
+  assignedRole?: WorkspaceRole;
   affiliation: string;
   registeredAt: string;
   status: RegistrationStatus;
+  verificationStatus?: VerificationStatus;
+  lastLoginAt?: string;
+  recommendedAction?: 'Approve' | 'Reject' | null;
+  recommendedRole?: WorkspaceRole | null;
+  recommendedById?: string | null;
+  recommendedByName?: string | null;
+  recommendationNotes?: string | null;
+  recommendedAt?: string | null;
   passwordSalt: string;
   passwordHash: string;
   reviewedAt?: string;
@@ -93,6 +106,7 @@ export interface ProfileNotificationPreferences {
 export interface UserProfile {
   userId: string;
   role: WorkspaceRole;
+  requestedRole?: RegistrableRole;
   fullName: string;
   email: string;
   phone: string;
@@ -104,7 +118,16 @@ export interface UserProfile {
   notificationPreferences: ProfileNotificationPreferences;
   accountStatus: ProfileAccountStatus;
   verified: boolean;
+  verificationStatus?: VerificationStatus;
   createdAt: string;
+  lastLoginAt?: string | null;
+  canManageApprovals?: boolean;
+  recommendedAction?: 'Approve' | 'Reject' | null;
+  recommendedRole?: WorkspaceRole | null;
+  recommendedById?: string | null;
+  recommendedByName?: string | null;
+  recommendationNotes?: string | null;
+  recommendedAt?: string | null;
   trashedAt?: string;
 }
 
@@ -140,12 +163,65 @@ export interface ProfileCredential {
   hash: string;
 }
 
+export interface RoleChangeLog {
+  id: string;
+  userId: string;
+  userEmail: string;
+  userName: string;
+  previousRole: WorkspaceRole;
+  newRole: WorkspaceRole;
+  changedById: string;
+  changedByName: string;
+  changedAt: string;
+  notes: string;
+}
+
+export type ApprovalLogAction =
+  | 'approved'
+  | 'rejected'
+  | 'recommended'
+  | 'status_changed'
+  | 'permission_granted'
+  | 'permission_revoked';
+
+export interface ApprovalLog {
+  id: string;
+  userId: string;
+  userEmail: string;
+  userName: string;
+  action: ApprovalLogAction;
+  requestedRole: string;
+  assignedRole: string;
+  previousStatus: string;
+  newStatus: string;
+  actorId: string;
+  actorName: string;
+  createdAt: string;
+  approvalNotes: string;
+}
+
+export interface VerificationLog {
+  id: string;
+  userId: string;
+  userEmail: string;
+  userName: string;
+  previousStatus: VerificationStatus;
+  newStatus: VerificationStatus;
+  verifiedById: string;
+  verifiedByName: string;
+  verifiedAt: string;
+  verificationNotes: string;
+}
+
 export interface ProfileState {
   profiles: UserProfile[];
   events: ProfileAuditEvent[];
   loginHistory: ProfileLoginEvent[];
   credentials: Record<string, ProfileCredential>;
   passwordResetRequired: string[];
+  roleChangeLogs?: RoleChangeLog[];
+  approvalLogs?: ApprovalLog[];
+  verificationLogs?: VerificationLog[];
 }
 
 export type NotificationChannel =
@@ -292,6 +368,8 @@ export interface Announcement {
   channelBreakdown: ChannelDeliverySummary[];
   isReadByCurrentRole?: Partial<Record<UserRole, boolean>>;
   isReadByUserId?: Record<string, boolean>;
+  trashedAt?: string;
+  trashedBy?: string;
 }
 
 export interface UserPreferenceMatrix {

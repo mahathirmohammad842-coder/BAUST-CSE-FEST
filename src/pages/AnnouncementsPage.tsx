@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   Copy,
   Edit3,
   Eye,
@@ -30,39 +31,55 @@ import type {
 } from '../types';
 import {
   formatDhakaDateOnly,
+  formatDhakaDateTime,
   formatDhakaTimeOnly,
   formatPercent,
   summarizeTargeting,
 } from '../utils/formatters';
 
+export type AnnouncementTab = DeliveryStatus | 'All' | 'Trash';
+
 interface AnnouncementsPageProps {
   announcements: Announcement[];
+  initialTab?: AnnouncementTab;
   onInspectAnnouncement: (id: string) => void;
   onEditAnnouncement: (announcement: Announcement) => void;
   onDuplicateAnnouncement: (announcement: Announcement) => void;
   onDeleteAnnouncement: (id: string) => void;
+  onRestoreAnnouncement: (id: string) => void;
+  onPermanentDeleteAnnouncement: (id: string) => void;
+  onEmptyAnnouncementTrash: () => void;
   onCreateNew: () => void;
 }
 
-const STATUS_TABS: (DeliveryStatus | 'All')[] = [
+const STATUS_TABS: AnnouncementTab[] = [
   'All',
   'Delivered',
   'Scheduled',
   'Failed',
   'Draft',
+  'Trash',
 ];
 
 export function AnnouncementsPage({
   announcements,
+  initialTab = 'All',
   onInspectAnnouncement,
   onEditAnnouncement,
   onDuplicateAnnouncement,
   onDeleteAnnouncement,
+  onRestoreAnnouncement,
+  onPermanentDeleteAnnouncement,
+  onEmptyAnnouncementTrash,
   onCreateNew,
 }: AnnouncementsPageProps) {
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<DeliveryStatus | 'All'>('All');
+  const [statusFilter, setStatusFilter] = useState<AnnouncementTab>(initialTab);
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+
+  useEffect(() => {
+    setStatusFilter(initialTab);
+  }, [initialTab]);
   const [typeFilter, setTypeFilter] = useState<NotificationType | 'All'>('All');
   const [channelFilter, setChannelFilter] = useState<NotificationChannel | 'All'>(
     'All'
@@ -71,16 +88,21 @@ export function AnnouncementsPage({
   const [roomFilter, setRoomFilter] = useState<string>('All');
   const [dateFilter, setDateFilter] = useState<string>('');
   const [deleteTarget, setDeleteTarget] = useState<Announcement | null>(null);
+  const [permanentTarget, setPermanentTarget] = useState<Announcement | null>(null);
+  const [emptyTrashOpen, setEmptyTrashOpen] = useState(false);
 
   const statusCounts = useMemo(() => {
+    const activeNotices = announcements.filter((a) => !a.trashedAt);
+    const trashedNotices = announcements.filter((a) => Boolean(a.trashedAt));
     const counts: Record<string, number> = {
-      All: announcements.length,
+      All: activeNotices.length,
       Delivered: 0,
       Scheduled: 0,
       Failed: 0,
       Draft: 0,
+      Trash: trashedNotices.length,
     };
-    for (const a of announcements) {
+    for (const a of activeNotices) {
       counts[a.status] = (counts[a.status] ?? 0) + 1;
     }
     return counts;
@@ -111,6 +133,13 @@ export function AnnouncementsPage({
 
   const filteredAnnouncements = useMemo(() => {
     return announcements.filter((ann) => {
+      if (statusFilter === 'Trash') {
+        if (!ann.trashedAt) return false;
+      } else {
+        if (ann.trashedAt) return false;
+        if (statusFilter !== 'All' && ann.status !== statusFilter) return false;
+      }
+
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
         const matchesText =
@@ -122,7 +151,6 @@ export function AnnouncementsPage({
         if (!matchesText) return false;
       }
 
-      if (statusFilter !== 'All' && ann.status !== statusFilter) return false;
       if (typeFilter !== 'All' && ann.type !== typeFilter) return false;
       if (channelFilter !== 'All' && !ann.channels.includes(channelFilter))
         return false;
@@ -162,20 +190,34 @@ export function AnnouncementsPage({
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="font-display text-xl font-bold text-emerald-950 dark:text-emerald-50">
-            Announcements
+            {statusFilter === 'Trash' ? 'Notification Trash Bin' : 'Announcements'}
           </h1>
           <p className="text-xs text-emerald-900/60 dark:text-emerald-300/65">
-            Select a notice to inspect delivery logs or retry failed dispatches
+            {statusFilter === 'Trash'
+              ? 'Soft-deleted notifications live here until restored or permanently purged'
+              : 'Select a notice to inspect delivery logs or retry failed dispatches'}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onCreateNew}
-          className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-700 px-4 py-2 text-xs font-bold text-white transition-colors hover:bg-emerald-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700 dark:bg-emerald-600 dark:hover:bg-emerald-500 whitespace-nowrap shrink-0"
-        >
-          <PenSquare className="h-3.5 w-3.5" aria-hidden="true" />
-          Create Notice
-        </button>
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {statusFilter === 'Trash' && (statusCounts.Trash ?? 0) > 0 && (
+            <button
+              type="button"
+              onClick={() => setEmptyTrashOpen(true)}
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3.5 py-2 text-xs font-bold text-red-700 transition-colors hover:bg-red-100 dark:border-red-800/70 dark:bg-red-950/50 dark:text-red-300 dark:hover:bg-red-950/80 whitespace-nowrap"
+            >
+              <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+              Empty Trash ({statusCounts.Trash})
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onCreateNew}
+            className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-700 px-4 py-2 text-xs font-bold text-white transition-colors hover:bg-emerald-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700 dark:bg-emerald-600 dark:hover:bg-emerald-500 whitespace-nowrap"
+          >
+            <PenSquare className="h-3.5 w-3.5" aria-hidden="true" />
+            Create Notice
+          </button>
+        </div>
       </div>
 
       <section className="rounded-xl border border-emerald-200/70 bg-white p-3.5 space-y-3 dark:border-emerald-800/60 dark:bg-[#061D15]">
@@ -350,13 +392,23 @@ export function AnnouncementsPage({
       </section>
 
       {filteredAnnouncements.length === 0 ? (
-        <EmptyState
-          icon={Megaphone}
-          title="No matching announcements found"
-          description="Try clearing one or more filters, or compose a new announcement for BAUST CSE Fest attendees."
-          actionLabel={hasActiveFilters ? 'Clear All Filters' : 'Create Notice'}
-          onAction={hasActiveFilters ? resetFilters : onCreateNew}
-        />
+        statusFilter === 'Trash' ? (
+          <EmptyState
+            icon={Trash2}
+            title="Notification trash bin is empty"
+            description="Deleted announcements are moved here first so you can restore or permanently remove them."
+            actionLabel="View All Announcements"
+            onAction={() => setStatusFilter('All')}
+          />
+        ) : (
+          <EmptyState
+            icon={Megaphone}
+            title="No matching announcements found"
+            description="Try clearing one or more filters, or compose a new announcement for BAUST CSE Fest attendees."
+            actionLabel={hasActiveFilters ? 'Clear All Filters' : 'Create Notice'}
+            onAction={hasActiveFilters ? resetFilters : onCreateNew}
+          />
+        )
       ) : (
         <div className="rounded-xl border border-emerald-200/70 bg-white overflow-hidden dark:border-emerald-800/60 dark:bg-[#061D15]">
           <div className="overflow-x-auto">
@@ -392,6 +444,12 @@ export function AnnouncementsPage({
                             {summarizeTargeting(ann)}
                           </span>
                         </div>
+                        {ann.trashedAt && (
+                          <div className="mt-1 text-[11px] font-medium text-red-700 dark:text-red-300">
+                            Trashed {formatDhakaDateTime(ann.trashedAt)}
+                            {ann.trashedBy ? ` · by ${ann.trashedBy}` : ''}
+                          </div>
+                        )}
                       </td>
 
                       <td className="px-3 py-3.5">
@@ -453,33 +511,60 @@ export function AnnouncementsPage({
                           >
                             <Eye className="h-3.5 w-3.5" />
                           </button>
-                          <button
-                            type="button"
-                            title="Edit Notice"
-                            aria-label={`Edit ${ann.title}`}
-                            onClick={() => onEditAnnouncement(ann)}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-emerald-200/80 text-emerald-800 hover:bg-emerald-50 hover:text-emerald-950 dark:border-emerald-800/70 dark:text-emerald-200 dark:hover:bg-emerald-900/60 dark:hover:text-emerald-50"
-                          >
-                            <Edit3 className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            title="Duplicate Notice"
-                            aria-label={`Duplicate ${ann.title}`}
-                            onClick={() => onDuplicateAnnouncement(ann)}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-emerald-200/80 text-emerald-800 hover:bg-emerald-50 hover:text-emerald-950 dark:border-emerald-800/70 dark:text-emerald-200 dark:hover:bg-emerald-900/60 dark:hover:text-emerald-50"
-                          >
-                            <Copy className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            title="Delete Notice"
-                            aria-label={`Delete ${ann.title}`}
-                            onClick={() => setDeleteTarget(ann)}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-emerald-200/80 text-red-600 hover:border-red-200 hover:bg-red-50 dark:border-emerald-800/70 dark:text-red-400 dark:hover:border-red-800/70 dark:hover:bg-red-950/60"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
+                          {ann.trashedAt ? (
+                            <>
+                              <button
+                                type="button"
+                                title="Restore Announcement"
+                                aria-label={`Restore ${ann.title}`}
+                                onClick={() => onRestoreAnnouncement(ann.id)}
+                                className="inline-flex h-8 items-center gap-1 rounded-lg border border-emerald-200/80 px-2.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-50 hover:text-emerald-950 dark:border-emerald-800/70 dark:text-emerald-200 dark:hover:bg-emerald-900/60 dark:hover:text-emerald-50"
+                              >
+                                <RotateCcw className="h-3.5 w-3.5" />
+                                Restore
+                              </button>
+                              <button
+                                type="button"
+                                title="Delete Forever"
+                                aria-label={`Permanently delete ${ann.title}`}
+                                onClick={() => setPermanentTarget(ann)}
+                                className="inline-flex h-8 items-center gap-1 rounded-lg border border-red-200 px-2.5 text-xs font-semibold text-red-700 hover:bg-red-50 dark:border-red-800/70 dark:text-red-300 dark:hover:bg-red-950/60"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                                Delete
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                title="Edit Notice"
+                                aria-label={`Edit ${ann.title}`}
+                                onClick={() => onEditAnnouncement(ann)}
+                                className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-emerald-200/80 text-emerald-800 hover:bg-emerald-50 hover:text-emerald-950 dark:border-emerald-800/70 dark:text-emerald-200 dark:hover:bg-emerald-900/60 dark:hover:text-emerald-50"
+                              >
+                                <Edit3 className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                title="Duplicate Notice"
+                                aria-label={`Duplicate ${ann.title}`}
+                                onClick={() => onDuplicateAnnouncement(ann)}
+                                className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-emerald-200/80 text-emerald-800 hover:bg-emerald-50 hover:text-emerald-950 dark:border-emerald-800/70 dark:text-emerald-200 dark:hover:bg-emerald-900/60 dark:hover:text-emerald-50"
+                              >
+                                <Copy className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                title="Move Notice to Trash Bin"
+                                aria-label={`Move ${ann.title} to trash bin`}
+                                onClick={() => setDeleteTarget(ann)}
+                                className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-emerald-200/80 text-red-600 hover:border-red-200 hover:bg-red-50 dark:border-emerald-800/70 dark:text-red-400 dark:hover:border-red-800/70 dark:hover:bg-red-950/60"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -494,8 +579,8 @@ export function AnnouncementsPage({
       <Modal
         open={Boolean(deleteTarget)}
         onClose={() => setDeleteTarget(null)}
-        title="Delete Announcement"
-        subtitle="Remove this announcement and its delivery logs from the workspace?"
+        title="Move Notice to Trash Bin"
+        subtitle="Soft-delete this notice from active lists and attendee inboxes."
         dangerHeader
         footer={
           <>
@@ -516,7 +601,7 @@ export function AnnouncementsPage({
               }}
               className="rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-700"
             >
-              Delete Notice
+              Move to Trash Bin
             </button>
           </>
         }
@@ -525,10 +610,86 @@ export function AnnouncementsPage({
           <div className="space-y-2 text-xs text-emerald-900/80 dark:text-emerald-200/80">
             <p className="font-semibold text-emerald-950 dark:text-emerald-50">{deleteTarget.title}</p>
             <p className="text-emerald-900/65 dark:text-emerald-300/65">
-              This removes the notice and its simulated delivery logs from the current session.
+              This moves the announcement into the Notification Trash Bin. You can restore it or permanently delete it later from the Trash tab.
             </p>
           </div>
         )}
+      </Modal>
+
+      <Modal
+        open={Boolean(permanentTarget)}
+        onClose={() => setPermanentTarget(null)}
+        title="Permanently Delete Announcement"
+        subtitle="This action cannot be undone and removes delivery logs permanently."
+        dangerHeader
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => setPermanentTarget(null)}
+              className="rounded-lg border border-emerald-200 bg-white px-4 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800 dark:bg-[#061D15] dark:text-emerald-100 dark:hover:bg-[#09291E]"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (permanentTarget) {
+                  onPermanentDeleteAnnouncement(permanentTarget.id);
+                  setPermanentTarget(null);
+                }
+              }}
+              className="rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-700"
+            >
+              Delete Forever
+            </button>
+          </>
+        }
+      >
+        {permanentTarget && (
+          <div className="space-y-2 text-xs text-emerald-900/80 dark:text-emerald-200/80">
+            <p className="flex items-center gap-2 font-semibold text-red-700 dark:text-red-300">
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              {permanentTarget.title}
+            </p>
+            <p className="text-emerald-900/65 dark:text-emerald-300/65">
+              This announcement and its delivery telemetry will be permanently purged from storage.
+            </p>
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={emptyTrashOpen}
+        onClose={() => setEmptyTrashOpen(false)}
+        title="Empty Notification Trash Bin"
+        subtitle="Permanently delete all trashed announcements."
+        dangerHeader
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => setEmptyTrashOpen(false)}
+              className="rounded-lg border border-emerald-200 bg-white px-4 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800 dark:bg-[#061D15] dark:text-emerald-100 dark:hover:bg-[#09291E]"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                onEmptyAnnouncementTrash();
+                setEmptyTrashOpen(false);
+              }}
+              className="rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-700"
+            >
+              Empty Trash ({statusCounts.Trash ?? 0})
+            </button>
+          </>
+        }
+      >
+        <p className="text-xs text-emerald-900/75 dark:text-emerald-200/80">
+          Are you sure you want to permanently remove all {statusCounts.Trash ?? 0} trashed announcement{(statusCounts.Trash ?? 0) === 1 ? '' : 's'}? This cannot be undone.
+        </p>
       </Modal>
     </div>
   );

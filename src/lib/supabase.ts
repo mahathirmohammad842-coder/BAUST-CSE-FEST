@@ -1,10 +1,16 @@
 import { createClient } from '@supabase/supabase-js';
 import type {
   Announcement,
+  ApprovalLog,
+  ApprovalLogAction,
   Attachment,
   ProfileNotificationPreferences,
   ProfileSocialLinks,
+  RegistrableRole,
+  RoleChangeLog,
   UserProfile,
+  VerificationLog,
+  VerificationStatus,
   WorkspaceRole,
 } from '../types';
 
@@ -37,6 +43,19 @@ const WORKSPACE_ROLES: WorkspaceRole[] = [
   'Admin',
   'Super Admin',
 ];
+const REGISTRABLE_ROLES: RegistrableRole[] = [
+  'Participant',
+  'Volunteer',
+  'Judge',
+  'Guest',
+  'Sponsor',
+  'Mentor',
+];
+const VERIFICATION_STATUSES: VerificationStatus[] = [
+  'Pending',
+  'Verified',
+  'Rejected',
+];
 const ATTACHMENT_BUCKET = 'notice-attachments';
 
 export interface CloudProfile {
@@ -53,9 +72,18 @@ export interface CloudProfile {
   notification_preferences: ProfileNotificationPreferences;
   account_status: UserProfile['accountStatus'];
   verified: boolean;
+  verification_status?: VerificationStatus;
   created_at: string;
   updated_at: string;
+  last_login_at?: string | null;
   requested_role: string;
+  can_manage_approvals?: boolean;
+  recommended_action?: 'Approve' | 'Reject' | null;
+  recommended_role?: WorkspaceRole | null;
+  recommended_by?: string | null;
+  recommended_by_name?: string | null;
+  recommendation_notes?: string | null;
+  recommended_at?: string | null;
   trashed_at: string | null;
 }
 
@@ -78,9 +106,25 @@ export interface SupabaseDiagnosticsReport {
 
 export function mapCloudProfile(row: CloudProfile): UserProfile {
   const role = WORKSPACE_ROLES.includes(row.role) ? row.role : 'Participant';
+  const requestedRole = REGISTRABLE_ROLES.includes(
+    row.requested_role as RegistrableRole
+  )
+    ? (row.requested_role as RegistrableRole)
+    : 'Participant';
+  const verificationStatus: VerificationStatus = VERIFICATION_STATUSES.includes(
+    row.verification_status as VerificationStatus
+  )
+    ? (row.verification_status as VerificationStatus)
+    : row.verified
+      ? 'Verified'
+      : row.account_status === 'Rejected'
+        ? 'Rejected'
+        : 'Pending';
+
   return {
     userId: row.id,
     role,
+    requestedRole,
     fullName: row.full_name,
     email: row.email,
     phone: row.phone ?? '',
@@ -96,8 +140,20 @@ export function mapCloudProfile(row: CloudProfile): UserProfile {
       securityAlerts: true,
     },
     accountStatus: row.account_status,
-    verified: row.verified,
+    verified: verificationStatus === 'Verified' || row.verified,
+    verificationStatus,
     createdAt: row.created_at,
+    lastLoginAt: row.last_login_at ?? null,
+    canManageApprovals: Boolean(row.can_manage_approvals),
+    recommendedAction: row.recommended_action ?? null,
+    recommendedRole:
+      row.recommended_role && WORKSPACE_ROLES.includes(row.recommended_role)
+        ? row.recommended_role
+        : null,
+    recommendedById: row.recommended_by ?? null,
+    recommendedByName: row.recommended_by_name ?? null,
+    recommendationNotes: row.recommendation_notes ?? null,
+    recommendedAt: row.recommended_at ?? null,
     trashedAt: row.trashed_at ?? undefined,
   };
 }
@@ -121,6 +177,216 @@ export async function fetchCloudProfiles(): Promise<CloudProfile[]> {
     .order('created_at', { ascending: false });
   if (error) throw error;
   return (data ?? []) as CloudProfile[];
+}
+
+function isMissingRelationError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const code = 'code' in error && typeof error.code === 'string' ? error.code : '';
+  return code === 'PGRST205' || code === '42P01';
+}
+
+export async function fetchCloudRoleChangeLogs(): Promise<RoleChangeLog[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from('role_change_logs')
+    .select('*')
+    .order('changed_at', { ascending: false })
+    .limit(500);
+  if (error) {
+    if (isMissingRelationError(error)) return [];
+    throw error;
+  }
+  return (data ?? []).map((row) => ({
+    id: String(row.id),
+    userId: String(row.user_id),
+    userEmail: String(row.user_email ?? ''),
+    userName: String(row.user_name ?? ''),
+    previousRole: (WORKSPACE_ROLES.includes(row.previous_role)
+      ? row.previous_role
+      : 'Participant') as WorkspaceRole,
+    newRole: (WORKSPACE_ROLES.includes(row.new_role)
+      ? row.new_role
+      : 'Participant') as WorkspaceRole,
+    changedById: String(row.changed_by ?? ''),
+    changedByName: String(row.changed_by_name ?? 'System'),
+    changedAt: String(row.changed_at),
+    notes: String(row.notes ?? ''),
+  }));
+}
+
+export async function fetchCloudApprovalLogs(): Promise<ApprovalLog[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from('approval_logs')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(500);
+  if (error) {
+    if (isMissingRelationError(error)) return [];
+    throw error;
+  }
+  return (data ?? []).map((row) => ({
+    id: String(row.id),
+    userId: String(row.user_id),
+    userEmail: String(row.user_email ?? ''),
+    userName: String(row.user_name ?? ''),
+    action: String(row.action ?? 'status_changed') as ApprovalLogAction,
+    requestedRole: String(row.requested_role ?? 'Participant'),
+    assignedRole: String(row.assigned_role ?? 'Participant'),
+    previousStatus: String(row.previous_status ?? ''),
+    newStatus: String(row.new_status ?? ''),
+    actorId: String(row.actor_id ?? ''),
+    actorName: String(row.actor_name ?? 'System'),
+    createdAt: String(row.created_at),
+    approvalNotes: String(row.approval_notes ?? ''),
+  }));
+}
+
+export async function fetchCloudVerificationLogs(): Promise<VerificationLog[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from('verification_logs')
+    .select('*')
+    .order('verified_at', { ascending: false })
+    .limit(500);
+  if (error) {
+    if (isMissingRelationError(error)) return [];
+    throw error;
+  }
+  return (data ?? []).map((row) => ({
+    id: String(row.id),
+    userId: String(row.user_id),
+    userEmail: String(row.user_email ?? ''),
+    userName: String(row.user_name ?? ''),
+    previousStatus: (VERIFICATION_STATUSES.includes(row.previous_status)
+      ? row.previous_status
+      : 'Pending') as VerificationStatus,
+    newStatus: (VERIFICATION_STATUSES.includes(row.new_status)
+      ? row.new_status
+      : 'Pending') as VerificationStatus,
+    verifiedById: String(row.verified_by ?? ''),
+    verifiedByName: String(row.verified_by_name ?? 'System'),
+    verifiedAt: String(row.verified_at),
+    verificationNotes: String(row.verification_notes ?? ''),
+  }));
+}
+
+export async function rpcRecordMyLastLogin(): Promise<void> {
+  if (!supabase) return;
+  const { error } = await supabase.rpc('record_my_last_login');
+  if (error && !isMissingRelationError(error)) {
+    // Non-fatal if migration hasn't been applied yet
+    console.warn('Could not record last_login_at:', error.message);
+  }
+}
+
+export async function rpcRecommendRegistration(
+  targetUserId: string,
+  recommendation: 'Approve' | 'Reject',
+  suggestedRole?: WorkspaceRole | null,
+  notes = ''
+): Promise<void> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { error } = await supabase.rpc('organizer_recommend_registration', {
+    target_user_id: targetUserId,
+    recommendation,
+    suggested_role: suggestedRole ?? null,
+    notes,
+  });
+  if (error) throw error;
+}
+
+export async function rpcReviewUserRegistration(
+  targetUserId: string,
+  approve: boolean,
+  assignedRole?: WorkspaceRole | null,
+  approvalNotes = '',
+  markVerified = false
+): Promise<void> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { error } = await supabase.rpc('review_user_registration', {
+    target_user_id: targetUserId,
+    approve,
+    assigned_role: assignedRole ?? null,
+    approval_notes: approvalNotes,
+    mark_verified: markVerified,
+  });
+  if (error) throw error;
+}
+
+export async function rpcSuperAdminAssignRole(
+  targetUserId: string,
+  newRole: WorkspaceRole,
+  roleNotes = ''
+): Promise<void> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { error } = await supabase.rpc('super_admin_assign_user_role', {
+    target_user_id: targetUserId,
+    new_role: newRole,
+    role_notes: roleNotes,
+  });
+  if (error) throw error;
+}
+
+export async function rpcSuperAdminBulkAssignRoles(
+  targetUserIds: string[],
+  newRole: WorkspaceRole,
+  roleNotes = ''
+): Promise<number> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { data, error } = await supabase.rpc('super_admin_bulk_assign_roles', {
+    target_user_ids: targetUserIds,
+    new_role: newRole,
+    role_notes: roleNotes,
+  });
+  if (error) throw error;
+  return typeof data === 'number' ? data : 0;
+}
+
+export async function rpcStaffUpdateVerification(
+  targetUserId: string,
+  newStatus: VerificationStatus,
+  verificationNotes = ''
+): Promise<void> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { error } = await supabase.rpc('staff_update_verification_status', {
+    target_user_id: targetUserId,
+    new_status: newStatus,
+    verification_notes: verificationNotes,
+  });
+  if (error) throw error;
+}
+
+export async function rpcStaffBulkVerifyUsers(
+  targetUserIds: string[],
+  newStatus: VerificationStatus,
+  verificationNotes = ''
+): Promise<number> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { data, error } = await supabase.rpc('staff_bulk_verify_users', {
+    target_user_ids: targetUserIds,
+    new_status: newStatus,
+    verification_notes: verificationNotes,
+  });
+  if (error) throw error;
+  return typeof data === 'number' ? data : 0;
+}
+
+export async function rpcSuperAdminSetOrganizerPermission(
+  targetUserId: string,
+  granted: boolean,
+  permissionNotes = ''
+): Promise<void> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { error } = await supabase.rpc(
+    'super_admin_set_organizer_approval_permission',
+    {
+      target_user_id: targetUserId,
+      granted,
+      permission_notes: permissionNotes,
+    }
+  );
+  if (error) throw error;
 }
 
 export async function fetchCloudAnnouncements(): Promise<Announcement[]> {
