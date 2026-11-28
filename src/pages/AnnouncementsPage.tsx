@@ -27,6 +27,7 @@ import type {
   DeliveryStatus,
   NotificationChannel,
   NotificationType,
+  RoomRecord,
   UserRole,
   WorkspaceRole,
 } from '../types';
@@ -42,6 +43,7 @@ export type AnnouncementTab = DeliveryStatus | 'All' | 'Trash';
 
 interface AnnouncementsPageProps {
   announcements: Announcement[];
+  rooms?: RoomRecord[];
   initialTab?: AnnouncementTab;
   activeRole?: WorkspaceRole;
   currentUserId?: string | null;
@@ -66,6 +68,7 @@ const STATUS_TABS: AnnouncementTab[] = [
 
 export function AnnouncementsPage({
   announcements,
+  rooms = [],
   initialTab = 'All',
   activeRole = 'Organizer',
   currentUserId,
@@ -98,6 +101,24 @@ export function AnnouncementsPage({
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
+  // Strict RBAC: Super Admin sees all announcements; Organizer sees only own announcements
+  const scopedAnnouncements = useMemo(() => {
+    if (activeRole === 'Super Admin') return announcements;
+    if (activeRole === 'Organizer' && currentUserId) {
+      return announcements.filter(
+        (ann) => !ann.senderId || ann.senderId === currentUserId
+      );
+    }
+    return announcements;
+  }, [activeRole, announcements, currentUserId]);
+
+  const roomOptions = useMemo(() => {
+    if (rooms.length > 0) {
+      return rooms.filter((r) => r.isActive).map((r) => r.name);
+    }
+    return BAUST_ROOMS;
+  }, [rooms]);
+
   const canDeleteNotice = (ann: Announcement) => {
     if (activeRole === 'Super Admin') return true;
     if (activeRole === 'Organizer') {
@@ -107,8 +128,8 @@ export function AnnouncementsPage({
   };
 
   const statusCounts = useMemo(() => {
-    const activeNotices = announcements.filter((a) => !a.trashedAt);
-    const trashedNotices = announcements.filter((a) => Boolean(a.trashedAt));
+    const activeNotices = scopedAnnouncements.filter((a) => !a.trashedAt);
+    const trashedNotices = scopedAnnouncements.filter((a) => Boolean(a.trashedAt));
     const counts: Record<string, number> = {
       All: activeNotices.length,
       Delivered: 0,
@@ -121,7 +142,7 @@ export function AnnouncementsPage({
       counts[a.status] = (counts[a.status] ?? 0) + 1;
     }
     return counts;
-  }, [announcements]);
+  }, [scopedAnnouncements]);
 
   const activeAdvancedCount = [
     typeFilter !== 'All',
@@ -147,7 +168,7 @@ export function AnnouncementsPage({
   };
 
   const filteredAnnouncements = useMemo(() => {
-    return announcements.filter((ann) => {
+    return scopedAnnouncements.filter((ann) => {
       if (statusFilter === 'Trash') {
         if (!ann.trashedAt) return false;
       } else {
@@ -190,7 +211,7 @@ export function AnnouncementsPage({
       return true;
     });
   }, [
-    announcements,
+    scopedAnnouncements,
     searchQuery,
     statusFilter,
     typeFilter,
@@ -404,7 +425,7 @@ export function AnnouncementsPage({
               className="rounded-lg border border-emerald-200 bg-white px-2.5 py-1.5 text-xs font-medium text-emerald-950 focus:border-emerald-700 focus:outline-none dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50 dark:focus:border-emerald-400"
             >
               <option value="All">Room: All</option>
-              {BAUST_ROOMS.map((room) => (
+              {roomOptions.map((room) => (
                 <option key={room} value={room}>
                   {room}
                 </option>

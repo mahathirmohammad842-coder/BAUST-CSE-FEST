@@ -9,7 +9,13 @@ import {
   Moon,
   UserRound,
 } from 'lucide-react';
-import type { SettingsSection, UserProfile } from '../types';
+import type {
+  EnterpriseNotificationPreferences,
+  NotificationSoundEventType,
+  SettingsSection,
+  UserProfile,
+} from '../types';
+import { NotificationPreferencesPanel } from '../components/NotificationPreferencesPanel';
 import { ProfileFieldsEditor } from './UserProfilePage';
 
 interface UserSettingsPageProps {
@@ -17,8 +23,12 @@ interface UserSettingsPageProps {
   section: SettingsSection;
   isDark: boolean;
   hasPasswordCredential: boolean;
+  enterpriseNotificationPrefs: EnterpriseNotificationPreferences;
   onSaveProfile: (profile: UserProfile) => void;
-  onSaveNotifications: (profile: UserProfile) => void;
+  onUpdateEnterpriseNotificationPrefs: (
+    next: EnterpriseNotificationPreferences
+  ) => void;
+  onTestNotificationSound?: (eventType: NotificationSoundEventType) => void;
   onChangePassword: (
     currentPassword: string,
     newPassword: string
@@ -43,43 +53,15 @@ const settingsSections: {
 const fieldClass =
   'mt-1.5 min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-emerald-600 focus:ring-[3px] focus:ring-emerald-600/10 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50';
 
-function NotificationSwitch({
-  label,
-  checked,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      onClick={onChange}
-      className="flex w-full items-center justify-between gap-4 border-b border-slate-100 py-4 text-left last:border-0 dark:border-emerald-900/60"
-    >
-      <span className="text-sm font-medium text-slate-800 dark:text-emerald-100">{label}</span>
-      <span
-        className={`inline-flex h-6 w-11 shrink-0 items-center rounded-full p-1 transition-colors ${
-          checked ? 'bg-emerald-600 dark:bg-emerald-400' : 'bg-slate-300 dark:bg-emerald-900'
-        }`}
-      >
-        <span className={`h-4 w-4 rounded-full bg-white transition-transform ${checked ? 'translate-x-5' : ''}`} />
-      </span>
-    </button>
-  );
-}
-
 export function UserSettingsPage({
   profile,
   section,
   isDark,
   hasPasswordCredential,
+  enterpriseNotificationPrefs,
   onSaveProfile,
-  onSaveNotifications,
+  onUpdateEnterpriseNotificationPrefs,
+  onTestNotificationSound,
   onChangePassword,
   onChangeSection,
   onToggleTheme,
@@ -133,29 +115,11 @@ export function UserSettingsPage({
         );
       case 'notifications':
         return (
-          <div>
-            {([
-              ['email', 'Email notifications'],
-              ['push', 'Push notifications'],
-              ['inApp', 'In-app announcements'],
-              ['securityAlerts', 'Security alerts'],
-            ] as const).map(([key, label]) => (
-              <NotificationSwitch
-                key={key}
-                label={label}
-                checked={profile.notificationPreferences[key]}
-                onChange={() =>
-                  onSaveNotifications({
-                    ...profile,
-                    notificationPreferences: {
-                      ...profile.notificationPreferences,
-                      [key]: !profile.notificationPreferences[key],
-                    },
-                  })
-                }
-              />
-            ))}
-          </div>
+          <NotificationPreferencesPanel
+            preferences={enterpriseNotificationPrefs}
+            onChangePreferences={onUpdateEnterpriseNotificationPrefs}
+            onTestPopup={onTestNotificationSound}
+          />
         );
       case 'security':
         return (

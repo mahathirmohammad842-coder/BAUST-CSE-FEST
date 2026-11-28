@@ -13,10 +13,13 @@ import {
   UserRound,
 } from 'lucide-react';
 import type {
+  EnterpriseNotificationPreferences,
+  NotificationSoundEventType,
   OrganizerProfile,
   OrganizerSettings,
   SettingsSection,
 } from '../types';
+import { NotificationPreferencesPanel } from '../components/NotificationPreferencesPanel';
 import {
   isEmailLikeValue,
   sanitizeProfileTextField,
@@ -28,8 +31,13 @@ interface SettingsPageProps {
   section: SettingsSection;
   isDark: boolean;
   hasPassword: boolean;
+  enterpriseNotificationPrefs: EnterpriseNotificationPreferences;
   onSaveProfile: (profile: OrganizerProfile) => void;
   onUpdateSettings: (settings: OrganizerSettings) => void;
+  onUpdateEnterpriseNotificationPrefs: (
+    next: EnterpriseNotificationPreferences
+  ) => void;
+  onTestNotificationSound?: (eventType: NotificationSoundEventType) => void;
   onChangeSection: (section: SettingsSection) => void;
   onToggleTheme: () => void;
   onPasswordUpdated: (
@@ -99,8 +107,11 @@ export function SettingsPage({
   section,
   isDark,
   hasPassword,
+  enterpriseNotificationPrefs,
   onSaveProfile,
   onUpdateSettings,
+  onUpdateEnterpriseNotificationPrefs,
+  onTestNotificationSound,
   onChangeSection,
   onToggleTheme,
   onPasswordUpdated,
@@ -323,30 +334,26 @@ export function SettingsPage({
           )}
 
           {section === 'notifications' && (
-            <div>
-              <div className="mb-4 flex items-start gap-3 rounded-xl bg-slate-50 p-4 dark:bg-[#041811]">
+            <div className="space-y-6">
+              <div className="flex items-start gap-3 rounded-xl bg-slate-50 p-4 dark:bg-[#041811]">
                 <Mail className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700 dark:text-emerald-300" />
                 <p className="text-xs leading-relaxed text-slate-600 dark:text-emerald-200/70">
-                  Choose which updates reach your organizer account. Critical security alerts stay separate from fest announcements.
+                  Manage sound chimes, volume, Do Not Disturb mode, and channel preferences for your organizer workspace.
                 </p>
               </div>
-              <ToggleRow
-                title="Email notifications"
-                description="Receive organizer updates and delivery summaries by email."
-                checked={settings.emailNotifications}
-                onChange={(value) => updatePreference('emailNotifications', value)}
-              />
-              <ToggleRow
-                title="Push notifications"
-                description="Get time-sensitive schedule and event alerts in your browser."
-                checked={settings.pushNotifications}
-                onChange={(value) => updatePreference('pushNotifications', value)}
-              />
-              <ToggleRow
-                title="Announcement updates"
-                description="Be notified when an announcement is published or its delivery changes."
-                checked={settings.announcementUpdates}
-                onChange={(value) => updatePreference('announcementUpdates', value)}
+              <NotificationPreferencesPanel
+                preferences={enterpriseNotificationPrefs}
+                onChangePreferences={(next) => {
+                  onUpdateEnterpriseNotificationPrefs(next);
+                  onUpdateSettings({
+                    ...settings,
+                    emailNotifications: next.email,
+                    pushNotifications: next.push,
+                    announcementUpdates: next.inApp,
+                    securityAlerts: next.securityAlerts,
+                  });
+                }}
+                onTestPopup={onTestNotificationSound}
               />
             </div>
           )}

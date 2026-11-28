@@ -1,7 +1,12 @@
 import { QueryClient } from '@tanstack/react-query';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import { useEffect, useRef, useState } from 'react';
-import { rpcUpdateMyPresenceStatus, supabase } from './supabase';
+import {
+  keepaliveEndActiveSession,
+  rpcEndMyActiveSession,
+  rpcUpsertMyActiveSession,
+  supabase,
+} from './supabase';
 import type { PresenceStatus, PresenceUserEntry, WorkspaceRole } from '../types';
 
 export const queryClient = new QueryClient({
@@ -17,9 +22,12 @@ export const queryClient = new QueryClient({
 export type WorkspaceSyncDomain =
   | 'profiles'
   | 'announcements'
+  | 'deliveries'
+  | 'rooms'
   | 'notification_actions'
   | 'ops'
   | 'notifications'
+  | 'notification_prefs'
   | 'role_promoted'
   | 'all';
 
@@ -33,6 +41,7 @@ interface WorkspaceBroadcastPayload {
 const SYNC_CHANNEL_NAME = 'baust-workspace-realtime-v1';
 const PRESENCE_CHANNEL_NAME = 'baust-presence-v1';
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes inactive -> Away
+const HEARTBEAT_INTERVAL_MS = 45 * 1000;
 
 let activeSyncChannel: RealtimeChannel | null = null;
 
@@ -53,11 +62,22 @@ export function broadcastWorkspaceSync(
   if (domain === 'all' || domain === 'announcements') {
     void queryClient.invalidateQueries({ queryKey: ['baust', 'announcements'] });
   }
+  if (domain === 'all' || domain === 'deliveries') {
+    void queryClient.invalidateQueries({ queryKey: ['baust', 'deliveries'] });
+  }
+  if (domain === 'all' || domain === 'rooms') {
+    void queryClient.invalidateQueries({ queryKey: ['baust', 'rooms'] });
+  }
   if (domain === 'all' || domain === 'ops') {
     void queryClient.invalidateQueries({ queryKey: ['baust', 'ops'] });
   }
   if (domain === 'all' || domain === 'notifications') {
     void queryClient.invalidateQueries({ queryKey: ['baust', 'notifications'] });
+  }
+  if (domain === 'all' || domain === 'notification_prefs') {
+    void queryClient.invalidateQueries({
+      queryKey: ['baust', 'notification_prefs'],
+    });
   }
 
   if (!supabase || !activeSyncChannel) return;
@@ -77,9 +97,12 @@ interface UseRealtimeWorkspaceSyncOptions {
   isStaff: boolean;
   onProfilesChanged: () => void;
   onAnnouncementsChanged: () => void;
+  onDeliveriesChanged?: () => void;
+  onRoomsChanged?: () => void;
   onNotificationActionsChanged: () => void;
   onOpsChanged: () => void;
   onNotificationsChanged: () => void;
+  onNotificationPrefsChanged?: () => void;
   onRolePromoted?: (targetUserId?: string) => void;
 }
 
@@ -88,9 +111,12 @@ export function useRealtimeWorkspaceSync({
   isStaff,
   onProfilesChanged,
   onAnnouncementsChanged,
+  onDeliveriesChanged,
+  onRoomsChanged,
   onNotificationActionsChanged,
   onOpsChanged,
   onNotificationsChanged,
+  onNotificationPrefsChanged,
   onRolePromoted,
 }: UseRealtimeWorkspaceSyncOptions): { isRealtimeConnected: boolean } {
   const [isRealtimeConnected, setIsRealtimeConnected] = useState(false);
@@ -98,17 +124,23 @@ export function useRealtimeWorkspaceSync({
   const callbacksRef = useRef({
     onProfilesChanged,
     onAnnouncementsChanged,
+    onDeliveriesChanged,
+    onRoomsChanged,
     onNotificationActionsChanged,
     onOpsChanged,
     onNotificationsChanged,
+    onNotificationPrefsChanged,
     onRolePromoted,
   });
   callbacksRef.current = {
     onProfilesChanged,
     onAnnouncementsChanged,
+    onDeliveriesChanged,
+    onRoomsChanged,
     onNotificationActionsChanged,
     onOpsChanged,
     onNotificationsChanged,
+    onNotificationPrefsChanged,
     onRolePromoted,
   };
 
@@ -142,6 +174,14 @@ export function useRealtimeWorkspaceSync({
           void queryClient.invalidateQueries({ queryKey: ['baust', 'announcements'] });
           callbacksRef.current.onAnnouncementsChanged();
         }
+        if (domain === 'deliveries' || domain === 'all') {
+          void queryClient.invalidateQueries({ queryKey: ['baust', 'deliveries'] });
+          callbacksRef.current.onDeliveriesChanged?.();
+        }
+        if (domain === 'rooms' || domain === 'all') {
+          void queryClient.invalidateQueries({ queryKey: ['baust', 'rooms'] });
+          callbacksRef.current.onRoomsChanged?.();
+        }
         if (domain === 'notification_actions' || domain === 'all') {
           void queryClient.invalidateQueries({
             queryKey: ['baust', 'notification_actions'],
@@ -157,6 +197,12 @@ export function useRealtimeWorkspaceSync({
             queryKey: ['baust', 'notifications'],
           });
           callbacksRef.current.onNotificationsChanged();
+        }
+        if (domain === 'notification_prefs' || domain === 'all') {
+          void queryClient.invalidateQueries({
+            queryKey: ['baust', 'notification_prefs'],
+          });
+          callbacksRef.current.onNotificationPrefsChanged?.();
         }
       }, 120);
     };
@@ -180,7 +226,6 @@ export function useRealtimeWorkspaceSync({
           const oldRow = payload.old as Record<string, unknown> | undefined;
           const rowId = String(newRow?.id ?? oldRow?.id ?? '');
           if (rowId === userId) {
-            // Instant self-profile & role promotion sync
             const prevRole = oldRow?.assigned_role ?? oldRow?.role;
             const nextRole = newRow?.assigned_role ?? newRow?.role;
             if (prevRole && nextRole && prevRole !== nextRole) {
@@ -195,6 +240,11 @@ export function useRealtimeWorkspaceSync({
         'postgres_changes',
         { event: '*', schema: 'public', table: 'announcements' },
         () => triggerDebounced('announcements')
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'rooms' },
+        () => triggerDebounced('rooms')
       )
       .on(
         'postgres_changes',
@@ -213,6 +263,16 @@ export function useRealtimeWorkspaceSync({
         'postgres_changes',
         { event: '*', schema: 'public', table: 'notifications' },
         () => triggerDebounced('notifications')
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'user_notification_preferences',
+          filter: `user_id=eq.${userId}`,
+        },
+        () => triggerDebounced('notification_prefs')
       )
       .on(
         'postgres_changes',
@@ -236,6 +296,18 @@ export function useRealtimeWorkspaceSync({
       );
 
     if (isStaff) {
+      const staffDeliveryTables = [
+        'notification_delivery_logs',
+        'notification_retry_history',
+      ];
+      for (const table of staffDeliveryTables) {
+        channel.on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table },
+          () => triggerDebounced('deliveries')
+        );
+      }
+
       const governanceTables = [
         'role_change_logs',
         'approval_logs',
@@ -316,8 +388,8 @@ export function usePresenceTracker({
 
   const sessionIdRef = useRef<string>(
     typeof crypto !== 'undefined' && crypto.randomUUID
-      ? crypto.randomUUID().slice(0, 8)
-      : Math.random().toString(36).slice(2, 10)
+      ? crypto.randomUUID().slice(0, 12)
+      : Math.random().toString(36).slice(2, 12)
   );
   const statusRef = useRef<PresenceStatus>('Online');
   const routeRef = useRef(currentRoute);
@@ -326,10 +398,28 @@ export function usePresenceTracker({
   const userSnapshotRef = useRef(currentUser);
   userSnapshotRef.current = currentUser;
   const channelRef = useRef<RealtimeChannel | null>(null);
+  const accessTokenRef = useRef<string | null>(null);
 
   const userId = currentUser?.userId ?? null;
   const userRole = currentUser?.role ?? null;
   const userName = currentUser?.fullName ?? null;
+
+  // Keep latest access token cached for synchronous keepalive signoff on tab close
+  useEffect(() => {
+    if (!supabase || !userId) {
+      accessTokenRef.current = null;
+      return;
+    }
+    void supabase.auth.getSession().then(({ data }) => {
+      accessTokenRef.current = data.session?.access_token ?? null;
+    });
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      accessTokenRef.current = session?.access_token ?? null;
+    });
+    return () => subscription.unsubscribe();
+  }, [userId]);
 
   // Re-track cleanly when currentRoute or role changes on an active channel
   useEffect(() => {
@@ -364,6 +454,7 @@ export function usePresenceTracker({
 
     statusRef.current = 'Online';
     let idleTimerId: number | null = null;
+    let heartbeatTimerId: number | null = null;
     let lastActivitySyncAt = 0;
 
     const buildPayload = (status: PresenceStatus): PresenceTrackPayload => {
@@ -392,7 +483,11 @@ export function usePresenceTracker({
         if (statusRef.current !== 'Away') {
           statusRef.current = 'Away';
           void channelRef.current?.track(buildPayload('Away')).catch(() => {});
-          void rpcUpdateMyPresenceStatus('Away');
+          void rpcUpsertMyActiveSession(
+            sessionIdRef.current,
+            'Away',
+            routeRef.current
+          );
         }
       }, IDLE_TIMEOUT_MS);
     };
@@ -404,11 +499,19 @@ export function usePresenceTracker({
         statusRef.current = 'Online';
         lastActivitySyncAt = now;
         void channelRef.current?.track(buildPayload('Online')).catch(() => {});
-        void rpcUpdateMyPresenceStatus('Online');
-      } else if (now - lastActivitySyncAt > 45_000) {
+        void rpcUpsertMyActiveSession(
+          sessionIdRef.current,
+          'Online',
+          routeRef.current
+        );
+      } else if (now - lastActivitySyncAt > HEARTBEAT_INTERVAL_MS) {
         lastActivitySyncAt = now;
         void channelRef.current?.track(buildPayload('Online')).catch(() => {});
-        void rpcUpdateMyPresenceStatus('Online');
+        void rpcUpsertMyActiveSession(
+          sessionIdRef.current,
+          'Online',
+          routeRef.current
+        );
       }
       resetIdleTimer();
     };
@@ -428,8 +531,10 @@ export function usePresenceTracker({
 
       for (const [key, presences] of Object.entries(state)) {
         if (!Array.isArray(presences) || presences.length === 0) continue;
-        // Prefer 'Online' over 'Away', and most recent lastSeenAt
-        const sorted = [...presences].sort((a, b) => {
+        const activePresences = presences.filter((p) => p.status !== 'Offline');
+        if (activePresences.length === 0) continue;
+
+        const sorted = [...activePresences].sort((a, b) => {
           if (a.status !== b.status) {
             if (a.status === 'Online') return -1;
             if (b.status === 'Online') return 1;
@@ -451,7 +556,7 @@ export function usePresenceTracker({
           lastLoginAt: primary.lastLoginAt,
           currentSessionId: primary.sessionId,
           currentRoute: primary.currentRoute,
-          activeSessionsCount: presences.length,
+          activeSessionsCount: activePresences.length,
         };
       }
 
@@ -467,12 +572,26 @@ export function usePresenceTracker({
           setIsPresenceConnected(true);
           statusRef.current = 'Online';
           await channel.track(buildPayload('Online'));
-          void rpcUpdateMyPresenceStatus('Online');
+          void rpcUpsertMyActiveSession(
+            sessionIdRef.current,
+            'Online',
+            routeRef.current
+          );
           resetIdleTimer();
         } else {
           setIsPresenceConnected(false);
         }
       });
+
+    heartbeatTimerId = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void rpcUpsertMyActiveSession(
+          sessionIdRef.current,
+          statusRef.current,
+          routeRef.current
+        );
+      }
+    }, HEARTBEAT_INTERVAL_MS);
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
@@ -482,7 +601,7 @@ export function usePresenceTracker({
 
     const handleUnload = () => {
       void channel.untrack().catch(() => {});
-      void rpcUpdateMyPresenceStatus('Offline');
+      keepaliveEndActiveSession(sessionIdRef.current, accessTokenRef.current);
     };
 
     const activityEvents: (keyof WindowEventMap)[] = [
@@ -502,6 +621,9 @@ export function usePresenceTracker({
       if (idleTimerId !== null) {
         window.clearTimeout(idleTimerId);
       }
+      if (heartbeatTimerId !== null) {
+        window.clearInterval(heartbeatTimerId);
+      }
       for (const evt of activityEvents) {
         window.removeEventListener(evt, handleUserActivity);
       }
@@ -510,7 +632,7 @@ export function usePresenceTracker({
       window.removeEventListener('pagehide', handleUnload);
 
       void channel.untrack().catch(() => {});
-      void rpcUpdateMyPresenceStatus('Offline');
+      void rpcEndMyActiveSession(sessionIdRef.current);
       if (channelRef.current === channel) {
         channelRef.current = null;
       }

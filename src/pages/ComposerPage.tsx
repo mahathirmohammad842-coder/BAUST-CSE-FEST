@@ -4,12 +4,16 @@ import {
   Bell,
   CalendarClock,
   Check,
+  ChevronDown,
+  ChevronUp,
+  DoorOpen,
   FileText,
-  Mail,
-  Paperclip,
+  RotateCcw,
+  Search,
   Send,
-  Smartphone,
-  Sparkles,
+  Settings2,
+  Users,
+  X,
 } from 'lucide-react';
 import { PriorityBadge } from '../components/Badge';
 import { ChannelPill } from '../components/ChannelPill';
@@ -18,7 +22,6 @@ import { AttachmentManager } from '../components/AttachmentManager';
 import {
   ALL_CHANNELS,
   ALL_NOTIFICATION_TYPES,
-  BAUST_ROOMS,
   DEMO_ACCESS_ROLES,
 } from '../data/mockData';
 import type {
@@ -29,8 +32,11 @@ import type {
   DeliveryStatus,
   NotificationChannel,
   NotificationPriority,
+  NotificationRetrySettings,
   NotificationType,
+  RoomRecord,
   TargetingCriteria,
+  UserProfile,
   UserRole,
   WorkspaceRole,
 } from '../types';
@@ -41,6 +47,9 @@ interface ComposerPageProps {
   senderId?: string | null;
   senderName?: string;
   senderRole?: WorkspaceRole;
+  profiles?: UserProfile[];
+  rooms?: RoomRecord[];
+  onNavigateRooms?: () => void;
   onSaveAnnouncement: (
     announcement: Announcement,
     targetStatus: DeliveryStatus
@@ -48,69 +57,18 @@ interface ComposerPageProps {
   onCancel: () => void;
 }
 
+type AudienceMode =
+  | 'everyone'
+  | 'Participant'
+  | 'Volunteer'
+  | 'Judge'
+  | 'Mentor'
+  | 'Sponsor'
+  | 'Guest'
+  | 'Organizer'
+  | 'selected-users';
+
 const PRIORITIES: NotificationPriority[] = ['Low', 'Normal', 'High', 'Emergency'];
-
-interface QuickTemplate {
-  id: string;
-  label: string;
-  title: string;
-  body: string;
-  type: NotificationType;
-  priority: NotificationPriority;
-  channels: NotificationChannel[];
-  roles: UserRole[];
-  rooms: string[];
-  everyoneAttending?: boolean;
-}
-
-const QUICK_TEMPLATES: QuickTemplate[] = [
-  {
-    id: 'tpl-room',
-    label: 'Room Change',
-    title: 'Room Change: Contest Briefing Moved to CSE Seminar Room',
-    body: 'Please note that the pre-round briefing originally scheduled in AB1 Lab 302 has shifted to the CSE Seminar Room. Please arrive 15 minutes early with your team badge.',
-    type: 'Schedule / Room Change',
-    priority: 'High',
-    channels: ['In-App', 'Push Notification', 'SMS'],
-    roles: ['Participant', 'Volunteer', 'Judge'],
-    rooms: ['CSE Seminar Room', 'Academic Building 1 - Lab 302'],
-  },
-  {
-    id: 'tpl-contest',
-    label: 'Contest Update',
-    title: 'IUPC Clarifications & Freeze Window Notice',
-    body: 'The DOMjudge scoreboard will freeze during the final 60 minutes of the contest. Teams may still submit clarification requests via the judge queue.',
-    type: 'Competition Update',
-    priority: 'Normal',
-    channels: ['In-App', 'Push Notification', 'Web Notification'],
-    roles: ['Participant', 'Judge'],
-    rooms: ['Academic Building 1 - Lab 302', 'Academic Building 1 - Lab 305'],
-  },
-  {
-    id: 'tpl-food',
-    label: 'Food & Break',
-    title: 'Afternoon Snacks & Tea Available at BAUST Cafeteria Courtyard',
-    body: 'Evening refreshment boxes and hot tea are now open for all fest attendees, volunteers, and mentors at the Cafeteria Courtyard. Present your fest lanyard badge.',
-    type: 'Food & Logistics',
-    priority: 'Normal',
-    channels: ['In-App', 'Push Notification'],
-    roles: ['Participant', 'Volunteer', 'Judge', 'Guest', 'Sponsor', 'Mentor'],
-    rooms: ['BAUST Cafeteria Courtyard'],
-    everyoneAttending: true,
-  },
-  {
-    id: 'tpl-emergency',
-    label: 'Emergency Alert',
-    title: 'URGENT: Temporary Generator Switchover in Central Auditorium',
-    body: 'Campus engineering is completing a 5-minute backup power switchover at Central Auditorium. Please stay seated inside the hall while stage lighting resets.',
-    type: 'Emergency Alert',
-    priority: 'Emergency',
-    channels: ['In-App', 'SMS', 'Push Notification', 'Web Notification'],
-    roles: ['Participant', 'Volunteer', 'Judge', 'Guest', 'Organizer'],
-    rooms: ['Central Auditorium'],
-    everyoneAttending: true,
-  },
-];
 
 function mapTypeToAnnouncementCategory(
   type: NotificationType
@@ -121,35 +79,133 @@ function mapTypeToAnnouncementCategory(
     case 'Schedule / Room Change':
       return 'Programming Contest';
     case 'Competition Update':
-      return 'Robotics Challenge';
+      return 'Hackathon';
     case 'Food & Logistics':
       return 'Logistics & Hospitality';
     case 'Ceremony':
       return 'Ceremony';
-    case 'General':
     default:
       return 'Tech Seminar';
   }
+}
+
+function getDefaultAudienceMode(editing: Announcement | null): AudienceMode {
+  if (!editing) return 'everyone';
+  if ((editing.targeting.targetUserIds?.length ?? 0) > 0) {
+    return 'selected-users';
+  }
+  if (editing.targeting.everyoneAttending) return 'everyone';
+  const firstRole = editing.targeting.roles[0];
+  if (
+    firstRole === 'Participant' ||
+    firstRole === 'Volunteer' ||
+    firstRole === 'Judge' ||
+    firstRole === 'Mentor' ||
+    firstRole === 'Sponsor' ||
+    firstRole === 'Guest' ||
+    firstRole === 'Organizer'
+  ) {
+    return firstRole;
+  }
+  return 'everyone';
+}
+
+function toDhakaDateInput(iso?: string): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const dhaka = new Date(d.getTime() + 6 * 60 * 60 * 1000);
+  return dhaka.toISOString().slice(0, 10);
+}
+
+function toDhakaTimeInput(iso?: string): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const dhaka = new Date(d.getTime() + 6 * 60 * 60 * 1000);
+  return dhaka.toISOString().slice(11, 16);
 }
 
 export function ComposerPage({
   editingAnnouncement,
   senderId,
   senderName,
-  senderRole,
+  senderRole = 'Organizer',
+  profiles = [],
+  rooms = [],
+  onNavigateRooms,
   onSaveAnnouncement,
   onCancel,
 }: ComposerPageProps) {
+  const activeRooms = useMemo(
+    () => rooms.filter((room) => room.isActive),
+    [rooms]
+  );
+
+  const eligibleUsers = useMemo(
+    () =>
+      profiles.filter(
+        (p) =>
+          !p.isDeleted &&
+          !p.isArchived &&
+          p.accountStatus === 'Active' &&
+          p.approvalStatus !== 'Rejected'
+      ),
+    [profiles]
+  );
+
   const [title, setTitle] = useState(editingAnnouncement?.title ?? '');
   const [body, setBody] = useState(editingAnnouncement?.body ?? '');
-  const [type, setType] = useState<NotificationType>(
-    editingAnnouncement?.type ?? 'General'
+  const [audienceMode, setAudienceMode] = useState<AudienceMode>(() =>
+    getDefaultAudienceMode(editingAnnouncement)
   );
+  const [selectedUserIds, setSelectedUserIds] = useState<string[]>(
+    editingAnnouncement?.targeting.targetUserIds ?? []
+  );
+  const [userSearchQuery, setUserSearchQuery] = useState('');
   const [priority, setPriority] = useState<NotificationPriority>(
     editingAnnouncement?.priority ?? 'Normal'
   );
+
+  // Collapsed by default: Advanced Settings
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [type, setType] = useState<NotificationType>(
+    editingAnnouncement?.type ?? 'General'
+  );
   const [channels, setChannels] = useState<NotificationChannel[]>(
-    editingAnnouncement?.channels ?? ['In-App', 'Push Notification']
+    editingAnnouncement?.channels.length
+      ? editingAnnouncement.channels
+      : ['In-App']
+  );
+  const [selectedRooms, setSelectedRooms] = useState<string[]>(
+    editingAnnouncement?.targeting.rooms ?? []
+  );
+  const [scheduleMode, setScheduleMode] = useState<'now' | 'later'>(
+    editingAnnouncement?.status === 'Scheduled' ? 'later' : 'now'
+  );
+  const [scheduleDate, setScheduleDate] = useState(() =>
+    toDhakaDateInput(editingAnnouncement?.scheduledFor)
+  );
+  const [scheduleTime, setScheduleTime] = useState(() =>
+    toDhakaTimeInput(editingAnnouncement?.scheduledFor)
+  );
+  const [expiresDate, setExpiresDate] = useState(() =>
+    toDhakaDateInput(editingAnnouncement?.expiresAt)
+  );
+  const [expiresTime, setExpiresTime] = useState(() =>
+    toDhakaTimeInput(editingAnnouncement?.expiresAt)
+  );
+  const [retrySettings, setRetrySettings] = useState<NotificationRetrySettings>(
+    editingAnnouncement?.retrySettings ?? {
+      autoRetry: false,
+      maxRetries: 2,
+    }
+  );
+  const [actionLabel, setActionLabel] = useState(
+    editingAnnouncement?.actionLabel ?? ''
+  );
+  const [actionUrl, setActionUrl] = useState(
+    editingAnnouncement?.actionUrl ?? ''
   );
   const [attachments, setAttachments] = useState<Attachment[]>(
     editingAnnouncement?.attachments ?? []
@@ -159,795 +215,928 @@ export function ComposerPage({
       editingAnnouncement?.attachmentDelivery ?? {
         inApp: true,
         email: false,
-        push: true,
+        push: false,
       }
     );
-  const [targeting, setTargeting] = useState<TargetingCriteria>(
-    editingAnnouncement?.targeting ?? {
-      everyoneAttending: false,
-      roles: ['Participant', 'Volunteer'],
-      audienceGroups: [],
-      rooms: ['Academic Building 1 - Lab 302'],
-      eventSessions: [],
-      competitions: [],
-      categories: ['Programming Contest'],
-      individualUsers: [],
-    }
-  );
-  const [scheduleEnabled, setScheduleEnabled] = useState<boolean>(
-    editingAnnouncement?.status === 'Scheduled'
-  );
-  const [scheduledDateTime, setScheduledDateTime] = useState<string>(
-    editingAnnouncement?.scheduledFor
-      ? editingAnnouncement.scheduledFor.slice(0, 16)
-      : '2026-11-22T16:30'
-  );
 
-  const [previewTab, setPreviewTab] = useState<'in-app' | 'mobile' | 'email'>(
-    'in-app'
-  );
   const [formError, setFormError] = useState<string | null>(null);
-  const [isImportingAttachments, setIsImportingAttachments] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const [emergencyModalOpen, setEmergencyModalOpen] = useState(false);
-  const [pendingSubmitMode, setPendingSubmitMode] = useState<
-    'Delivered' | 'Scheduled'
-  >('Delivered');
-  const [emergencyAck, setEmergencyAck] = useState(false);
+  const draftAnnouncementId = editingAnnouncement?.id ?? 'ann-draft-preview';
+
+  const resolvedRoles = useMemo<UserRole[]>(() => {
+    if (audienceMode === 'everyone') {
+      return [...DEMO_ACCESS_ROLES];
+    }
+    if (audienceMode === 'selected-users') {
+      return [];
+    }
+    return [audienceMode];
+  }, [audienceMode]);
+
+  const filteredEligibleUsers = useMemo(() => {
+    const q = userSearchQuery.trim().toLowerCase();
+    return eligibleUsers.filter((u) => {
+      if (!q) return true;
+      return `${u.fullName} ${u.email} ${u.assignedRole ?? u.role} ${u.department}`
+        .toLowerCase()
+        .includes(q);
+    });
+  }, [eligibleUsers, userSearchQuery]);
 
   const estimatedRecipients = useMemo(() => {
-    if (targeting.everyoneAttending) return 940;
-    let count = 0;
-    if (targeting.roles.includes('Participant')) count += 480;
-    if (targeting.roles.includes('Volunteer')) count += 95;
-    if (targeting.roles.includes('Judge')) count += 36;
-    if (targeting.roles.includes('Guest')) count += 45;
-    if (targeting.roles.includes('Sponsor')) count += 24;
-    if (targeting.roles.includes('Mentor')) count += 18;
-    if (targeting.roles.includes('Organizer')) count += 18;
-    if (count === 0 && targeting.rooms.length > 0) count = 140;
-    return Math.min(940, Math.max(count, 12));
-  }, [targeting]);
+    if (audienceMode === 'selected-users') {
+      return selectedUserIds.length;
+    }
+    if (audienceMode === 'everyone') {
+      return eligibleUsers.length;
+    }
+    return eligibleUsers.filter((u) => {
+      const role = u.assignedRole ?? u.role;
+      if (u.approvalStatus === 'Pending') {
+        return audienceMode === 'Participant';
+      }
+      return role === audienceMode;
+    }).length;
+  }, [audienceMode, eligibleUsers, selectedUserIds.length]);
 
-  const smsSegments = Math.max(1, Math.ceil(Math.max(body.length, 1) / 160));
-  const includePreviewAttachments =
-    previewTab === 'in-app'
-      ? channels.includes('In-App') && attachmentDelivery.inApp
-      : previewTab === 'email'
-        ? channels.includes('Email') && attachmentDelivery.email
-        : channels.includes('Push Notification') && attachmentDelivery.push;
-  const previewAttachments = includePreviewAttachments ? attachments : [];
-
-  const applyTemplate = (tpl: QuickTemplate) => {
-    setTitle(tpl.title);
-    setBody(tpl.body);
-    setType(tpl.type);
-    setPriority(tpl.priority);
-    setChannels(tpl.channels);
-    setTargeting((prev) => ({
-      ...prev,
-      everyoneAttending: Boolean(tpl.everyoneAttending),
-      roles: tpl.roles,
-      rooms: tpl.rooms,
-    }));
-    setFormError(null);
-  };
+  const audienceLabel = useMemo(() => {
+    if (audienceMode === 'everyone') return 'Everyone (All active fest accounts)';
+    if (audienceMode === 'selected-users') {
+      return `${selectedUserIds.length} Selected User${selectedUserIds.length === 1 ? '' : 's'}`;
+    }
+    return `${audienceMode}s`;
+  }, [audienceMode, selectedUserIds.length]);
 
   const toggleChannel = (channel: NotificationChannel) => {
-    setChannels((prev) =>
-      prev.includes(channel)
-        ? prev.filter((c) => c !== channel)
-        : [...prev, channel]
+    setChannels((prev) => {
+      if (prev.includes(channel)) {
+        if (prev.length === 1) return prev;
+        return prev.filter((item) => item !== channel);
+      }
+      return [...prev, channel];
+    });
+  };
+
+  const toggleRoom = (roomName: string) => {
+    setSelectedRooms((prev) =>
+      prev.includes(roomName)
+        ? prev.filter((item) => item !== roomName)
+        : [...prev, roomName]
     );
   };
 
-  const toggleRole = (role: UserRole) => {
-    setTargeting((prev) => ({
-      ...prev,
-      everyoneAttending: false,
-      roles: prev.roles.includes(role)
-        ? prev.roles.filter((r) => r !== role)
-        : [...prev.roles, role],
-    }));
+  const toggleSelectedUser = (userId: string) => {
+    setSelectedUserIds((prev) =>
+      prev.includes(userId)
+        ? prev.filter((id) => id !== userId)
+        : [...prev, userId]
+    );
   };
 
-  const toggleRoom = (room: string) => {
-    setTargeting((prev) => ({
-      ...prev,
-      rooms: prev.rooms.includes(room)
-        ? prev.rooms.filter((r) => r !== room)
-        : [...prev.rooms, room],
-    }));
-  };
-
-  const validateBeforePublish = (mode: DeliveryStatus): boolean => {
-    if (isImportingAttachments) {
-      setFormError('Wait for attachments to finish importing before saving this notice.');
-      return false;
-    }
-    if (!title.trim()) {
-      setFormError('Please enter a notice title.');
-      return false;
-    }
-    if (!body.trim()) {
-      setFormError('Please enter a notice message.');
-      return false;
-    }
-    if (mode !== 'Draft' && channels.length === 0) {
-      setFormError('Select at least one delivery channel.');
-      return false;
-    }
-    if (
-      mode !== 'Draft' &&
-      !targeting.everyoneAttending &&
-      targeting.roles.length === 0 &&
-      targeting.rooms.length === 0
-    ) {
-      setFormError(
-        'Select All Attendees or at least one target role or room.'
-      );
-      return false;
-    }
-    setFormError(null);
-    return true;
-  };
-
-  const commitAnnouncement = (targetStatus: DeliveryStatus) => {
+  const buildPayload = (targetStatus: DeliveryStatus): Announcement => {
     const nowIso = new Date().toISOString();
-    const id =
-      editingAnnouncement?.id ?? `ann-${Math.floor(110 + Math.random() * 880)}`;
+    const id = editingAnnouncement?.id ?? `ann-${Date.now()}`;
+    const cleanBody = body.trim();
+    const autoSummary =
+      cleanBody.length <= 160 ? cleanBody : `${cleanBody.slice(0, 157)}...`;
 
-    const isSent = targetStatus === 'Delivered';
-    const simulatedFailed = isSent
-      ? Math.max(1, Math.floor(estimatedRecipients * 0.015))
-      : 0;
-    const simulatedDelivered = isSent
-      ? estimatedRecipients - simulatedFailed
-      : 0;
-    const simulatedRead = isSent ? Math.floor(simulatedDelivered * 0.62) : 0;
-    const simulatedClicks = isSent ? Math.floor(simulatedDelivered * 0.28) : 0;
-
-    const channelBreakdown =
-      targetStatus === 'Draft'
-        ? []
-        : channels.map((ch) => {
-            const chTargeted =
-              ch === 'In-App'
-                ? estimatedRecipients
-                : Math.floor(estimatedRecipients * 0.88);
-            const chFailed =
-              isSent && (ch === 'SMS' || ch === 'Push Notification') ? 1 : 0;
-            const chDelivered = isSent ? chTargeted - chFailed : 0;
-            return {
-              channel: ch,
-              targetedCount: chTargeted,
-              deliveredCount: chDelivered,
-              pendingCount: targetStatus === 'Scheduled' ? chTargeted : 0,
-              failedCount: chFailed,
-              readCount: isSent ? Math.floor(chDelivered * 0.58) : 0,
-              clickCount: isSent ? Math.floor(chDelivered * 0.19) : 0,
-            };
-          });
-
-    const category =
-      editingAnnouncement?.category ?? mapTypeToAnnouncementCategory(type);
-
-    const announcement: Announcement = {
-      id,
-      title: title.trim(),
-      body: body.trim(),
-      summary:
-        body.trim().slice(0, 120) + (body.trim().length > 120 ? '...' : ''),
-      type,
-      category,
-      priority,
-      status: targetStatus,
-      channels,
-      targeting: {
-        ...targeting,
-        categories: [category],
-      },
-      senderId:
-        editingAnnouncement?.senderId ??
-        (senderId ? senderId : undefined),
-      senderName:
-        editingAnnouncement?.senderName ??
-        (senderName?.trim() || 'Organizing Committee'),
-      senderRole:
-        editingAnnouncement?.senderRole ??
-        senderRole ??
-        'Organizer',
-      createdAt: editingAnnouncement?.createdAt ?? nowIso,
-      updatedAt: nowIso,
-      publishedAt: isSent ? nowIso : undefined,
-      scheduledFor:
-        targetStatus === 'Scheduled'
-          ? `${scheduledDateTime}:00+06:00`
-          : undefined,
-      timezone: 'Asia/Dhaka',
-      attachments: attachments.map((attachment) => ({
-        ...attachment,
-        announcementId: id,
-      })),
-      attachmentDelivery,
-      totalRecipients: estimatedRecipients,
-      deliveredCount: simulatedDelivered,
-      failedCount: simulatedFailed,
-      pendingCount: targetStatus === 'Scheduled' ? estimatedRecipients : 0,
-      readCount: simulatedRead,
-      clickCount: simulatedClicks,
-      channelBreakdown,
-      isReadByCurrentRole: {
-        Organizer: true,
-        Participant: false,
-        Volunteer: false,
-        Judge: false,
-        Guest: false,
-        Sponsor: false,
-        Mentor: false,
-      },
+    const targeting: TargetingCriteria = {
+      everyoneAttending: audienceMode === 'everyone',
+      roles: resolvedRoles,
+      audienceGroups: [],
+      rooms: selectedRooms,
+      eventSessions: [],
+      competitions: [],
+      categories: [],
+      individualUsers:
+        audienceMode === 'selected-users'
+          ? selectedUserIds
+              .map(
+                (uid) =>
+                  eligibleUsers.find((u) => u.userId === uid)?.fullName ?? uid
+              )
+          : [],
+      targetUserIds:
+        audienceMode === 'selected-users' ? selectedUserIds : [],
     };
 
-    onSaveAnnouncement(announcement, targetStatus);
+    const scheduledIso =
+      scheduleMode === 'later' && scheduleDate && scheduleTime
+        ? `${scheduleDate}T${scheduleTime}:00+06:00`
+        : undefined;
+
+    const expiresIso =
+      expiresDate && expiresTime
+        ? `${expiresDate}T${expiresTime}:00+06:00`
+        : undefined;
+
+    return {
+      id,
+      title: title.trim(),
+      body: cleanBody,
+      summary: autoSummary,
+      type,
+      category: mapTypeToAnnouncementCategory(type),
+      priority,
+      status: targetStatus,
+      channels: channels.length > 0 ? channels : ['In-App'],
+      targeting,
+      retrySettings,
+      senderId: editingAnnouncement?.senderId ?? senderId ?? undefined,
+      senderName:
+        editingAnnouncement?.senderName ?? (senderName || 'Organizer'),
+      senderRole: editingAnnouncement?.senderRole ?? senderRole,
+      createdAt: editingAnnouncement?.createdAt ?? nowIso,
+      updatedAt: nowIso,
+      publishedAt:
+        targetStatus === 'Delivered'
+          ? editingAnnouncement?.publishedAt ?? nowIso
+          : undefined,
+      scheduledFor: targetStatus === 'Scheduled' ? scheduledIso : undefined,
+      expiresAt: expiresIso,
+      timezone: 'Asia/Dhaka',
+      attachments: attachments.map((att) => ({ ...att, announcementId: id })),
+      attachmentDelivery,
+      actionLabel: actionLabel.trim() || undefined,
+      actionUrl: actionUrl.trim() || undefined,
+      totalRecipients: estimatedRecipients,
+      deliveredCount:
+        editingAnnouncement?.deliveredCount ?? 0,
+      failedCount: editingAnnouncement?.failedCount ?? 0,
+      pendingCount:
+        targetStatus === 'Delivered'
+          ? 0
+          : editingAnnouncement?.pendingCount ?? 0,
+      readCount: editingAnnouncement?.readCount ?? 0,
+      clickCount: editingAnnouncement?.clickCount ?? 0,
+      channelBreakdown:
+        editingAnnouncement?.channelBreakdown ??
+        channels.map((ch) => ({
+          channel: ch,
+          targetedCount: estimatedRecipients,
+          deliveredCount: 0,
+          pendingCount: 0,
+          failedCount: 0,
+          readCount: 0,
+          clickCount: 0,
+        })),
+      isReadByCurrentRole: editingAnnouncement?.isReadByCurrentRole ?? {},
+    };
   };
 
-  const handlePrimarySubmit = () => {
-    const mode: 'Delivered' | 'Scheduled' = scheduleEnabled
-      ? 'Scheduled'
-      : 'Delivered';
-    if (!validateBeforePublish(mode)) return;
-    if (priority === 'Emergency') {
-      setPendingSubmitMode(mode);
-      setEmergencyAck(false);
-      setEmergencyModalOpen(true);
+  const validateBeforeSubmit = (asDraft: boolean): string | null => {
+    if (!title.trim()) return 'Notice title is required.';
+    if (!body.trim()) return 'Notice message cannot be empty.';
+    if (!asDraft && audienceMode === 'selected-users' && selectedUserIds.length === 0) {
+      return 'Select at least one recipient user or choose a broader audience.';
+    }
+    if (!asDraft && scheduleMode === 'later') {
+      if (!scheduleDate || !scheduleTime) {
+        return 'Select both a schedule date and time in Advanced Settings.';
+      }
+    }
+    return null;
+  };
+
+  const handleRequestDispatch = () => {
+    const err = validateBeforeSubmit(false);
+    if (err) {
+      setFormError(err);
       return;
     }
-    commitAnnouncement(mode);
+    setFormError(null);
+    setConfirmOpen(true);
+  };
+
+  const handleSaveDraft = async () => {
+    const err = validateBeforeSubmit(true);
+    if (err) {
+      setFormError(err);
+      return;
+    }
+    setFormError(null);
+    setIsSubmitting(true);
+    try {
+      await onSaveAnnouncement(buildPayload('Draft'), 'Draft');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleConfirmSend = async () => {
+    const targetStatus: DeliveryStatus =
+      scheduleMode === 'later' ? 'Scheduled' : 'Delivered';
+    setIsSubmitting(true);
+    try {
+      setConfirmOpen(false);
+      await onSaveAnnouncement(buildPayload(targetStatus), targetStatus);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+    <div className="space-y-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="font-display text-xl font-bold text-emerald-950 dark:text-emerald-50">
+          <h1 className="font-display text-2xl font-bold tracking-tight text-emerald-950 dark:text-emerald-50">
             {editingAnnouncement ? 'Edit Notice' : 'Create Notice'}
           </h1>
-          <p className="text-xs text-emerald-900/60 dark:text-emerald-300/65">
-            Compose, target by role or campus room, preview across channels, and dispatch
+          <p className="mt-1 text-sm text-emerald-900/65 dark:text-emerald-200/70">
+            Compose and dispatch announcements with live audience targeting and real delivery tracking.
           </p>
         </div>
-        <span className="font-mono text-xs text-emerald-900/60 dark:text-emerald-300/65">
-          Timezone: Asia/Dhaka (GMT+6)
-        </span>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="inline-flex items-center justify-center rounded-lg border border-emerald-200/80 bg-white px-3.5 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800/70 dark:bg-[#061D15] dark:text-emerald-100 dark:hover:bg-[#09291E]"
+        >
+          Back to Notices
+        </button>
       </div>
-
-      {!editingAnnouncement && (
-        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-emerald-200/70 bg-white px-4 py-2.5 dark:border-emerald-800/60 dark:bg-[#061D15]">
-          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-900/75 dark:text-emerald-200/80 mr-1">
-            <Sparkles className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
-            Quick Templates:
-          </span>
-          {QUICK_TEMPLATES.map((tpl) => (
-            <button
-              key={tpl.id}
-              type="button"
-              onClick={() => applyTemplate(tpl)}
-              className="rounded-md border border-emerald-200/80 bg-emerald-50/60 px-2.5 py-1 text-xs font-medium text-emerald-900 transition-colors hover:border-emerald-500 hover:bg-emerald-50 hover:text-emerald-950 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-200 dark:hover:border-emerald-500 dark:hover:bg-[#09291E] dark:hover:text-emerald-50 whitespace-nowrap"
-            >
-              {tpl.label}
-            </button>
-          ))}
-        </div>
-      )}
 
       {formError && (
         <div
           role="alert"
-          className="rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-xs font-semibold text-red-800 dark:border-red-800/70 dark:bg-red-950/60 dark:text-red-300"
+          className="flex items-start gap-2.5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-800 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-200"
         >
-          {formError}
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <span>{formError}</span>
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12 items-start">
-        <div className="rounded-xl border border-emerald-200/70 bg-white p-4 sm:p-5 space-y-4 lg:col-span-7 dark:border-emerald-800/60 dark:bg-[#061D15]">
-          <div>
-            <label
-              htmlFor="notice-title"
-              className="block text-xs font-semibold text-emerald-950 dark:text-emerald-100"
-            >
-              Title
-            </label>
-            <input
-              id="notice-title"
-              type="text"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="e.g., Room Change: IUPC Mock Contest shifted to AB1 Lab 305"
-              className="mt-1 w-full rounded-lg border border-emerald-200/80 bg-white px-3 py-2 text-sm text-emerald-950 placeholder:text-emerald-900/40 focus:border-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-700/15 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50 dark:placeholder:text-emerald-400/45 dark:focus:border-emerald-400 dark:focus:ring-emerald-500/20"
-            />
-          </div>
-
-          <div>
-            <div className="flex items-center justify-between gap-2">
-              <label
-                htmlFor="notice-message"
-                className="block text-xs font-semibold text-emerald-950 dark:text-emerald-100"
-              >
-                Message
-              </label>
-              <span className="font-mono text-[11px] text-emerald-900/55 dark:text-emerald-300/65 tabular-nums">
-                {body.length} chars
-                {channels.includes('SMS')
-                  ? ` · ${smsSegments} SMS segment${smsSegments > 1 ? 's' : ''}`
-                  : ''}
-              </span>
-            </div>
-            <textarea
-              id="notice-message"
-              rows={4}
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
-              placeholder="Write clear instructions, room numbers, and timings in GMT+6..."
-              className="mt-1 w-full rounded-lg border border-emerald-200/80 bg-white px-3 py-2 text-sm leading-relaxed text-emerald-950 placeholder:text-emerald-900/40 focus:border-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-700/15 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50 dark:placeholder:text-emerald-400/45 dark:focus:border-emerald-400 dark:focus:ring-emerald-500/20"
-            />
-          </div>
-
-          <AttachmentManager
-            announcementId={editingAnnouncement?.id ?? 'new-notice'}
-            attachments={attachments}
-            deliveryOptions={attachmentDelivery}
-            channels={channels}
-            onChange={setAttachments}
-            onDeliveryOptionsChange={setAttachmentDelivery}
-            onProcessingChange={setIsImportingAttachments}
-          />
-
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div>
-              <label
-                htmlFor="notice-category"
-                className="block text-xs font-semibold text-emerald-950 dark:text-emerald-100"
-              >
-                Category
-              </label>
-              <select
-                id="notice-category"
-                value={type}
-                onChange={(e) => setType(e.target.value as NotificationType)}
-                className="mt-1 w-full rounded-lg border border-emerald-200/80 bg-white px-3 py-2 text-xs font-medium text-emerald-950 focus:border-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-700/15 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50 dark:focus:border-emerald-400 dark:focus:ring-emerald-500/20"
-              >
-                {ALL_NOTIFICATION_TYPES.map((t) => (
-                  <option key={t} value={t}>
-                    {t}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <span className="block text-xs font-semibold text-emerald-950 dark:text-emerald-100">
-                Priority
-              </span>
-              <div className="mt-1 grid grid-cols-4 gap-1.5">
-                {PRIORITIES.map((p) => {
-                  const active = priority === p;
-                  const isEmergency = p === 'Emergency';
-                  return (
-                    <button
-                      key={p}
-                      type="button"
-                      onClick={() => setPriority(p)}
-                      className={`rounded-lg border px-2 py-2 text-xs font-semibold transition-colors ${
-                        active
-                          ? isEmergency
-                            ? 'border-red-600 bg-red-600 text-white'
-                            : 'border-[#064E3B] bg-[#064E3B] text-white dark:border-emerald-500 dark:bg-emerald-600'
-                          : isEmergency
-                            ? 'border-red-200 bg-red-50 text-red-700 hover:bg-red-100 dark:border-red-800/70 dark:bg-red-950/50 dark:text-red-300 dark:hover:bg-red-950'
-                            : 'border-emerald-200/80 bg-white text-emerald-900 hover:bg-emerald-50/70 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-200 dark:hover:bg-[#09291E]'
-                      }`}
-                    >
-                      {p}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-
-          <div className="border-t border-emerald-100 pt-3.5 space-y-3 dark:border-emerald-800/60">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-semibold text-emerald-950 dark:text-emerald-100">
-                Target Roles
-              </span>
-              <button
-                type="button"
-                onClick={() =>
-                  setTargeting((prev) => ({
-                    ...prev,
-                    everyoneAttending: !prev.everyoneAttending,
-                  }))
-                }
-                className={`rounded-md border px-2.5 py-1 text-[11px] font-semibold transition-colors ${
-                  targeting.everyoneAttending
-                    ? 'border-emerald-700 bg-emerald-700 text-white dark:border-emerald-500 dark:bg-emerald-600'
-                    : 'border-emerald-200/80 bg-white text-emerald-800 hover:bg-emerald-50/70 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-200 dark:hover:bg-[#09291E]'
-                }`}
-              >
-                {targeting.everyoneAttending
-                  ? 'All Attendees Selected (940)'
-                  : 'Select All Attendees'}
-              </button>
-            </div>
-
-            <div className="flex flex-wrap gap-1.5">
-              {DEMO_ACCESS_ROLES.map((role) => {
-                const selected =
-                  targeting.everyoneAttending || targeting.roles.includes(role);
-                return (
-                  <button
-                    key={role}
-                    type="button"
-                    onClick={() => toggleRole(role)}
-                    className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors ${
-                      selected
-                        ? 'border-[#064E3B] bg-[#064E3B] text-white dark:border-emerald-500 dark:bg-emerald-600'
-                        : 'border-emerald-200/80 bg-white text-emerald-900 hover:bg-emerald-50/70 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-200 dark:hover:bg-[#09291E]'
-                    }`}
-                  >
-                    {selected && <Check className="h-3 w-3 text-emerald-300 dark:text-emerald-100" />}
-                    {role}
-                  </button>
-                );
-              })}
-            </div>
-
-            <div>
-              <span className="block text-xs font-semibold text-emerald-950 dark:text-emerald-100">
-                Target Rooms
-              </span>
-              <div className="mt-1.5 flex flex-wrap gap-1.5">
-                {BAUST_ROOMS.map((room) => {
-                  const selected = targeting.rooms.includes(room);
-                  return (
-                    <button
-                      key={room}
-                      type="button"
-                      onClick={() => toggleRoom(room)}
-                      className={`rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                        selected
-                          ? 'border-emerald-500 bg-emerald-50 text-emerald-900 font-semibold dark:border-emerald-500 dark:bg-emerald-900/60 dark:text-emerald-100'
-                          : 'border-emerald-200/70 bg-emerald-50/40 text-emerald-900/75 hover:bg-emerald-50 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-300/75 dark:hover:bg-[#09291E]'
-                      }`}
-                    >
-                      {room}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-
-          <div className="border-t border-emerald-100 pt-3.5 dark:border-emerald-800/60">
-            <span className="block text-xs font-semibold text-emerald-950 dark:text-emerald-100">
-              Delivery Channels
-            </span>
-            <div className="mt-1.5 flex flex-wrap gap-1.5">
-              {ALL_CHANNELS.map((ch) => {
-                const active = channels.includes(ch);
-                return (
-                  <button
-                    key={ch}
-                    type="button"
-                    onClick={() => toggleChannel(ch)}
-                    className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                      active
-                        ? 'border-[#064E3B] bg-[#064E3B] text-white dark:border-emerald-500 dark:bg-emerald-600'
-                        : 'border-emerald-200/80 bg-white text-emerald-900/80 hover:bg-emerald-50/70 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-200 dark:hover:bg-[#09291E]'
-                    }`}
-                  >
-                    {active && <Check className="h-3 w-3 text-emerald-300 dark:text-emerald-100" />}
-                    {ch}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="border-t border-emerald-100 pt-3.5 space-y-2.5 dark:border-emerald-800/60">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <label className="inline-flex items-center gap-2.5 text-xs font-semibold text-emerald-950 dark:text-emerald-100 cursor-pointer">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+        {/* Primary Clean Notice Composer */}
+        <div className="space-y-5 lg:col-span-7">
+          <section className="rounded-xl border border-emerald-200/80 bg-white p-5 shadow-sm sm:p-6 dark:border-emerald-800/60 dark:bg-[#061D15]">
+            <div className="space-y-5">
+              <div>
+                <label
+                  htmlFor="notice-title"
+                  className="block text-xs font-semibold uppercase tracking-wider text-emerald-900/70 dark:text-emerald-200/75"
+                >
+                  Title
+                </label>
                 <input
-                  type="checkbox"
-                  checked={scheduleEnabled}
-                  onChange={(e) => setScheduleEnabled(e.target.checked)}
-                  className="h-4 w-4 rounded border-emerald-300 accent-emerald-700"
+                  id="notice-title"
+                  type="text"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder="Enter a clear, concise announcement title..."
+                  className="mt-1.5 w-full rounded-lg border border-emerald-200/80 bg-white px-3.5 py-2.5 text-sm font-medium text-emerald-950 placeholder:text-emerald-900/40 focus:border-emerald-700 focus:outline-none dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50 dark:placeholder:text-emerald-400/45"
                 />
-                <CalendarClock
-                  className="h-4 w-4 text-emerald-700 dark:text-emerald-400"
-                  aria-hidden="true"
-                />
-                <span>Schedule for later (GMT+6)</span>
-              </label>
+              </div>
 
-              {scheduleEnabled && (
-                <input
-                  type="datetime-local"
-                  aria-label="Scheduled date and time"
-                  value={scheduledDateTime}
-                  onChange={(e) => setScheduledDateTime(e.target.value)}
-                  className="rounded-lg border border-emerald-200/80 bg-white px-2.5 py-1.5 font-mono text-xs text-emerald-950 focus:border-emerald-700 focus:outline-none dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50 dark:focus:border-emerald-400"
+              <div>
+                <label
+                  htmlFor="notice-message"
+                  className="block text-xs font-semibold uppercase tracking-wider text-emerald-900/70 dark:text-emerald-200/75"
+                >
+                  Message
+                </label>
+                <textarea
+                  id="notice-message"
+                  rows={5}
+                  value={body}
+                  onChange={(e) => setBody(e.target.value)}
+                  placeholder="Write your announcement details, timing, instructions, or venue updates..."
+                  className="mt-1.5 w-full rounded-lg border border-emerald-200/80 bg-white px-3.5 py-2.5 text-sm leading-relaxed text-emerald-950 placeholder:text-emerald-900/40 focus:border-emerald-700 focus:outline-none dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50 dark:placeholder:text-emerald-400/45"
                 />
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div>
+                  <label
+                    htmlFor="notice-audience"
+                    className="block text-xs font-semibold uppercase tracking-wider text-emerald-900/70 dark:text-emerald-200/75"
+                  >
+                    Audience
+                  </label>
+                  <select
+                    id="notice-audience"
+                    value={audienceMode}
+                    onChange={(e) =>
+                      setAudienceMode(e.target.value as AudienceMode)
+                    }
+                    className="mt-1.5 w-full rounded-lg border border-emerald-200/80 bg-white px-3 py-2.5 text-sm font-medium text-emerald-950 focus:border-emerald-700 focus:outline-none dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50"
+                  >
+                    <option value="everyone">Everyone (All Active Users)</option>
+                    <option value="Participant">Participants</option>
+                    <option value="Volunteer">Volunteers</option>
+                    <option value="Judge">Judges</option>
+                    <option value="Mentor">Mentors</option>
+                    <option value="Sponsor">Sponsors</option>
+                    <option value="Guest">Guests</option>
+                    <option value="Organizer">Organizers</option>
+                    <option value="selected-users">Selected Users…</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="notice-priority"
+                    className="block text-xs font-semibold uppercase tracking-wider text-emerald-900/70 dark:text-emerald-200/75"
+                  >
+                    Priority
+                  </label>
+                  <select
+                    id="notice-priority"
+                    value={priority}
+                    onChange={(e) =>
+                      setPriority(e.target.value as NotificationPriority)
+                    }
+                    className="mt-1.5 w-full rounded-lg border border-emerald-200/80 bg-white px-3 py-2.5 text-sm font-medium text-emerald-950 focus:border-emerald-700 focus:outline-none dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50"
+                  >
+                    {PRIORITIES.map((item) => (
+                      <option key={item} value={item}>
+                        {item}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Selected Users Picker */}
+              {audienceMode === 'selected-users' && (
+                <div className="rounded-xl border border-emerald-200/80 bg-emerald-50/40 p-4 dark:border-emerald-800/60 dark:bg-[#041811]">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-950 dark:text-emerald-100">
+                      <Users className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400" />
+                      Select Recipients ({selectedUserIds.length} chosen)
+                    </span>
+                    {selectedUserIds.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedUserIds([])}
+                        className="text-xs font-semibold text-emerald-700 hover:underline dark:text-emerald-400"
+                      >
+                        Clear all
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="relative mt-2.5">
+                    <Search
+                      className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-emerald-700/50 dark:text-emerald-300/50"
+                      aria-hidden="true"
+                    />
+                    <input
+                      type="text"
+                      value={userSearchQuery}
+                      onChange={(e) => setUserSearchQuery(e.target.value)}
+                      placeholder="Search active users by name, email, or role..."
+                      className="w-full rounded-lg border border-emerald-200/80 bg-white py-2 pl-8 pr-3 text-xs text-emerald-950 placeholder:text-emerald-900/40 focus:border-emerald-700 focus:outline-none dark:border-emerald-800/70 dark:bg-[#061D15] dark:text-emerald-50"
+                    />
+                  </div>
+
+                  <div className="mt-2.5 max-h-48 space-y-1 overflow-y-auto pr-1">
+                    {filteredEligibleUsers.length === 0 ? (
+                      <p className="py-3 text-center text-xs text-emerald-900/60 dark:text-emerald-200/60">
+                        No matching active users available.
+                      </p>
+                    ) : (
+                      filteredEligibleUsers.map((user) => {
+                        const checked = selectedUserIds.includes(user.userId);
+                        return (
+                          <label
+                            key={user.userId}
+                            className={`flex cursor-pointer items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs transition-colors ${
+                              checked
+                                ? 'border-emerald-600 bg-emerald-100/70 text-emerald-950 dark:border-emerald-500 dark:bg-emerald-900/50 dark:text-emerald-50'
+                                : 'border-emerald-200/60 bg-white text-emerald-900 hover:bg-emerald-50/70 dark:border-emerald-800/60 dark:bg-[#061D15] dark:text-emerald-100'
+                            }`}
+                          >
+                            <span className="flex min-w-0 items-center gap-2">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleSelectedUser(user.userId)}
+                                className="h-3.5 w-3.5 rounded border-emerald-300 text-emerald-700 focus:ring-emerald-600"
+                              />
+                              <span className="truncate font-semibold">
+                                {user.fullName || user.email}
+                              </span>
+                              <span className="hidden truncate text-emerald-900/60 sm:inline dark:text-emerald-200/60">
+                                ({user.email})
+                              </span>
+                            </span>
+                            <span className="shrink-0 rounded bg-emerald-900/10 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-900 dark:bg-emerald-800/60 dark:text-emerald-200">
+                              {user.assignedRole ?? user.role}
+                            </span>
+                          </label>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
               )}
-            </div>
 
-            {scheduleEnabled && (
-              <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-                <span className="text-emerald-900/60 dark:text-emerald-300/65">Quick times:</span>
-                {[
-                  { label: '3:00 PM Today', value: '2026-11-22T15:00' },
-                  { label: '4:30 PM Today', value: '2026-11-22T16:30' },
-                  { label: '6:00 PM Today', value: '2026-11-22T18:00' },
-                ].map((preset) => (
-                  <button
-                    key={preset.value}
-                    type="button"
-                    onClick={() => setScheduledDateTime(preset.value)}
-                    className={`rounded border px-2 py-0.5 font-medium transition-colors ${
-                      scheduledDateTime === preset.value
-                        ? 'border-[#064E3B] bg-[#064E3B] text-white dark:border-emerald-500 dark:bg-emerald-600'
-                        : 'border-emerald-200/80 bg-emerald-50/50 text-emerald-900 hover:bg-emerald-100/70 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-200 dark:hover:bg-[#09291E]'
-                    }`}
-                  >
-                    {preset.label}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-
-        <aside className="rounded-xl border border-emerald-200/70 bg-white p-4 sm:p-5 space-y-4 lg:sticky lg:top-4 lg:col-span-5 dark:border-emerald-800/60 dark:bg-[#061D15]">
-          <div className="flex items-center justify-between gap-2">
-            <h2 className="font-display text-sm font-bold text-emerald-950 dark:text-emerald-50">
-              Live Preview
-            </h2>
-            <div className="inline-flex rounded-lg bg-emerald-50/80 p-0.5 text-[11px] font-semibold dark:bg-[#041811] dark:border dark:border-emerald-800/50">
-              {(
-                [
-                  { id: 'in-app', label: 'In-App', icon: Bell },
-                  { id: 'mobile', label: 'Push', icon: Smartphone },
-                  { id: 'email', label: 'Email', icon: Mail },
-                ] as const
-              ).map((tab) => {
-                const Icon = tab.icon;
-                return (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    onClick={() => setPreviewTab(tab.id)}
-                    className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 transition-colors ${
-                      previewTab === tab.id
-                        ? 'bg-white text-emerald-950 shadow-sm dark:bg-[#0B2E22] dark:text-emerald-50'
-                        : 'text-emerald-900/65 hover:text-emerald-950 dark:text-emerald-300/75 dark:hover:text-emerald-50'
-                    }`}
-                  >
-                    <Icon className="h-3 w-3" aria-hidden="true" />
-                    {tab.label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="rounded-xl border border-emerald-200/70 bg-emerald-50/35 p-4 dark:border-emerald-800/60 dark:bg-[#041811]">
-            {previewTab === 'in-app' && (
-              <div className="space-y-2.5">
-                <div className="flex flex-wrap items-center gap-2">
-                  <PriorityBadge priority={priority} />
-                  <span className="text-xs font-medium text-emerald-900/65 dark:text-emerald-300/70">
-                    {type}
-                  </span>
-                </div>
-                <div className="font-display text-sm font-bold text-emerald-950 dark:text-emerald-50">
-                  {title.trim() || 'Notice title preview appears here...'}
-                </div>
-                <p className="text-xs leading-relaxed text-emerald-950/80 dark:text-emerald-100/85 whitespace-pre-line">
-                  {body.trim() ||
-                    'Your message body will render here as attendees see it in their BAUST CSE Fest inbox.'}
-                </p>
-                {targeting.rooms.length > 0 && (
-                  <div className="pt-1 text-[11px] text-emerald-900/60 dark:text-emerald-300/65">
-                    Venues: {targeting.rooms.join(', ')}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {previewTab === 'mobile' && (
-              <div className="mx-auto max-w-xs rounded-xl bg-[#042419] p-3.5 text-white border border-emerald-800/70">
-                <div className="flex items-center justify-between text-[10px] text-emerald-200/60">
-                  <span className="font-semibold text-emerald-300">
-                    BAUST CSE FEST
-                  </span>
-                  <span>now</span>
-                </div>
-                <div className="mt-1 text-xs font-bold text-white line-clamp-2">
-                  {priority === 'Emergency' ? 'EMERGENCY: ' : ''}
-                  {title.trim() || 'Notice headline preview'}
-                </div>
-                <p className="mt-1 text-[11px] text-emerald-100/80 line-clamp-3">
-                  {body.trim() || 'Push alert summary snippet...'}
-                </p>
-              </div>
-            )}
-
-            {previewTab === 'email' && (
-              <div className="space-y-2 text-xs">
-                <div className="border-b border-emerald-200/70 pb-2 space-y-1 dark:border-emerald-800/60">
-                  <div className="text-[11px] text-emerald-900/60 dark:text-emerald-300/65">
-                    From:{' '}
-                    <span className="font-medium text-emerald-950 dark:text-emerald-100">
-                      BAUST CSE Fest Dispatch &lt;notices@baust.edu.bd&gt;
-                    </span>
-                  </div>
-                  <div className="text-[11px] text-emerald-900/60 dark:text-emerald-300/65">
-                    Subject:{' '}
-                    <span className="font-semibold text-emerald-950 dark:text-emerald-50">
-                      [BAUST CSE Fest] {title.trim() || 'Untitled Notice'}
-                    </span>
-                  </div>
-                </div>
-                <p className="text-emerald-950/80 dark:text-emerald-100/85 leading-relaxed whitespace-pre-line">
-                  {body.trim() || 'Email notice body preview...'}
-                </p>
-              </div>
-            )}
-            {previewAttachments.length > 0 && (
-              <div className="mt-3 border-t border-emerald-200/70 pt-3 dark:border-emerald-800/60">
-                <p className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold text-emerald-900 dark:text-emerald-200">
-                  <Paperclip className="h-3.5 w-3.5" />
-                  {previewTab === 'mobile' ? 'Attachment links' : 'Attachments'}
-                </p>
-                <div className="space-y-1.5">
-                  {previewAttachments.map((attachment) => (
-                    <div key={attachment.id} className="flex items-center justify-between gap-2 rounded-md border border-emerald-200/70 bg-white/70 px-2.5 py-2 text-[10px] dark:border-emerald-800/60 dark:bg-[#061D15]">
-                      <span className="flex min-w-0 items-center gap-1.5">
-                        <Paperclip className="h-3 w-3 shrink-0 text-emerald-700 dark:text-emerald-400" />
-                        <span className="truncate text-emerald-950 dark:text-emerald-100">{attachment.fileName}</span>
-                      </span>
-                      <span className="shrink-0 text-emerald-900/55 dark:text-emerald-300/60">{attachment.fileSizeLabel}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="border-t border-emerald-100 pt-3 space-y-2 text-xs dark:border-emerald-800/60">
-            <div className="flex items-center justify-between">
-              <span className="text-emerald-900/60 dark:text-emerald-300/65">Estimated Reach</span>
-              <span className="font-mono font-bold text-emerald-950 dark:text-emerald-50 tabular-nums">
-                {estimatedRecipients.toLocaleString()} recipients
-              </span>
-            </div>
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-emerald-900/60 dark:text-emerald-300/65">Dispatch Mode</span>
-              <span className="font-medium text-emerald-950 dark:text-emerald-50 tabular-nums">
-                {scheduleEnabled
-                  ? formatDhakaDateTime(`${scheduledDateTime}:00+06:00`)
-                  : 'Immediate (Simulated)'}
-              </span>
-            </div>
-            <div className="flex flex-wrap gap-1 pt-1">
-              {channels.map((ch) => (
-                <ChannelPill key={ch} channel={ch} compact />
-              ))}
-            </div>
-          </div>
-
-          <div className="border-t border-emerald-100 pt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between dark:border-emerald-800/60">
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={onCancel}
-                disabled={isImportingAttachments}
-                className="rounded-lg border border-emerald-200/80 bg-white px-3 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-50/70 disabled:cursor-wait disabled:opacity-50 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-100 dark:hover:bg-[#09291E]"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={isImportingAttachments}
-                onClick={() => {
-                  if (!validateBeforePublish('Draft')) return;
-                  commitAnnouncement('Draft');
-                }}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200/80 bg-white px-3 py-2 text-xs font-semibold text-emerald-950 hover:bg-emerald-50/70 disabled:cursor-wait disabled:opacity-50 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-100 dark:hover:bg-[#09291E]"
-              >
-                <FileText
-                  className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400"
-                  aria-hidden="true"
+              {/* Attachments */}
+              <div>
+                <AttachmentManager
+                  announcementId={draftAnnouncementId}
+                  attachments={attachments}
+                  deliveryOptions={attachmentDelivery}
+                  channels={channels}
+                  onChange={setAttachments}
+                  onDeliveryOptionsChange={setAttachmentDelivery}
+                  onProcessingChange={() => {}}
                 />
-                Save Draft
-              </button>
+              </div>
             </div>
+          </section>
 
+          {/* Collapsed-by-default Advanced Settings */}
+          <section className="rounded-xl border border-emerald-200/80 bg-white shadow-sm dark:border-emerald-800/60 dark:bg-[#061D15]">
             <button
               type="button"
-              onClick={handlePrimarySubmit}
-              disabled={isImportingAttachments}
-              className={`inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-xs font-bold transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 ${
-                priority === 'Emergency'
-                  ? 'bg-red-600 text-white hover:bg-red-700 focus-visible:ring-red-600'
-                  : 'bg-emerald-700 text-white hover:bg-emerald-600 focus-visible:ring-emerald-700 dark:bg-emerald-600 dark:hover:bg-emerald-500'
-              } disabled:cursor-wait disabled:opacity-60`}
+              aria-expanded={advancedOpen}
+              onClick={() => setAdvancedOpen((prev) => !prev)}
+              className="flex w-full items-center justify-between gap-3 px-5 py-4 text-left transition-colors hover:bg-emerald-50/50 dark:hover:bg-emerald-900/20"
             >
-              {scheduleEnabled ? (
-                <>
-                  <CalendarClock className="h-3.5 w-3.5" aria-hidden="true" />
-                  Schedule Notice
-                </>
+              <div className="flex items-center gap-2.5 min-w-0">
+                <Settings2
+                  className="h-4 w-4 shrink-0 text-emerald-700 dark:text-emerald-400"
+                  aria-hidden="true"
+                />
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-emerald-950 dark:text-emerald-50">
+                    Advanced Settings
+                  </p>
+                  <p className="truncate text-xs text-emerald-900/60 dark:text-emerald-200/60">
+                    {channels.join(', ')} ·{' '}
+                    {scheduleMode === 'later' && scheduleDate && scheduleTime
+                      ? `Scheduled ${scheduleDate} ${scheduleTime}`
+                      : 'Send immediately'}{' '}
+                    · {selectedRooms.length} room{selectedRooms.length === 1 ? '' : 's'}
+                  </p>
+                </div>
+              </div>
+              {advancedOpen ? (
+                <ChevronUp className="h-4 w-4 shrink-0 text-emerald-700 dark:text-emerald-300" />
               ) : (
-                <>
-                  <Send className="h-3.5 w-3.5" aria-hidden="true" />
-                  Send Notice Now
-                </>
+                <ChevronDown className="h-4 w-4 shrink-0 text-emerald-700 dark:text-emerald-300" />
               )}
             </button>
-          </div>
-        </aside>
-      </div>
 
-      <Modal
-        open={emergencyModalOpen}
-        onClose={() => setEmergencyModalOpen(false)}
-        title="Confirm Emergency Alert Dispatch"
-        subtitle="Emergency alerts bypass user quiet hours and trigger high-priority banners."
-        dangerHeader
-        footer={
-          <>
+            {advancedOpen && (
+              <div className="space-y-5 border-t border-emerald-100 px-5 py-5 sm:px-6 dark:border-emerald-800/60">
+                {/* Category & Action Link */}
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div>
+                    <label
+                      htmlFor="adv-type"
+                      className="block text-xs font-semibold text-emerald-950 dark:text-emerald-100"
+                    >
+                      Category / Type
+                    </label>
+                    <select
+                      id="adv-type"
+                      value={type}
+                      onChange={(e) => setType(e.target.value as NotificationType)}
+                      className="mt-1.5 w-full rounded-lg border border-emerald-200/80 bg-white px-3 py-2 text-sm text-emerald-950 focus:border-emerald-700 focus:outline-none dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50"
+                    >
+                      {ALL_NOTIFICATION_TYPES.map((item) => (
+                        <option key={item} value={item}>
+                          {item}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="adv-action-label"
+                      className="block text-xs font-semibold text-emerald-950 dark:text-emerald-100"
+                    >
+                      Action Button Label (Optional)
+                    </label>
+                    <input
+                      id="adv-action-label"
+                      type="text"
+                      value={actionLabel}
+                      onChange={(e) => setActionLabel(e.target.value)}
+                      placeholder="e.g., View Contest Rules"
+                      className="mt-1.5 w-full rounded-lg border border-emerald-200/80 bg-white px-3 py-2 text-sm text-emerald-950 placeholder:text-emerald-900/40 focus:border-emerald-700 focus:outline-none dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50"
+                    />
+                  </div>
+                </div>
+
+                {actionLabel.trim() && (
+                  <div>
+                    <label
+                      htmlFor="adv-action-url"
+                      className="block text-xs font-semibold text-emerald-950 dark:text-emerald-100"
+                    >
+                      Action Link URL
+                    </label>
+                    <input
+                      id="adv-action-url"
+                      type="url"
+                      value={actionUrl}
+                      onChange={(e) => setActionUrl(e.target.value)}
+                      placeholder="https://..."
+                      className="mt-1.5 w-full rounded-lg border border-emerald-200/80 bg-white px-3 py-2 text-sm text-emerald-950 placeholder:text-emerald-900/40 focus:border-emerald-700 focus:outline-none dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50"
+                    />
+                  </div>
+                )}
+
+                {/* Delivery Channels */}
+                <div>
+                  <p className="text-xs font-semibold text-emerald-950 dark:text-emerald-100">
+                    Delivery Channels
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-emerald-900/60 dark:text-emerald-200/60">
+                    In-App is active and logged in real time. External gateways record gateway readiness per recipient.
+                  </p>
+                  <div className="mt-2.5 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {ALL_CHANNELS.map((ch) => {
+                      const active = channels.includes(ch);
+                      return (
+                        <label
+                          key={ch}
+                          className={`flex cursor-pointer items-center justify-between rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${
+                            active
+                              ? 'border-emerald-600 bg-emerald-50 text-emerald-950 dark:border-emerald-500 dark:bg-emerald-900/40 dark:text-emerald-50'
+                              : 'border-emerald-200/80 bg-white text-emerald-900/75 hover:bg-emerald-50/50 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-200/80'
+                          }`}
+                        >
+                          <span className="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={active}
+                              onChange={() => toggleChannel(ch)}
+                              className="h-3.5 w-3.5 rounded border-emerald-300 text-emerald-700 focus:ring-emerald-600"
+                            />
+                            {ch}
+                          </span>
+                          {ch === 'In-App' && (
+                            <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800 dark:bg-emerald-900/70 dark:text-emerald-200">
+                              Live
+                            </span>
+                          )}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Dynamic Rooms from Supabase */}
+                <div>
+                  <div className="flex items-center justify-between">
+                    <p className="flex items-center gap-1.5 text-xs font-semibold text-emerald-950 dark:text-emerald-100">
+                      <DoorOpen className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400" />
+                      Target Rooms / Venues
+                    </p>
+                    {senderRole === 'Super Admin' && onNavigateRooms && (
+                      <button
+                        type="button"
+                        onClick={onNavigateRooms}
+                        className="text-xs font-semibold text-emerald-700 hover:underline dark:text-emerald-400"
+                      >
+                        Manage Rooms
+                      </button>
+                    )}
+                  </div>
+                  {activeRooms.length === 0 ? (
+                    <p className="mt-2 rounded-lg border border-dashed border-emerald-200 px-3 py-2.5 text-xs text-emerald-900/60 dark:border-emerald-800/70 dark:text-emerald-200/60">
+                      No active rooms configured yet.
+                    </p>
+                  ) : (
+                    <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      {activeRooms.map((room) => {
+                        const checked = selectedRooms.includes(room.name);
+                        return (
+                          <label
+                            key={room.id}
+                            className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-xs transition-colors ${
+                              checked
+                                ? 'border-emerald-600 bg-emerald-50 font-semibold text-emerald-950 dark:border-emerald-500 dark:bg-emerald-900/40 dark:text-emerald-50'
+                                : 'border-emerald-200/80 bg-white text-emerald-900/80 hover:bg-emerald-50/50 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-200/80'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleRoom(room.name)}
+                              className="h-3.5 w-3.5 rounded border-emerald-300 text-emerald-700 focus:ring-emerald-600"
+                            />
+                            <span className="truncate">{room.name}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Schedule */}
+                <div className="rounded-lg border border-emerald-200/80 bg-emerald-50/35 p-3.5 dark:border-emerald-800/60 dark:bg-[#041811]">
+                  <p className="flex items-center gap-1.5 text-xs font-semibold text-emerald-950 dark:text-emerald-100">
+                    <CalendarClock className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400" />
+                    Schedule (Asia/Dhaka · GMT+6)
+                  </p>
+                  <div className="mt-2.5 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setScheduleMode('now')}
+                      className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                        scheduleMode === 'now'
+                          ? 'bg-[#064E3B] text-white dark:bg-emerald-600'
+                          : 'border border-emerald-200 bg-white text-emerald-900 dark:border-emerald-800/70 dark:bg-[#061D15] dark:text-emerald-100'
+                      }`}
+                    >
+                      Send Immediately
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setScheduleMode('later')}
+                      className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                        scheduleMode === 'later'
+                          ? 'bg-[#064E3B] text-white dark:bg-emerald-600'
+                          : 'border border-emerald-200 bg-white text-emerald-900 dark:border-emerald-800/70 dark:bg-[#061D15] dark:text-emerald-100'
+                      }`}
+                    >
+                      Schedule Date &amp; Time
+                    </button>
+                  </div>
+                  {scheduleMode === 'later' && (
+                    <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <div>
+                        <label
+                          htmlFor="adv-sched-date"
+                          className="block text-[11px] font-semibold text-emerald-900/70 dark:text-emerald-200/70"
+                        >
+                          Publish Date
+                        </label>
+                        <input
+                          id="adv-sched-date"
+                          type="date"
+                          value={scheduleDate}
+                          onChange={(e) => setScheduleDate(e.target.value)}
+                          className="mt-1 w-full rounded-lg border border-emerald-200/80 bg-white px-3 py-1.5 text-xs text-emerald-950 focus:border-emerald-700 focus:outline-none dark:border-emerald-800/70 dark:bg-[#061D15] dark:text-emerald-50"
+                        />
+                      </div>
+                      <div>
+                        <label
+                          htmlFor="adv-sched-time"
+                          className="block text-[11px] font-semibold text-emerald-900/70 dark:text-emerald-200/70"
+                        >
+                          Publish Time (BST)
+                        </label>
+                        <input
+                          id="adv-sched-time"
+                          type="time"
+                          value={scheduleTime}
+                          onChange={(e) => setScheduleTime(e.target.value)}
+                          className="mt-1 w-full rounded-lg border border-emerald-200/80 bg-white px-3 py-1.5 text-xs text-emerald-950 focus:border-emerald-700 focus:outline-none dark:border-emerald-800/70 dark:bg-[#061D15] dark:text-emerald-50"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Retry & Expiry */}
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div className="rounded-lg border border-emerald-200/80 bg-emerald-50/35 p-3.5 dark:border-emerald-800/60 dark:bg-[#041811]">
+                    <p className="flex items-center gap-1.5 text-xs font-semibold text-emerald-950 dark:text-emerald-100">
+                      <RotateCcw className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400" />
+                      Retry Policy
+                    </p>
+                    <label className="mt-2.5 flex items-center gap-2 text-xs text-emerald-900 dark:text-emerald-100">
+                      <input
+                        type="checkbox"
+                        checked={retrySettings.autoRetry}
+                        onChange={(e) =>
+                          setRetrySettings((prev) => ({
+                            ...prev,
+                            autoRetry: e.target.checked,
+                          }))
+                        }
+                        className="h-3.5 w-3.5 rounded border-emerald-300 text-emerald-700"
+                      />
+                      Enable automatic retry flagging
+                    </label>
+                    <div className="mt-2 flex items-center gap-2">
+                      <label
+                        htmlFor="adv-max-retries"
+                        className="text-[11px] font-semibold text-emerald-900/70 dark:text-emerald-200/70"
+                      >
+                        Max Retries:
+                      </label>
+                      <input
+                        id="adv-max-retries"
+                        type="number"
+                        min={0}
+                        max={5}
+                        value={retrySettings.maxRetries}
+                        onChange={(e) =>
+                          setRetrySettings((prev) => ({
+                            ...prev,
+                            maxRetries: Math.min(
+                              5,
+                              Math.max(0, Number(e.target.value) || 0)
+                            ),
+                          }))
+                        }
+                        className="w-16 rounded border border-emerald-200/80 bg-white px-2 py-1 text-xs text-emerald-950 dark:border-emerald-800/70 dark:bg-[#061D15] dark:text-emerald-50"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-emerald-200/80 bg-emerald-50/35 p-3.5 dark:border-emerald-800/60 dark:bg-[#041811]">
+                    <p className="text-xs font-semibold text-emerald-950 dark:text-emerald-100">
+                      Expiry Window (Optional)
+                    </p>
+                    <div className="mt-2 grid grid-cols-2 gap-2">
+                      <input
+                        type="date"
+                        aria-label="Expiry date"
+                        value={expiresDate}
+                        onChange={(e) => setExpiresDate(e.target.value)}
+                        className="w-full rounded border border-emerald-200/80 bg-white px-2 py-1 text-xs text-emerald-950 dark:border-emerald-800/70 dark:bg-[#061D15] dark:text-emerald-50"
+                      />
+                      <input
+                        type="time"
+                        aria-label="Expiry time"
+                        value={expiresTime}
+                        onChange={(e) => setExpiresTime(e.target.value)}
+                        className="w-full rounded border border-emerald-200/80 bg-white px-2 py-1 text-xs text-emerald-950 dark:border-emerald-800/70 dark:bg-[#061D15] dark:text-emerald-50"
+                      />
+                    </div>
+                    {expiresDate && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setExpiresDate('');
+                          setExpiresTime('');
+                        }}
+                        className="mt-2 inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 hover:underline dark:text-emerald-400"
+                      >
+                        <X className="h-3 w-3" /> Clear expiry
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </section>
+
+          {/* Primary Action Bar */}
+          <div className="flex flex-wrap items-center justify-end gap-2.5">
             <button
               type="button"
-              onClick={() => setEmergencyModalOpen(false)}
-              className="rounded-lg border border-emerald-200 bg-white px-4 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800 dark:bg-[#061D15] dark:text-emerald-100 dark:hover:bg-[#09291E]"
+              disabled={isSubmitting}
+              onClick={onCancel}
+              className="rounded-lg border border-emerald-200/80 bg-white px-4 py-2.5 text-sm font-semibold text-emerald-900 hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-800/70 dark:bg-[#061D15] dark:text-emerald-100 dark:hover:bg-[#09291E]"
             >
               Cancel
             </button>
             <button
               type="button"
-              disabled={!emergencyAck}
-              onClick={() => {
-                setEmergencyModalOpen(false);
-                commitAnnouncement(pendingSubmitMode);
-              }}
-              className="rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-700 disabled:opacity-45"
+              disabled={isSubmitting}
+              onClick={() => void handleSaveDraft()}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-300 bg-white px-4 py-2.5 text-sm font-semibold text-emerald-950 hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-700 dark:bg-[#041811] dark:text-emerald-100 dark:hover:bg-[#09291E]"
             >
-              Confirm &amp; Dispatch Emergency Alert
+              <FileText className="h-4 w-4" aria-hidden="true" />
+              Save Draft
+            </button>
+            <button
+              type="button"
+              disabled={isSubmitting}
+              onClick={handleRequestDispatch}
+              className="inline-flex items-center gap-2 rounded-lg bg-[#064E3B] px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#053D2E] disabled:opacity-50 dark:bg-emerald-600 dark:hover:bg-emerald-500"
+            >
+              <Send className="h-4 w-4" aria-hidden="true" />
+              {scheduleMode === 'later' ? 'Schedule Notice' : 'Send Notice'}
+            </button>
+          </div>
+        </div>
+
+        {/* Live Notice Preview & Recipient Estimate */}
+        <aside className="space-y-4 lg:col-span-5">
+          <div className="sticky top-6 rounded-xl border border-emerald-200/80 bg-white p-5 shadow-sm dark:border-emerald-800/60 dark:bg-[#061D15]">
+            <div className="flex items-center justify-between border-b border-emerald-100 pb-3 dark:border-emerald-800/60">
+              <span className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-emerald-900/70 dark:text-emerald-200/75">
+                <Bell className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400" />
+                Live Delivery Preview
+              </span>
+              <PriorityBadge priority={priority} />
+            </div>
+
+            <div className="mt-4 rounded-xl border border-emerald-200/70 bg-emerald-50/40 p-4 dark:border-emerald-800/60 dark:bg-[#041811]">
+              <h3 className="text-base font-bold text-emerald-950 dark:text-emerald-50">
+                {title.trim() || 'Notice title will appear here'}
+              </h3>
+              <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-emerald-900/80 dark:text-emerald-100/80">
+                {body.trim() || 'Compose your notice message on the left to preview how attendees will read it.'}
+              </p>
+
+              {selectedRooms.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {selectedRooms.map((roomName) => (
+                    <span
+                      key={roomName}
+                      className="rounded-md bg-emerald-100 px-2 py-0.5 text-[11px] font-semibold text-emerald-900 dark:bg-emerald-900/60 dark:text-emerald-200"
+                    >
+                      {roomName}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                {channels.map((ch) => (
+                  <ChannelPill key={ch} channel={ch} />
+                ))}
+              </div>
+            </div>
+
+            <dl className="mt-4 space-y-2.5 border-t border-emerald-100 pt-4 text-xs dark:border-emerald-800/60">
+              <div className="flex items-center justify-between gap-2">
+                <dt className="text-emerald-900/65 dark:text-emerald-200/65">
+                  Target Audience
+                </dt>
+                <dd className="font-semibold text-emerald-950 dark:text-emerald-50">
+                  {audienceLabel}
+                </dd>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <dt className="text-emerald-900/65 dark:text-emerald-200/65">
+                  Matched Active Recipients
+                </dt>
+                <dd className="font-mono font-bold tabular-nums text-emerald-700 dark:text-emerald-400">
+                  {estimatedRecipients}
+                </dd>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <dt className="text-emerald-900/65 dark:text-emerald-200/65">
+                  Dispatch Timing
+                </dt>
+                <dd className="font-semibold text-emerald-950 dark:text-emerald-50">
+                  {scheduleMode === 'later' && scheduleDate && scheduleTime
+                    ? formatDhakaDateTime(`${scheduleDate}T${scheduleTime}:00+06:00`)
+                    : 'Immediate upon Send'}
+                </dd>
+              </div>
+            </dl>
+          </div>
+        </aside>
+      </div>
+
+      <Modal
+        open={confirmOpen}
+        onClose={() => !isSubmitting && setConfirmOpen(false)}
+        title={
+          scheduleMode === 'later'
+            ? 'Confirm Scheduled Notice'
+            : 'Confirm Notice Dispatch'
+        }
+        subtitle={`Targeting ${audienceLabel} (${estimatedRecipients} matched active account${estimatedRecipients === 1 ? '' : 's'}).`}
+        maxWidthClass="max-w-md"
+        footer={
+          <>
+            <button
+              type="button"
+              disabled={isSubmitting}
+              onClick={() => setConfirmOpen(false)}
+              className="rounded-lg border border-emerald-200 px-3.5 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800/70 dark:text-emerald-100 dark:hover:bg-emerald-900/40"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={isSubmitting}
+              onClick={() => void handleConfirmSend()}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-[#064E3B] px-4 py-2 text-xs font-semibold text-white hover:bg-[#053D2E] disabled:opacity-60 dark:bg-emerald-600 dark:hover:bg-emerald-500"
+            >
+              <Check className="h-3.5 w-3.5" aria-hidden="true" />
+              {scheduleMode === 'later' ? 'Confirm Schedule' : 'Send Now'}
             </button>
           </>
         }
       >
-        <div className="space-y-3 text-xs text-emerald-950 dark:text-emerald-50">
-          <div className="flex items-start gap-2.5 rounded-lg border border-red-200 bg-red-50 p-3 text-red-900 dark:border-red-800/70 dark:bg-red-950/50 dark:text-red-200">
-            <AlertTriangle className="mt-0.5 h-4 w-4 text-red-600 dark:text-red-400 shrink-0" />
-            <div>
-              Targeting <strong>{estimatedRecipients}</strong> recipients across{' '}
-              <strong>{channels.join(', ')}</strong>.
+        <div className="space-y-3 text-sm text-emerald-900/80 dark:text-emerald-100/80">
+          {priority === 'Emergency' && (
+            <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-800 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-200">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>
+                Emergency Priority selected. Recipients will receive immediate high-priority alerts.
+              </span>
             </div>
-          </div>
-          <label className="flex items-start gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={emergencyAck}
-              onChange={(e) => setEmergencyAck(e.target.checked)}
-              className="mt-0.5 h-4 w-4 accent-red-600"
-            />
-            <span>
-              I confirm this notice is an urgent campus, safety, or live contest interruption.
-            </span>
-          </label>
+          )}
+          <p>
+            Ready to {scheduleMode === 'later' ? 'schedule' : 'publish'}{' '}
+            <strong className="text-emerald-950 dark:text-emerald-50">
+              {title.trim()}
+            </strong>{' '}
+            across{' '}
+            <strong className="text-emerald-950 dark:text-emerald-50">
+              {channels.join(', ')}
+            </strong>
+            ?
+          </p>
         </div>
       </Modal>
     </div>

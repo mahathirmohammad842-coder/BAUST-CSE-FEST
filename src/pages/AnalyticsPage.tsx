@@ -13,12 +13,23 @@ import {
   ALL_CHANNELS,
   ALL_NOTIFICATION_TYPES,
   BAUST_ROOMS,
-  DAILY_ENGAGEMENT_TREND,
-  MONTHLY_ENGAGEMENT_TREND,
 } from '../data/mockData';
-import type { Announcement, NotificationType, UserProfile } from '../types';
+import type {
+  Announcement,
+  NotificationType,
+  RoomRecord,
+  UserProfile,
+} from '../types';
 import { formatDhakaDateTime, formatPercent } from '../utils/formatters';
 import { downloadCsv } from '../utils/csvExport';
+
+interface EngagementTrendPoint {
+  label: string;
+  sent: number;
+  delivered: number;
+  opened: number;
+  clicked: number;
+}
 
 type ActivityFilter =
   | 'all'
@@ -32,12 +43,14 @@ interface AnalyticsPageProps {
   announcements: Announcement[];
   notificationEvents: NotificationActionEvent[];
   profiles?: UserProfile[];
+  rooms?: RoomRecord[];
 }
 
 export function AnalyticsPage({
   announcements,
   notificationEvents,
   profiles = [],
+  rooms = [],
 }: AnalyticsPageProps) {
   const [timeframe, setTimeframe] = useState<'daily' | 'monthly'>('daily');
   const [categoryFilter, setCategoryFilter] = useState<
@@ -45,15 +58,7 @@ export function AnalyticsPage({
   >('All');
   const [activityFilter, setActivityFilter] = useState<ActivityFilter>('all');
   const [showAllActivity, setShowAllActivity] = useState(false);
-  const [activeBarIdx, setActiveBarIdx] = useState<number>(
-    DAILY_ENGAGEMENT_TREND.length - 1
-  );
-
-  const trendSeries =
-    timeframe === 'daily' ? DAILY_ENGAGEMENT_TREND : MONTHLY_ENGAGEMENT_TREND;
-
-  const safeBarIdx = Math.min(activeBarIdx, Math.max(trendSeries.length - 1, 0));
-  const activePoint = trendSeries[safeBarIdx];
+  const [activeBarIdx, setActiveBarIdx] = useState<number | null>(null);
 
   const filteredAnnouncements = useMemo(() => {
     return announcements.filter((a) => {
@@ -62,6 +67,89 @@ export function AnalyticsPage({
       return true;
     });
   }, [announcements, categoryFilter]);
+
+  const { dailyTrend, monthlyTrend } = useMemo(() => {
+    const dailyMap = new Map<
+      string,
+      EngagementTrendPoint & { sortKey: string }
+    >();
+    const monthlyMap = new Map<
+      string,
+      EngagementTrendPoint & { sortKey: string }
+    >();
+    const dayKeyFmt = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Dhaka',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    const dayLabelFmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Dhaka',
+      month: 'short',
+      day: 'numeric',
+    });
+    const monthLabelFmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Dhaka',
+      month: 'short',
+      year: 'numeric',
+    });
+
+    for (const ann of filteredAnnouncements) {
+      const iso = ann.publishedAt || ann.createdAt;
+      const parsed = new Date(iso);
+      const valid = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+
+      const dayKey = dayKeyFmt.format(valid);
+      const dayLabel = dayLabelFmt.format(valid);
+      const dPrev = dailyMap.get(dayKey) ?? {
+        label: dayLabel,
+        sortKey: dayKey,
+        sent: 0,
+        delivered: 0,
+        opened: 0,
+        clicked: 0,
+      };
+      dPrev.sent += ann.totalRecipients;
+      dPrev.delivered += ann.deliveredCount;
+      dPrev.opened += ann.readCount;
+      dPrev.clicked += ann.clickCount;
+      dailyMap.set(dayKey, dPrev);
+
+      const monthKey = dayKey.slice(0, 7);
+      const monthLabel = monthLabelFmt.format(valid);
+      const mPrev = monthlyMap.get(monthKey) ?? {
+        label: monthLabel,
+        sortKey: monthKey,
+        sent: 0,
+        delivered: 0,
+        opened: 0,
+        clicked: 0,
+      };
+      mPrev.sent += ann.totalRecipients;
+      mPrev.delivered += ann.deliveredCount;
+      mPrev.opened += ann.readCount;
+      mPrev.clicked += ann.clickCount;
+      monthlyMap.set(monthKey, mPrev);
+    }
+
+    return {
+      dailyTrend: Array.from(dailyMap.values())
+        .sort((a, b) => a.sortKey.localeCompare(b.sortKey))
+        .slice(-6)
+        .map(({ sortKey: _sk, ...rest }) => rest),
+      monthlyTrend: Array.from(monthlyMap.values())
+        .sort((a, b) => a.sortKey.localeCompare(b.sortKey))
+        .slice(-6)
+        .map(({ sortKey: _sk, ...rest }) => rest),
+    };
+  }, [filteredAnnouncements]);
+
+  const trendSeries = timeframe === 'daily' ? dailyTrend : monthlyTrend;
+  const safeBarIdx =
+    activeBarIdx !== null && activeBarIdx >= 0 && activeBarIdx < trendSeries.length
+      ? activeBarIdx
+      : Math.max(trendSeries.length - 1, 0);
+  const activePoint = trendSeries[safeBarIdx];
 
   const channelSummary = useMemo(() => {
     return ALL_CHANNELS.map((ch) => {
@@ -105,27 +193,41 @@ export function AnalyticsPage({
     }).filter((row) => row.count > 0);
   }, [announcements]);
 
-  const roomEngagement = useMemo(() => {
-    return BAUST_ROOMS.map((room) => {
-      const matching = filteredAnnouncements.filter((a) =>
-        a.targeting.rooms.includes(room)
-      );
-      const sent = matching.reduce((s, a) => s + a.totalRecipients, 0);
-      const read = matching.reduce((s, a) => s + a.readCount, 0);
-      const clicked = matching.reduce((s, a) => s + a.clickCount, 0);
-      const readPct = sent > 0 ? Math.round((read / sent) * 100) : 0;
-      return {
-        room,
-        notices: matching.length,
-        sent,
-        read,
-        clicked,
-        readPct,
-      };
-    }).sort((a, b) => b.sent - a.sent);
-  }, [filteredAnnouncements]);
+  const roomNames = useMemo(() => {
+    const active = rooms
+      .filter((r) => r.isActive)
+      .map((r) => r.name);
+    const base = active.length > 0 ? active : BAUST_ROOMS;
+    const fromNotices = filteredAnnouncements.flatMap((a) => a.targeting.rooms);
+    return Array.from(new Set([...base, ...fromNotices]));
+  }, [filteredAnnouncements, rooms]);
 
-  const maxTrendSent = Math.max(...trendSeries.map((d) => d.sent), 1);
+  const roomEngagement = useMemo(() => {
+    return roomNames
+      .map((room) => {
+        const matching = filteredAnnouncements.filter((a) =>
+          a.targeting.rooms.includes(room)
+        );
+        const sent = matching.reduce((s, a) => s + a.totalRecipients, 0);
+        const read = matching.reduce((s, a) => s + a.readCount, 0);
+        const clicked = matching.reduce((s, a) => s + a.clickCount, 0);
+        const readPct = sent > 0 ? Math.round((read / sent) * 100) : 0;
+        return {
+          room,
+          notices: matching.length,
+          sent,
+          read,
+          clicked,
+          readPct,
+        };
+      })
+      .sort((a, b) => b.sent - a.sent);
+  }, [filteredAnnouncements, roomNames]);
+
+  const maxTrendSent = Math.max(
+    ...trendSeries.map((d) => Math.max(d.sent, d.delivered, d.opened, d.clicked)),
+    1
+  );
 
   const announcementMap = useMemo(
     () => new Map(announcements.map((announcement) => [announcement.id, announcement])),
@@ -256,7 +358,7 @@ export function AnalyticsPage({
               type="button"
               onClick={() => {
                 setTimeframe('daily');
-                setActiveBarIdx(DAILY_ENGAGEMENT_TREND.length - 1);
+                setActiveBarIdx(null);
               }}
               className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
                 timeframe === 'daily'
@@ -270,7 +372,7 @@ export function AnalyticsPage({
               type="button"
               onClick={() => {
                 setTimeframe('monthly');
-                setActiveBarIdx(MONTHLY_ENGAGEMENT_TREND.length - 1);
+                setActiveBarIdx(null);
               }}
               className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
                 timeframe === 'monthly'
@@ -326,55 +428,61 @@ export function AnalyticsPage({
           </div>
         </div>
 
-        <div
-          className={`mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4 ${
-            trendSeries.length === 6 ? 'lg:grid-cols-6' : 'lg:grid-cols-4'
-          } items-end`}
-        >
-          {trendSeries.map((pt, idx) => {
-            const delPct = Math.round((pt.delivered / maxTrendSent) * 100);
-            const openPct = Math.round((pt.opened / maxTrendSent) * 100);
-            const clickPct = Math.round((pt.clicked / maxTrendSent) * 100);
-            const isSelected = idx === safeBarIdx;
+        {trendSeries.length === 0 ? (
+          <div className="mt-4 rounded-lg border border-dashed border-emerald-200/80 bg-emerald-50/30 px-4 py-10 text-center text-xs text-emerald-900/60 dark:border-emerald-800/60 dark:bg-[#041811] dark:text-emerald-300/65">
+            No dispatched notices recorded for this filter yet.
+          </div>
+        ) : (
+          <div
+            className={`mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4 ${
+              trendSeries.length >= 6 ? 'lg:grid-cols-6' : 'lg:grid-cols-4'
+            } items-end`}
+          >
+            {trendSeries.map((pt, idx) => {
+              const delPct = Math.round((pt.delivered / maxTrendSent) * 100);
+              const openPct = Math.round((pt.opened / maxTrendSent) * 100);
+              const clickPct = Math.round((pt.clicked / maxTrendSent) * 100);
+              const isSelected = idx === safeBarIdx;
 
-            return (
-              <button
-                key={pt.label}
-                type="button"
-                onMouseEnter={() => setActiveBarIdx(idx)}
-                onClick={() => setActiveBarIdx(idx)}
-                className={`space-y-2 rounded-lg p-2 text-center transition-colors ${
-                  isSelected
-                    ? 'bg-emerald-50/75 ring-1 ring-emerald-700 dark:bg-[#09291E] dark:ring-emerald-400'
-                    : 'hover:bg-emerald-50/40 dark:hover:bg-[#09291E]/60'
-                }`}
-              >
-                <div className="flex h-36 items-end justify-center gap-1.5 px-2 pt-3 pb-1">
-                  <div
-                    className="w-4 rounded-t bg-[#064E3B] dark:bg-emerald-400 transition-all"
-                    style={{ height: `${Math.max(8, delPct)}%` }}
-                  />
-                  <div
-                    className="w-4 rounded-t bg-emerald-500 dark:bg-emerald-300 transition-all"
-                    style={{ height: `${Math.max(6, openPct)}%` }}
-                  />
-                  <div
-                    className="w-4 rounded-t bg-teal-600 dark:bg-teal-400 transition-all"
-                    style={{ height: `${Math.max(4, clickPct)}%` }}
-                  />
-                </div>
-                <div>
-                  <div className="text-xs font-semibold text-emerald-950 dark:text-emerald-50">
-                    {pt.label}
+              return (
+                <button
+                  key={pt.label}
+                  type="button"
+                  onMouseEnter={() => setActiveBarIdx(idx)}
+                  onClick={() => setActiveBarIdx(idx)}
+                  className={`space-y-2 rounded-lg p-2 text-center transition-colors ${
+                    isSelected
+                      ? 'bg-emerald-50/75 ring-1 ring-emerald-700 dark:bg-[#09291E] dark:ring-emerald-400'
+                      : 'hover:bg-emerald-50/40 dark:hover:bg-[#09291E]/60'
+                  }`}
+                >
+                  <div className="flex h-36 items-end justify-center gap-1.5 px-2 pt-3 pb-1">
+                    <div
+                      className="w-4 rounded-t bg-[#064E3B] dark:bg-emerald-400 transition-all"
+                      style={{ height: `${Math.max(8, delPct)}%` }}
+                    />
+                    <div
+                      className="w-4 rounded-t bg-emerald-500 dark:bg-emerald-300 transition-all"
+                      style={{ height: `${Math.max(6, openPct)}%` }}
+                    />
+                    <div
+                      className="w-4 rounded-t bg-teal-600 dark:bg-teal-400 transition-all"
+                      style={{ height: `${Math.max(4, clickPct)}%` }}
+                    />
                   </div>
-                  <div className="font-mono text-[11px] text-emerald-900/60 dark:text-emerald-300/65 tabular-nums">
-                    {pt.delivered.toLocaleString()} deliv
+                  <div>
+                    <div className="text-xs font-semibold text-emerald-950 dark:text-emerald-50">
+                      {pt.label}
+                    </div>
+                    <div className="font-mono text-[11px] text-emerald-900/60 dark:text-emerald-300/65 tabular-nums">
+                      {pt.delivered.toLocaleString()} deliv
+                    </div>
                   </div>
-                </div>
-              </button>
-            );
-          })}
-        </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {activePoint && (
           <div className="mt-4 grid grid-cols-2 gap-3 border-t border-emerald-100 pt-3 text-xs sm:grid-cols-4 dark:border-emerald-800/60 tabular-nums">

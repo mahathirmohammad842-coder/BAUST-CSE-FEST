@@ -35,10 +35,19 @@ Deno.serve(async (request) => {
   const anonKey = Deno.env.get('SUPABASE_ANON_KEY');
   const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
   if (!supabaseUrl || !anonKey || !serviceRoleKey) {
+    console.error('[admin-delete-user] Missing Supabase environment secrets');
     return respond(500, {
       error: 'Permanent user deletion service is not configured.',
     });
   }
+
+  let actorId: string | null = null;
+  let actorName = 'Super Admin';
+  let targetUserId: string | null = null;
+
+  const adminClient = createClient(supabaseUrl, serviceRoleKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
 
   try {
     const userClient = createClient(supabaseUrl, anonKey, {
@@ -55,18 +64,18 @@ Deno.serve(async (request) => {
         error: 'Your sign-in session is invalid or expired.',
       });
     }
-
-    const adminClient = createClient(supabaseUrl, serviceRoleKey, {
-      auth: { autoRefreshToken: false, persistSession: false },
-    });
+    actorId = actor.id;
 
     const { data: actorProfile, error: actorProfileError } = await adminClient
       .from('user_profiles')
-      .select('id, full_name, role, account_status, approval_status, is_deleted, is_archived')
+      .select(
+        'id, email, full_name, role, account_status, approval_status, is_deleted, is_archived'
+      )
       .eq('id', actor.id)
       .maybeSingle();
 
     if (actorProfileError) {
+      console.error('[admin-delete-user] Actor lookup failed:', actorProfileError);
       return respond(500, {
         error: 'Could not verify the administrator account.',
       });
@@ -86,6 +95,7 @@ Deno.serve(async (request) => {
           'Only an active approved Super Admin can permanently delete user accounts.',
       });
     }
+    actorName = actorProfile.full_name || actorProfile.email || 'Super Admin';
 
     const body: unknown = await request.json();
     if (
@@ -100,7 +110,7 @@ Deno.serve(async (request) => {
       return respond(400, { error: 'A valid target user ID is required.' });
     }
 
-    const targetUserId = body.userId;
+    targetUserId = body.userId;
     const notes =
       'notes' in body && typeof body.notes === 'string'
         ? body.notes.trim().slice(0, 500)
@@ -119,6 +129,7 @@ Deno.serve(async (request) => {
       .maybeSingle();
 
     if (targetProfileError) {
+      console.error('[admin-delete-user] Target lookup failed:', targetProfileError);
       return respond(500, { error: 'Could not verify the target account.' });
     }
     if (!targetProfile) {
@@ -131,6 +142,9 @@ Deno.serve(async (request) => {
     }
 
     const nowIso = new Date().toISOString();
+    console.log(
+      `[admin-delete-user] Starting permanent deletion target=${targetUserId} actor=${actorProfile.id}`
+    );
 
     const { error: auditError } = await adminClient
       .from('user_deletion_audit_logs')
@@ -141,7 +155,7 @@ Deno.serve(async (request) => {
         target_user_role: targetProfile.role,
         action: 'permanently_deleted',
         actor_id: actorProfile.id,
-        actor_name: actorProfile.full_name,
+        actor_name: actorName,
         notes:
           notes ||
           'Permanently deleted from Recycle Bin (account, profile, role assignments, approval history, and authentication record removed)',
@@ -150,12 +164,13 @@ Deno.serve(async (request) => {
       });
 
     if (auditError) {
+      console.error('[admin-delete-user] Deletion audit insert error:', auditError);
       return respond(500, {
         error: `Could not record deletion audit entry: ${auditError.message}`,
       });
     }
 
-    // Explicitly purge role/approval/verification/notification action records in addition to auth cascade
+    // Purge all related application records before removing auth.users
     await Promise.allSettled([
       adminClient.from('role_change_logs').delete().eq('user_id', targetUserId),
       adminClient.from('approval_logs').delete().eq('user_id', targetUserId),
@@ -165,22 +180,91 @@ Deno.serve(async (request) => {
         .delete()
         .eq('user_id', targetUserId),
       adminClient.from('notifications').delete().eq('user_id', targetUserId),
+      adminClient
+        .from('organizer_message_replies')
+        .delete()
+        .eq('author_id', targetUserId),
+      adminClient
+        .from('organizer_messages')
+        .delete()
+        .eq('sender_id', targetUserId),
+      adminClient
+        .from('incident_reports')
+        .delete()
+        .eq('reporter_id', targetUserId),
+      adminClient
+        .from('event_info_requests')
+        .delete()
+        .eq('requester_id', targetUserId),
+      adminClient
+        .from('notification_delivery_logs')
+        .delete()
+        .eq('recipient_id', targetUserId),
+      adminClient
+        .from('active_user_sessions')
+        .delete()
+        .eq('user_id', targetUserId),
     ]);
 
     const { error: deleteAuthError } =
       await adminClient.auth.admin.deleteUser(targetUserId);
 
     if (deleteAuthError) {
+      console.error('[admin-delete-user] Auth delete failed:', deleteAuthError);
+      await adminClient.from('activity_logs').insert({
+        user_id: null,
+        user_email: targetProfile.email,
+        user_name: targetProfile.full_name,
+        actor_id: actorProfile.id,
+        actor_name: actorName,
+        action: 'user_permanent_delete_failed',
+        category: 'governance',
+        details: `Permanent deletion failed for ${targetProfile.email}: ${deleteAuthError.message}`,
+      });
       return respond(400, {
         error: `Supabase could not permanently remove this account: ${deleteAuthError.message}`,
       });
     }
 
+    await adminClient.from('activity_logs').insert({
+      user_id: null,
+      user_email: targetProfile.email,
+      user_name: targetProfile.full_name,
+      actor_id: actorProfile.id,
+      actor_name: actorName,
+      action: 'user_permanently_deleted',
+      category: 'governance',
+      details: `Permanently deleted ${targetProfile.full_name} (${targetProfile.email}) via Edge Function`,
+    });
+
+    console.log(
+      `[admin-delete-user] Completed permanent deletion target=${targetUserId}`
+    );
+
     return respond(200, {
       deletedUserId: targetUserId,
       permanentlyDeletedAt: nowIso,
     });
-  } catch {
+  } catch (err) {
+    console.error('[admin-delete-user] Unexpected exception:', err);
+    if (actorId) {
+      await adminClient
+        .from('activity_logs')
+        .insert({
+          user_id: null,
+          user_email: '',
+          user_name: targetUserId ?? '',
+          actor_id: actorId,
+          actor_name: actorName,
+          action: 'user_permanent_delete_failed',
+          category: 'governance',
+          details:
+            err instanceof Error
+              ? `Permanent deletion failed: ${err.message}`
+              : 'Permanent deletion failed with unexpected error',
+        })
+        .catch(() => undefined);
+    }
     return respond(500, {
       error: 'The permanent user deletion could not be completed.',
     });

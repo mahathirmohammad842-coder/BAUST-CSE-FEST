@@ -40,6 +40,7 @@ const ROUTE_LABELS: Record<string, string> = {
   'blocked-users': 'Blocked Users',
   profiles: 'Profile Management',
   profile: 'My Profile',
+  rooms: 'Rooms & Venues',
   analytics: 'Analytics',
   'online-users': 'Online Users',
   'audit-logs': 'Audit Logs',
@@ -78,11 +79,8 @@ export function OnlineUsersPage({
     for (const profile of profiles) {
       if (profile.isDeleted || profile.accountStatus === 'Deleted') continue;
       const live = livePresenceMap[profile.userId];
-      const status: PresenceStatus = live
-        ? live.status
-        : profile.presenceStatus === 'Online' || profile.presenceStatus === 'Away'
-          ? profile.presenceStatus
-          : 'Offline';
+      // Strict active session truth: never treat stale DB flags as live online sessions
+      const status: PresenceStatus = live ? live.status : 'Offline';
       map.set(profile.userId, {
         userId: profile.userId,
         fullName: profile.fullName,
@@ -96,7 +94,7 @@ export function OnlineUsersPage({
         lastLoginAt: profile.lastLoginAt ?? live?.lastLoginAt ?? null,
         currentSessionId: live?.currentSessionId,
         currentRoute: live?.currentRoute,
-        activeSessionsCount: live?.activeSessionsCount ?? (status === 'Offline' ? 0 : 1),
+        activeSessionsCount: live?.activeSessionsCount ?? 0,
       });
     }
 
@@ -130,7 +128,7 @@ export function OnlineUsersPage({
       (u) => u.role === 'Organizer' || u.role === 'Super Admin'
     );
     const participantsOnline = online.filter(
-      (u) => u.role === 'Participant'
+      (u) => u.role !== 'Organizer' && u.role !== 'Super Admin'
     );
     return {
       totalOnline: online.length,

@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, X } from 'lucide-react';
 import { Sidebar, type OrganizerRoute } from './components/Sidebar';
 import { PendingApprovalDashboard } from './components/PendingApprovalDashboard';
+import { EnterpriseNotificationToastStack } from './components/EnterpriseNotificationToast';
 import {
   TopHeader,
   type AttendeeRoute,
@@ -11,9 +12,8 @@ import {
   createDefaultPreferencesForRole,
   DEMO_ACCESS_ROLES,
   DEMO_USERS,
-  INITIAL_ACTIVITY_FEED,
   INITIAL_ANNOUNCEMENTS,
-  INITIAL_FAILED_DELIVERIES,
+  INITIAL_ROOMS_FALLBACK,
   INITIAL_USER_PREFERENCES,
 } from './data/mockData';
 import { AnalyticsPage } from './pages/AnalyticsPage';
@@ -28,6 +28,7 @@ import { OnlineUsersPage } from './pages/OnlineUsersPage';
 import { OperationsInboxPage } from './pages/OperationsInboxPage';
 import { ProfileManagementPage } from './pages/ProfileManagementPage';
 import { RecycleBinPage } from './pages/RecycleBinPage';
+import { RoomsManagementPage } from './pages/RoomsManagementPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { SuperAdminUsersPage } from './pages/SuperAdminUsersPage';
 import { SystemHealthPage } from './pages/SystemHealthPage';
@@ -43,12 +44,15 @@ import type {
   ApprovalLog,
   ApprovalStatus,
   DeliveryStatus,
+  EnterpriseNotificationPreferences,
+  EnterpriseNotificationToast,
   EventInfoRequest,
   IncidentReport,
   IncidentSeverity,
   IncidentStatus,
   InfoRequestStatus,
   NotificationDelivery,
+  NotificationSoundEventType,
   OrganizerContact,
   OrganizerMessageThread,
   OrganizerProfile,
@@ -56,16 +60,20 @@ import type {
   ProfileAccountStatus,
   ProfileAuditAction,
   ProfileAuditEvent,
+  ProfileNotificationPreferences,
   ProfileState,
   RegistrationInput,
   RegistrationRequest,
   RegistrableRole,
+  RetryHistoryEntry,
   RoleChangeLog,
+  RoomRecord,
   SettingsSection,
   SystemUser,
   UserDeletionAuditLog,
   UserProfile,
   UserPreferenceMatrix,
+  UserRole,
   VerificationLog,
   VerificationStatus,
   WorkspaceRole,
@@ -116,6 +124,14 @@ import {
   useRealtimeWorkspaceSync,
 } from './lib/realtimeSync';
 import {
+  bindAudioGestureUnlock,
+  DEFAULT_ENTERPRISE_NOTIFICATION_PREFS,
+  NOTIFICATION_EVENT_PRIORITY,
+  NOTIFICATION_SOUND_TYPES,
+  normalizeEnterpriseNotificationPreferences,
+  playNotificationSound,
+} from './lib/notificationSound';
+import {
   extractFunctionsInvokeError,
   fetchActiveOrganizerContacts,
   fetchCloudActivityLogs,
@@ -123,11 +139,15 @@ import {
   fetchCloudAnnouncements,
   fetchCloudApprovalLogs,
   fetchCloudDeletionAuditLogs,
+  fetchCloudDeliveryLogs,
   fetchCloudNotificationActions,
+  fetchCloudNotificationPreferences,
   fetchCloudProfile,
   fetchCloudProfiles,
+  fetchCloudRetryHistory,
   fetchCloudRoleChangeLogs,
   fetchCloudRolePermissions,
+  fetchCloudRooms,
   fetchCloudVerificationLogs,
   fetchEventInfoRequests,
   fetchIncidentReports,
@@ -135,6 +155,8 @@ import {
   invokeAdminPermanentDeleteUser,
   isSupabaseConfigured,
   mapCloudProfile,
+  rpcDispatchAnnouncementDeliveries,
+  rpcEndMyActiveSession,
   rpcLogAnnouncementAudit,
   rpcLogUserActivity,
   rpcMarkOrganizerThreadRead,
@@ -143,6 +165,7 @@ import {
   rpcRecordMyLastLogin,
   rpcReplyOrganizerMessage,
   rpcRestoreAnnouncement,
+  rpcRetryFailedDeliveries,
   rpcReviewUserRegistration,
   rpcSoftDeleteAnnouncement,
   rpcStaffArchiveUser,
@@ -156,12 +179,15 @@ import {
   rpcSubmitOrganizerMessage,
   rpcSuperAdminAssignRole,
   rpcSuperAdminBulkAssignRoles,
+  rpcSuperAdminDeleteRoom,
   rpcSuperAdminPromoteToOrganizer,
   rpcSuperAdminRestoreUser,
   rpcSuperAdminSetOrganizerPermission,
-  rpcUpdateMyPresenceStatus,
+  rpcSuperAdminToggleRoomActive,
+  rpcSuperAdminUpsertRoom,
   saveCloudAnnouncements,
   saveCloudNotificationAction,
+  saveCloudNotificationPreferences,
   saveCloudProfile,
   supabase,
   type CloudProfile,
@@ -169,6 +195,45 @@ import {
 
 const DEMO_PASSWORD = 'demo1234';
 const ORGANIZER_PROFILE_STORAGE_KEY = 'baust_organizer_profile';
+const LOCAL_SOUND_PREFS_PREFIX = 'baust_sound_prefs_v1_';
+
+function loadLocalSoundPreferences(
+  userId: string,
+  fallback?: Partial<ProfileNotificationPreferences>
+): EnterpriseNotificationPreferences {
+  if (!userId) {
+    return normalizeEnterpriseNotificationPreferences(null, fallback);
+  }
+  try {
+    const raw = window.localStorage.getItem(
+      `${LOCAL_SOUND_PREFS_PREFIX}${userId}`
+    );
+    if (!raw) {
+      return normalizeEnterpriseNotificationPreferences(null, fallback);
+    }
+    return normalizeEnterpriseNotificationPreferences(
+      JSON.parse(raw),
+      fallback
+    );
+  } catch {
+    return normalizeEnterpriseNotificationPreferences(null, fallback);
+  }
+}
+
+function saveLocalSoundPreferences(
+  userId: string,
+  prefs: EnterpriseNotificationPreferences
+): void {
+  if (!userId) return;
+  try {
+    window.localStorage.setItem(
+      `${LOCAL_SOUND_PREFS_PREFIX}${userId}`,
+      JSON.stringify(prefs)
+    );
+  } catch {
+    // Ignore storage quota errors
+  }
+}
 
 type AppRoute = OrganizerRoute | AttendeeRoute;
 
@@ -536,11 +601,18 @@ export default function App() {
   }, [activeRoute, mode]);
 
   useEffect(() => {
-    if (
-      (activeRoute === 'rejected-trash' ||
-        activeRoute === 'super-admin-users') &&
-      activeRole !== 'Super Admin'
-    ) {
+    const superAdminOnlyRoutes: AppRoute[] = [
+      'rejected-trash',
+      'super-admin-users',
+      'rooms',
+      'audit-logs',
+      'activity-logs',
+      'system-settings',
+      'integrations',
+      'system-health',
+      'security-settings',
+    ];
+    if (superAdminOnlyRoutes.includes(activeRoute) && activeRole !== 'Super Admin') {
       setActiveRoute('dashboard');
     }
   }, [activeRole, activeRoute]);
@@ -580,18 +652,18 @@ export default function App() {
   const [announcements, setAnnouncements] = useState<Announcement[]>(() =>
     isSupabaseConfigured ? [] : INITIAL_ANNOUNCEMENTS
   );
-  const [deliveries, setDeliveries] = useState<NotificationDelivery[]>(() =>
-    isSupabaseConfigured ? [] : INITIAL_FAILED_DELIVERIES
+  const [rooms, setRooms] = useState<RoomRecord[]>(() =>
+    isSupabaseConfigured ? [] : INITIAL_ROOMS_FALLBACK
   );
-  const [activityFeed, setActivityFeed] = useState<ActivityFeedEntry[]>(() =>
-    isSupabaseConfigured ? [] : INITIAL_ACTIVITY_FEED
-  );
+  const [deliveries, setDeliveries] = useState<NotificationDelivery[]>([]);
+  const [retryHistory, setRetryHistory] = useState<RetryHistoryEntry[]>([]);
+  const [activityFeed, setActivityFeed] = useState<ActivityFeedEntry[]>([]);
   const [preferencesByRole, setPreferencesByRole] = useState<
     Record<WorkspaceRole, UserPreferenceMatrix>
   >(INITIAL_USER_PREFERENCES);
 
   const [selectedAnnouncementId, setSelectedAnnouncementId] = useState<string>(
-    isSupabaseConfigured ? '' : INITIAL_ANNOUNCEMENTS[0].id
+    isSupabaseConfigured ? '' : INITIAL_ANNOUNCEMENTS[0]?.id ?? ''
   );
   const [editingAnnouncement, setEditingAnnouncement] =
     useState<Announcement | null>(null);
@@ -603,7 +675,68 @@ export default function App() {
   >([]);
   const [incidentReports, setIncidentReports] = useState<IncidentReport[]>([]);
   const [infoRequests, setInfoRequests] = useState<EventInfoRequest[]>([]);
+  const [enterpriseNotificationPrefs, setEnterpriseNotificationPrefs] =
+    useState<EnterpriseNotificationPreferences>(
+      DEFAULT_ENTERPRISE_NOTIFICATION_PREFS
+    );
+  const enterpriseNotificationPrefsRef = useRef(enterpriseNotificationPrefs);
+  enterpriseNotificationPrefsRef.current = enterpriseNotificationPrefs;
+  const [enterpriseToasts, setEnterpriseToasts] = useState<
+    EnterpriseNotificationToast[]
+  >([]);
+  const notificationBaselineReadyForRef = useRef<string | null>(null);
+  const seenNotificationKeysRef = useRef<Set<string>>(new Set());
+  const previousApprovalStatusRef = useRef<ApprovalStatus | null>(null);
+  const soundPrefsSyncTimerRef = useRef<number | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  useEffect(() => bindAudioGestureUnlock(), []);
+
+  const seedNotificationBaseline = (params: {
+    userId: string;
+    approvalStatus: ApprovalStatus;
+    announcementsList: Announcement[];
+    messagesList: OrganizerMessageThread[];
+    requestsList: RegistrationRequest[];
+    incidentsList: IncidentReport[];
+    infoReqList: EventInfoRequest[];
+  }) => {
+    const seen = new Set<string>();
+    for (const a of params.announcementsList) {
+      if (!a.trashedAt && a.status === 'Delivered') {
+        seen.add(`ann:${a.id}:${a.publishedAt || a.createdAt}`);
+      }
+    }
+    for (const thread of params.messagesList) {
+      seen.add(`msg:${thread.id}`);
+      for (const reply of thread.replies) {
+        seen.add(`reply:${reply.id}`);
+      }
+    }
+    for (const req of params.requestsList) {
+      if (
+        !req.trashedAt &&
+        (req.approvalStatus === 'Pending' || req.status === 'Pending Approval')
+      ) {
+        seen.add(`req:${req.id}:${req.registeredAt}`);
+      }
+    }
+    for (const inc of params.incidentsList) {
+      seen.add(`inc:${inc.id}`);
+      if (inc.status === 'Resolved' || inc.status === 'Closed') {
+        seen.add(`inc-res:${inc.id}:${inc.updatedAt}`);
+      }
+    }
+    for (const info of params.infoReqList) {
+      seen.add(`info:${info.id}`);
+      if (info.status === 'Answered') {
+        seen.add(`info-ans:${info.id}:${info.updatedAt}`);
+      }
+    }
+    seenNotificationKeysRef.current = seen;
+    previousApprovalStatusRef.current = params.approvalStatus;
+    notificationBaselineReadyForRef.current = params.userId;
+  };
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -614,6 +747,11 @@ export default function App() {
 
   const clearAuthenticatedWorkspaceState = () => {
     clearUserScopedStorageCaches();
+    notificationBaselineReadyForRef.current = null;
+    seenNotificationKeysRef.current.clear();
+    previousApprovalStatusRef.current = null;
+    setEnterpriseToasts([]);
+    setEnterpriseNotificationPrefs(DEFAULT_ENTERPRISE_NOTIFICATION_PREFS);
     setCloudUserId(null);
     setCloudAnnouncementsReadyFor(null);
     setRegisteredUser(null);
@@ -641,10 +779,12 @@ export default function App() {
     setEditingAnnouncement(null);
     setMobileMenuOpen(false);
     setAnnouncements(isSupabaseConfigured ? [] : INITIAL_ANNOUNCEMENTS);
-    setDeliveries(isSupabaseConfigured ? [] : INITIAL_FAILED_DELIVERIES);
-    setActivityFeed(isSupabaseConfigured ? [] : INITIAL_ACTIVITY_FEED);
+    setRooms(isSupabaseConfigured ? [] : INITIAL_ROOMS_FALLBACK);
+    setDeliveries([]);
+    setRetryHistory([]);
+    setActivityFeed([]);
     setSelectedAnnouncementId(
-      isSupabaseConfigured ? '' : INITIAL_ANNOUNCEMENTS[0].id
+      isSupabaseConfigured ? '' : INITIAL_ANNOUNCEMENTS[0]?.id ?? ''
     );
   };
 
@@ -795,34 +935,39 @@ export default function App() {
         setOrganizerProfile(createEmptyOrganizerProfile());
       }
 
-      const remoteAnnouncements = await fetchCloudAnnouncements();
+      const [
+        remoteAnnouncements,
+        remoteRooms,
+        remoteDeliveryLogs,
+        remoteRetryHistory,
+        remoteSoundPrefs,
+      ] = await Promise.all([
+        fetchCloudAnnouncements(),
+        fetchCloudRooms().catch(() => INITIAL_ROOMS_FALLBACK),
+        isStaff ? fetchCloudDeliveryLogs().catch(() => []) : Promise.resolve([]),
+        isStaff ? fetchCloudRetryHistory().catch(() => []) : Promise.resolve([]),
+        fetchCloudNotificationPreferences(
+          verifiedId,
+          currentProfile.notificationPreferences
+        ).catch(() =>
+          loadLocalSoundPreferences(
+            verifiedId,
+            currentProfile.notificationPreferences
+          )
+        ),
+      ]);
       if (!isLatestRequest()) return null;
-      let finalAnnouncements: Announcement[];
-      if (remoteAnnouncements.length === 0 && isStaff) {
-        await saveCloudAnnouncements(INITIAL_ANNOUNCEMENTS, verifiedId);
-        finalAnnouncements = INITIAL_ANNOUNCEMENTS;
-      } else {
-        finalAnnouncements = remoteAnnouncements;
-      }
       skipNextAnnouncementSyncRef.current = true;
-      setAnnouncements(finalAnnouncements);
-      const loadedAnnouncementById = new Map(
-        finalAnnouncements.map((item) => [item.id, item])
-      );
-      setDeliveries((prev) =>
-        prev.filter((d) => {
-          const ann = loadedAnnouncementById.get(d.announcementId);
-          return Boolean(
-            ann &&
-              (d.status !== 'Failed' ||
-                ann.failedCount > 0 ||
-                ann.status === 'Failed')
-          );
-        })
-      );
-      setActivityFeed((prev) =>
-        prev.filter((entry) => loadedAnnouncementById.has(entry.announcementId))
-      );
+      setAnnouncements(remoteAnnouncements);
+      setRooms(remoteRooms.length > 0 ? remoteRooms : INITIAL_ROOMS_FALLBACK);
+      setDeliveries(remoteDeliveryLogs);
+      setRetryHistory(remoteRetryHistory);
+      setEnterpriseNotificationPrefs(remoteSoundPrefs);
+      saveLocalSoundPreferences(verifiedId, remoteSoundPrefs);
+      setActivityFeed([]);
+      if (remoteAnnouncements.length > 0) {
+        setSelectedAnnouncementId(remoteAnnouncements[0].id);
+      }
       setCloudAnnouncementsReadyFor(verifiedId);
 
       const remoteActions = await fetchCloudNotificationActions(verifiedId);
@@ -855,6 +1000,18 @@ export default function App() {
         byUserId: { [verifiedId]: userStates },
         events: userEvents.slice(0, 5000),
       });
+
+      // Seed anti-replay baseline BEFORE unlocking realtime notification triggers
+      seedNotificationBaseline({
+        userId: verifiedId,
+        approvalStatus: currentProfile.approvalStatus ?? 'Approved',
+        announcementsList: remoteAnnouncements,
+        messagesList,
+        requestsList: cloudProfilesToRegistrationRequests(profileRows),
+        incidentsList,
+        infoReqList,
+      });
+
       setCloudUserId(verifiedId);
       setShowLoginPage(false);
       showToast(`Signed in as ${currentProfile.fullName} (${currentProfile.role}).`);
@@ -1344,6 +1501,30 @@ export default function App() {
     }
   };
 
+  const loadCloudDeliveriesState = async (): Promise<void> => {
+    if (!isSupabaseConfigured || !supabase || !cloudUserId) return;
+    try {
+      const [logs, history] = await Promise.all([
+        fetchCloudDeliveryLogs(),
+        fetchCloudRetryHistory(),
+      ]);
+      setDeliveries(logs);
+      setRetryHistory(history);
+    } catch (error) {
+      console.warn('Could not refresh delivery logs:', error);
+    }
+  };
+
+  const loadCloudRoomsState = async (): Promise<void> => {
+    if (!isSupabaseConfigured || !supabase || !cloudUserId) return;
+    try {
+      const nextRooms = await fetchCloudRooms();
+      setRooms(nextRooms);
+    } catch (error) {
+      console.warn('Could not refresh rooms:', error);
+    }
+  };
+
   const loadCloudOperationsState = async (): Promise<void> => {
     if (!isSupabaseConfigured || !supabase || !cloudUserId) return;
     try {
@@ -1399,6 +1580,99 @@ export default function App() {
     } catch (error) {
       console.warn('Could not refresh notification actions:', error);
     }
+  };
+
+  const loadCloudNotificationPrefsState = async (): Promise<void> => {
+    if (!isSupabaseConfigured || !supabase || !cloudUserId) return;
+    try {
+      const prefs = await fetchCloudNotificationPreferences(
+        cloudUserId,
+        activeProfile.notificationPreferences
+      );
+      setEnterpriseNotificationPrefs(prefs);
+      saveLocalSoundPreferences(cloudUserId, prefs);
+    } catch (error) {
+      console.warn('Could not refresh notification sound preferences:', error);
+    }
+  };
+
+  const handleUpdateEnterpriseNotificationPrefs = (
+    next: EnterpriseNotificationPreferences
+  ) => {
+    const normalized = normalizeEnterpriseNotificationPreferences(next);
+    setEnterpriseNotificationPrefs(normalized);
+    const targetUserId = getCurrentProfileUserId();
+    saveLocalSoundPreferences(targetUserId, normalized);
+
+    setProfileState((prev) => ({
+      ...prev,
+      profiles: prev.profiles.map((p) =>
+        p.userId === targetUserId
+          ? {
+              ...p,
+              notificationPreferences: {
+                email: normalized.email,
+                push: normalized.push,
+                inApp: normalized.inApp,
+                securityAlerts: normalized.securityAlerts,
+              },
+            }
+          : p
+      ),
+    }));
+
+    if (isSupabaseConfigured && cloudUserId) {
+      if (soundPrefsSyncTimerRef.current !== null) {
+        window.clearTimeout(soundPrefsSyncTimerRef.current);
+      }
+      const uid = cloudUserId;
+      soundPrefsSyncTimerRef.current = window.setTimeout(() => {
+        soundPrefsSyncTimerRef.current = null;
+        void saveCloudNotificationPreferences(uid, normalized)
+          .then(() => {
+            broadcastWorkspaceSync('notification_prefs', {
+              targetUserId: uid,
+            });
+          })
+          .catch((error: unknown) => {
+            showToast(
+              `Could not sync notification sound preferences: ${getSupabaseFailureMessage(error)}`
+            );
+          });
+      }, 350);
+    }
+  };
+
+  const handleToggleDnd = () => {
+    const nextDnd = !enterpriseNotificationPrefsRef.current.dndEnabled;
+    const nextPrefs: EnterpriseNotificationPreferences = {
+      ...enterpriseNotificationPrefsRef.current,
+      dndEnabled: nextDnd,
+    };
+    handleUpdateEnterpriseNotificationPrefs(nextPrefs);
+    showToast(
+      nextDnd
+        ? 'Do Not Disturb enabled — alert sounds and popup toasts paused.'
+        : 'Do Not Disturb turned off — live notification alerts resumed.'
+    );
+  };
+
+  const handleTestNotificationToast = (
+    eventType: NotificationSoundEventType
+  ) => {
+    const meta = NOTIFICATION_SOUND_TYPES.find((t) => t.id === eventType);
+    const previewToast: EnterpriseNotificationToast = {
+      id: `preview-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      eventType,
+      title: `${meta?.label ?? 'Notification'} Preview`,
+      message:
+        meta?.description ??
+        'Live toast preview showing how incoming BAUST CSE Fest alerts appear.',
+      priority: eventType === 'high_priority' ? 'Emergency' : 'Normal',
+      receivedAt: new Date().toISOString(),
+      actionLabel: 'Dismiss',
+    };
+    setEnterpriseToasts((prev) => [previewToast, ...prev].slice(0, 6));
   };
 
   const handleSaveUserProfile = (profile: UserProfile) => {
@@ -1512,6 +1786,16 @@ export default function App() {
       ],
       events: [event, ...profileState.events].slice(0, 1000),
     };
+    const mergedEnterprisePrefs: EnterpriseNotificationPreferences = {
+      ...enterpriseNotificationPrefsRef.current,
+      email: profile.notificationPreferences.email,
+      push: profile.notificationPreferences.push,
+      inApp: profile.notificationPreferences.inApp,
+      securityAlerts: profile.notificationPreferences.securityAlerts,
+    };
+    setEnterpriseNotificationPrefs(mergedEnterprisePrefs);
+    saveLocalSoundPreferences(profile.userId, mergedEnterprisePrefs);
+
     if (persistProfileState(nextState, 'Could not save notification preferences. Check browser storage.')) {
       if (isSupabaseConfigured) {
         void saveCloudProfile(profile).catch((error: unknown) => {
@@ -1521,6 +1805,10 @@ export default function App() {
             `Could not sync notification preferences with Supabase: ${message}`
           );
         });
+        void saveCloudNotificationPreferences(
+          profile.userId,
+          mergedEnterprisePrefs
+        ).catch(() => {});
         void rpcLogUserActivity(
           'notifications_updated',
           'notifications',
@@ -3619,26 +3907,6 @@ export default function App() {
       ),
     [profileState.profiles]
   );
-  const trashItemCount =
-    trashedNoticeCount +
-    trashedRejectedCount +
-    deletedProfiles.length +
-    archivedProfiles.length;
-  const announcementById = useMemo(
-    () => new Map(announcements.map((item) => [item.id, item])),
-    [announcements]
-  );
-  const failedDeliveryCount = useMemo(
-    () =>
-      deliveries.filter((d) => {
-        if (d.status !== 'Failed') return false;
-        const ann = announcementById.get(d.announcementId);
-        return Boolean(
-          ann && !ann.trashedAt && (ann.failedCount > 0 || ann.status === 'Failed')
-        );
-      }).length,
-    [announcementById, deliveries]
-  );
 
   const inboxRole: WorkspaceRole =
     activeRole === 'Organizer' ? lastAttendeeRole : activeRole;
@@ -3648,6 +3916,119 @@ export default function App() {
     : activeRole === 'Organizer'
       ? DEMO_USERS.Organizer.id
       : registeredUser?.id ?? DEMO_USERS[activeRole].id;
+
+  const scopedManagementAnnouncements = useMemo(() => {
+    if (activeRole === 'Super Admin') return announcements;
+    return announcements.filter(
+      (a) =>
+        !a.senderId ||
+        !activeProfileUserId ||
+        a.senderId === activeProfileUserId
+    );
+  }, [activeProfileUserId, activeRole, announcements]);
+
+  const scopedActiveAnnouncements = useMemo(
+    () => scopedManagementAnnouncements.filter((item) => !item.trashedAt),
+    [scopedManagementAnnouncements]
+  );
+
+  const scopedAnnouncementById = useMemo(
+    () =>
+      new Map(
+        scopedManagementAnnouncements.map((item) => [item.id, item])
+      ),
+    [scopedManagementAnnouncements]
+  );
+
+  const scopedDeliveries = useMemo(
+    () =>
+      deliveries.filter((d) => scopedAnnouncementById.has(d.announcementId)),
+    [deliveries, scopedAnnouncementById]
+  );
+
+  const scopedRetryHistory = useMemo(
+    () =>
+      retryHistory.filter((entry) =>
+        scopedAnnouncementById.has(entry.announcementId)
+      ),
+    [retryHistory, scopedAnnouncementById]
+  );
+
+  const scopedFailedDeliveryCount = useMemo(
+    () =>
+      scopedDeliveries.filter((d) => {
+        if (d.status !== 'Failed') return false;
+        const ann = scopedAnnouncementById.get(d.announcementId);
+        return Boolean(ann && !ann.trashedAt);
+      }).length,
+    [scopedAnnouncementById, scopedDeliveries]
+  );
+
+  const scopedTrashedNoticeCount = useMemo(
+    () =>
+      scopedManagementAnnouncements.filter((item) => Boolean(item.trashedAt))
+        .length,
+    [scopedManagementAnnouncements]
+  );
+
+  const scopedTrashItemCount =
+    activeRole === 'Super Admin'
+      ? trashedNoticeCount +
+        trashedRejectedCount +
+        deletedProfiles.length +
+        archivedProfiles.length
+      : scopedTrashedNoticeCount;
+
+  const dashboardActivityFeed = useMemo<ActivityFeedEntry[]>(() => {
+    if (activityFeed.length > 0 && !isSupabaseConfigured) {
+      return activityFeed.filter((entry) =>
+        scopedAnnouncementById.has(entry.announcementId)
+      );
+    }
+    const items: ActivityFeedEntry[] = [];
+    for (const ann of scopedActiveAnnouncements) {
+      if (ann.status === 'Draft') continue;
+      const ts = ann.publishedAt || ann.scheduledFor || ann.createdAt;
+      items.push({
+        id: `feed-ann-${ann.id}`,
+        announcementId: ann.id,
+        announcementTitle: ann.title,
+        eventDescription:
+          ann.status === 'Scheduled'
+            ? `Scheduled in Asia/Dhaka (GMT+6) for ${ann.totalRecipients} recipients`
+            : `${ann.deliveredCount}/${ann.totalRecipients} delivered${ann.failedCount > 0 ? ` · ${ann.failedCount} failed` : ''}`,
+        channel: ann.channels[0] ?? 'In-App',
+        status:
+          ann.status === 'Scheduled'
+            ? 'Scheduled'
+            : ann.status === 'Failed'
+              ? 'Failed'
+              : 'Delivered',
+        timestamp: formatDhakaTimeOnly(ts),
+        recipientCount: ann.totalRecipients,
+      });
+    }
+    for (const retry of scopedRetryHistory.slice(0, 12)) {
+      const ann = scopedAnnouncementById.get(retry.announcementId);
+      items.push({
+        id: `feed-retry-${retry.id}`,
+        announcementId: retry.announcementId,
+        announcementTitle: ann?.title ?? 'Notification Retry',
+        eventDescription: `${retry.channel} attempt #${retry.attemptNumber}: ${retry.previousStatus} → ${retry.newStatus}`,
+        channel: retry.channel,
+        status: retry.newStatus === 'Delivered' ? 'Retried' : 'Failed',
+        timestamp: formatDhakaTimeOnly(retry.createdAt),
+        recipientCount: 1,
+      });
+    }
+    return items.slice(0, 25);
+  }, [
+    activityFeed,
+    scopedActiveAnnouncements,
+    scopedAnnouncementById,
+    scopedRetryHistory,
+  ]);
+
   const fallbackCloudUser: SystemUser = registeredUser ?? {
     id: cloudUserId ?? '',
     fullName: '',
@@ -3705,6 +4086,13 @@ export default function App() {
     onAnnouncementsChanged: () => {
       void loadCloudAnnouncementsState();
     },
+    onDeliveriesChanged: () => {
+      void loadCloudDeliveriesState();
+      void loadCloudAnnouncementsState();
+    },
+    onRoomsChanged: () => {
+      void loadCloudRoomsState();
+    },
     onNotificationActionsChanged: () => {
       void loadCloudNotificationActionsState();
     },
@@ -3715,14 +4103,343 @@ export default function App() {
       void loadCloudAnnouncementsState();
       void loadCloudOperationsState();
     },
+    onNotificationPrefsChanged: () => {
+      void loadCloudNotificationPrefsState();
+    },
     onRolePromoted: (targetUserId) => {
       void handleRefreshCloudProfiles();
       if (targetUserId && targetUserId === cloudUserId) {
         void loadCloudAnnouncementsState();
+        void loadCloudDeliveriesState();
+        void loadCloudRoomsState();
         void loadCloudOperationsState();
       }
     },
   });
+
+  // Offline / Demo baseline hydration (prevents replaying old notices after reload)
+  useEffect(() => {
+    if (isSupabaseConfigured || showLoginPage || !activeProfileUserId) return;
+    if (notificationBaselineReadyForRef.current === activeProfileUserId) return;
+    setEnterpriseNotificationPrefs(
+      loadLocalSoundPreferences(
+        activeProfileUserId,
+        activeProfile.notificationPreferences
+      )
+    );
+    seedNotificationBaseline({
+      userId: activeProfileUserId,
+      approvalStatus: activeProfile.approvalStatus ?? 'Approved',
+      announcementsList: announcements,
+      messagesList: organizerMessages,
+      requestsList: registrationRequests,
+      incidentsList: incidentReports,
+      infoReqList: infoRequests,
+    });
+  }, [
+    activeProfile.approvalStatus,
+    activeProfile.notificationPreferences,
+    activeProfileUserId,
+    announcements,
+    incidentReports,
+    infoRequests,
+    organizerMessages,
+    registrationRequests,
+    showLoginPage,
+  ]);
+
+  // Realtime New Notification Audio + Popup Detector (never replays old items)
+  useEffect(() => {
+    if (showLoginPage || !activeProfileUserId) return;
+    if (notificationBaselineReadyForRef.current !== activeProfileUserId) return;
+
+    const seen = seenNotificationKeysRef.current;
+    const isPendingAccount =
+      (activeProfile.approvalStatus ?? 'Approved') === 'Pending';
+    const incoming: { key: string; toast: EnterpriseNotificationToast }[] = [];
+
+    // 1. Newly delivered announcements targeted to the active user
+    for (const notice of announcements) {
+      if (notice.trashedAt || notice.status !== 'Delivered') continue;
+      if (notice.senderId && notice.senderId === activeProfileUserId) continue;
+
+      const isVisible = isPendingAccount
+        ? notice.targeting.everyoneAttending ||
+          notice.targeting.roles.includes('Participant')
+        : isAnnouncementVisibleToRole(notice, activeRole);
+      if (!isVisible) continue;
+
+      const key = `ann:${notice.id}:${notice.publishedAt || notice.createdAt}`;
+      if (seen.has(key)) continue;
+
+      const eventType: NotificationSoundEventType =
+        notice.priority === 'Emergency' || notice.priority === 'High'
+          ? 'high_priority'
+          : notice.type === 'Emergency Alert'
+            ? 'system_alert'
+            : notice.type === 'General'
+              ? 'general'
+              : 'announcement';
+
+      incoming.push({
+        key,
+        toast: {
+          id: `toast-${key}`,
+          eventType,
+          title: notice.title,
+          message:
+            notice.summary ||
+            notice.body.slice(0, 140) ||
+            `${notice.senderName} published a new update.`,
+          priority: notice.priority,
+          receivedAt:
+            notice.publishedAt || notice.createdAt || new Date().toISOString(),
+          actionLabel: 'Open Notice',
+          actionRoute: 'inbox',
+          targetId: notice.id,
+        },
+      });
+    }
+
+    // 2. New organizer messages & thread replies
+    for (const thread of organizerMessages) {
+      const threadKey = `msg:${thread.id}`;
+      if (
+        isApprovedStaffSession &&
+        thread.senderId !== activeProfileUserId &&
+        !seen.has(threadKey)
+      ) {
+        incoming.push({
+          key: threadKey,
+          toast: {
+            id: `toast-${threadKey}`,
+            eventType: 'new_message',
+            title: `Message from ${thread.senderName}`,
+            message: thread.subject || thread.body.slice(0, 140),
+            receivedAt: thread.createdAt,
+            actionLabel: 'Open Support',
+            actionRoute: 'operations-inbox',
+            targetId: thread.id,
+          },
+        });
+      }
+
+      for (const reply of thread.replies) {
+        const replyKey = `reply:${reply.id}`;
+        if (seen.has(replyKey) || reply.authorId === activeProfileUserId) {
+          continue;
+        }
+        const relevantToStaff = isApprovedStaffSession && !reply.isStaffReply;
+        const relevantToMember =
+          !isApprovedStaffSession && thread.senderId === activeProfileUserId;
+        if (relevantToStaff || relevantToMember) {
+          incoming.push({
+            key: replyKey,
+            toast: {
+              id: `toast-${replyKey}`,
+              eventType: 'new_message',
+              title: `New reply from ${reply.authorName}`,
+              message: reply.body.slice(0, 140),
+              receivedAt: reply.createdAt,
+              actionLabel: relevantToStaff ? 'Open Support' : 'View Reply',
+              actionRoute: relevantToStaff ? 'operations-inbox' : 'inbox',
+              targetId: thread.id,
+            },
+          });
+        }
+      }
+    }
+
+    // 3. New approval requests (for Organizers & Super Admins)
+    if (isApprovedStaffSession) {
+      for (const req of registrationRequests) {
+        if (req.trashedAt || req.id === activeProfileUserId) continue;
+        const isPendingReq =
+          req.approvalStatus === 'Pending' || req.status === 'Pending Approval';
+        if (!isPendingReq) continue;
+        const reqKey = `req:${req.id}:${req.registeredAt}`;
+        if (seen.has(reqKey)) continue;
+        incoming.push({
+          key: reqKey,
+          toast: {
+            id: `toast-${reqKey}`,
+            eventType: 'approval_request',
+            title: `Role Request: ${req.fullName}`,
+            message: `Requested ${req.role} role (${req.affiliation || req.email}).`,
+            receivedAt: req.registeredAt,
+            actionLabel: 'Review',
+            actionRoute: 'user-approvals',
+            targetId: req.id,
+          },
+        });
+      }
+    }
+
+    // 4. Own approval status transitions
+    const prevApproval = previousApprovalStatusRef.current;
+    const currentApproval = activeProfile.approvalStatus ?? 'Approved';
+    if (prevApproval === 'Pending' && currentApproval === 'Approved') {
+      const key = `self-approval:Approved:${activeProfileUserId}`;
+      if (!seen.has(key)) {
+        incoming.push({
+          key,
+          toast: {
+            id: `toast-${key}`,
+            eventType: 'approval_granted',
+            title: 'Account Approved',
+            message: `Your account is now approved with ${activeRole} access.`,
+            receivedAt: new Date().toISOString(),
+            actionLabel: 'View Dashboard',
+            actionRoute: 'dashboard',
+          },
+        });
+      }
+    } else if (prevApproval === 'Pending' && currentApproval === 'Rejected') {
+      const key = `self-approval:Rejected:${activeProfileUserId}`;
+      if (!seen.has(key)) {
+        incoming.push({
+          key,
+          toast: {
+            id: `toast-${key}`,
+            eventType: 'approval_rejected',
+            title: 'Role Request Declined',
+            message: 'Your role request status was updated to Rejected.',
+            receivedAt: new Date().toISOString(),
+          },
+        });
+      }
+    }
+    previousApprovalStatusRef.current = currentApproval;
+
+    // 5. Incident reports & Event info requests
+    for (const inc of incidentReports) {
+      if (isApprovedStaffSession && inc.reporterId !== activeProfileUserId) {
+        const incKey = `inc:${inc.id}`;
+        if (!seen.has(incKey)) {
+          const isHigh =
+            inc.severity === 'Critical' || inc.severity === 'High';
+          incoming.push({
+            key: incKey,
+            toast: {
+              id: `toast-${incKey}`,
+              eventType: isHigh ? 'high_priority' : 'system_alert',
+              title: `${inc.severity} Incident ${inc.referenceCode}`,
+              message: `${inc.category} at ${inc.location}: ${inc.description.slice(0, 110)}`,
+              priority: isHigh ? 'Emergency' : 'Normal',
+              receivedAt: inc.createdAt,
+              actionLabel: 'Open Support',
+              actionRoute: 'operations-inbox',
+              targetId: inc.id,
+            },
+          });
+        }
+      } else if (
+        inc.reporterId === activeProfileUserId &&
+        (inc.status === 'Resolved' || inc.status === 'Closed')
+      ) {
+        const resKey = `inc-res:${inc.id}:${inc.updatedAt}`;
+        if (!seen.has(resKey)) {
+          incoming.push({
+            key: resKey,
+            toast: {
+              id: `toast-${resKey}`,
+              eventType: 'system_alert',
+              title: `Incident ${inc.referenceCode} ${inc.status}`,
+              message:
+                inc.resolutionNotes ||
+                'Your submitted incident report has been updated.',
+              receivedAt: inc.updatedAt,
+              actionLabel: 'View Update',
+              actionRoute: 'inbox',
+            },
+          });
+        }
+      }
+    }
+
+    for (const info of infoRequests) {
+      if (isApprovedStaffSession && info.requesterId !== activeProfileUserId) {
+        const infoKey = `info:${info.id}`;
+        if (!seen.has(infoKey)) {
+          incoming.push({
+            key: infoKey,
+            toast: {
+              id: `toast-${infoKey}`,
+              eventType: 'general',
+              title: `Info Request ${info.referenceCode}`,
+              message: `${info.requesterName}: ${info.question.slice(0, 120)}`,
+              receivedAt: info.createdAt,
+              actionLabel: 'Answer',
+              actionRoute: 'operations-inbox',
+              targetId: info.id,
+            },
+          });
+        }
+      } else if (
+        info.requesterId === activeProfileUserId &&
+        info.status === 'Answered'
+      ) {
+        const ansKey = `info-ans:${info.id}:${info.updatedAt}`;
+        if (!seen.has(ansKey)) {
+          incoming.push({
+            key: ansKey,
+            toast: {
+              id: `toast-${ansKey}`,
+              eventType: 'new_message',
+              title: `Response to ${info.referenceCode}`,
+              message:
+                info.responseText || 'An organizer answered your request.',
+              receivedAt: info.updatedAt,
+              actionLabel: 'View Response',
+              actionRoute: 'inbox',
+            },
+          });
+        }
+      }
+    }
+
+    if (incoming.length === 0) return;
+
+    for (const item of incoming) {
+      seen.add(item.key);
+    }
+
+    let highestEventType: NotificationSoundEventType =
+      incoming[0].toast.eventType;
+    for (const item of incoming) {
+      if (
+        NOTIFICATION_EVENT_PRIORITY[item.toast.eventType] >
+        NOTIFICATION_EVENT_PRIORITY[highestEventType]
+      ) {
+        highestEventType = item.toast.eventType;
+      }
+    }
+
+    const prefsSnapshot = enterpriseNotificationPrefsRef.current;
+    void playNotificationSound(highestEventType, prefsSnapshot).then(
+      (outcome) => {
+        if (prefsSnapshot.dndEnabled || prefsSnapshot.muteAll) {
+          return;
+        }
+        const batchToasts = incoming.slice(0, 3).map((item, idx) => ({
+          ...item.toast,
+          audioLocked: idx === 0 && outcome === 'locked',
+        }));
+        setEnterpriseToasts((prev) => [...batchToasts, ...prev].slice(0, 6));
+      }
+    );
+  }, [
+    activeProfile.approvalStatus,
+    activeProfileUserId,
+    activeRole,
+    announcements,
+    incidentReports,
+    infoRequests,
+    isApprovedStaffSession,
+    organizerMessages,
+    registrationRequests,
+    showLoginPage,
+  ]);
 
   const presenceUser = useMemo(
     () =>
@@ -4012,13 +4729,24 @@ export default function App() {
     notificationActionStore,
   ]);
 
-  const selectedAnnouncement = useMemo(
-    () =>
-      announcements.find((a) => a.id === selectedAnnouncementId) ??
-      activeAnnouncements[0] ??
-      announcements[0],
-    [activeAnnouncements, announcements, selectedAnnouncementId]
-  );
+  const selectedAnnouncement = useMemo(() => {
+    const pool =
+      mode === 'organizer' ? scopedManagementAnnouncements : announcements;
+    const activePool =
+      mode === 'organizer' ? scopedActiveAnnouncements : activeAnnouncements;
+    return (
+      pool.find((a) => a.id === selectedAnnouncementId) ??
+      activePool[0] ??
+      pool[0]
+    );
+  }, [
+    activeAnnouncements,
+    announcements,
+    mode,
+    scopedActiveAnnouncements,
+    scopedManagementAnnouncements,
+    selectedAnnouncementId,
+  ]);
 
   const handleInspectAnnouncement = (id: string) => {
     setSelectedAnnouncementId(id);
@@ -4035,6 +4763,15 @@ export default function App() {
 
   const handleEditAnnouncement = (ann: Announcement) => {
     if (!canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)) {
+      return;
+    }
+    if (
+      activeRole !== 'Super Admin' &&
+      ann.senderId &&
+      activeProfileUserId &&
+      ann.senderId !== activeProfileUserId
+    ) {
+      showToast('Organizers can only edit notices they created.');
       return;
     }
     setEditingAnnouncement(ann);
@@ -4367,7 +5104,7 @@ export default function App() {
     return null;
   };
 
-  const handleSaveAnnouncement = (
+  const handleSaveAnnouncement = async (
     saved: Announcement,
     targetStatus: DeliveryStatus
   ) => {
@@ -4392,68 +5129,76 @@ export default function App() {
     });
 
     if (isSupabaseConfigured && supabase && cloudUserId) {
-      void saveCloudAnnouncements([enrichedSaved], cloudUserId)
-        .then(async () => {
-          const auditAction =
-            targetStatus === 'Delivered' && !isEdit
-              ? 'published'
-              : isEdit
-                ? 'updated'
-                : 'created';
-          await rpcLogAnnouncementAudit(
-            enrichedSaved.id,
-            enrichedSaved.title,
-            auditAction,
-            `Saved as ${targetStatus}`
-          );
-          broadcastWorkspaceSync('announcements');
-          void loadCloudAnnouncementsState();
-        })
-        .catch((error: unknown) => {
-          showToast(
-            `Could not save announcement to Supabase: ${getSupabaseFailureMessage(error)}`
-          );
-        });
-    }
-
-    if (targetStatus === 'Delivered' && enrichedSaved.failedCount > 0) {
-      const simulatedError: NotificationDelivery = {
-        id: `del-${Date.now()}`,
-        announcementId: enrichedSaved.id,
-        recipientId: 'rec-sim-01',
-        recipientName: 'Sadia Afrin (CUET_ByteRunners)',
-        recipientRole: enrichedSaved.targeting.roles[0] ?? 'Participant',
-        recipientContact: '+880 1719-882310',
-        channel: enrichedSaved.channels.includes('SMS')
-          ? 'SMS'
-          : enrichedSaved.channels[0] ?? 'Push Notification',
-        status: 'Failed',
-        errorCode: enrichedSaved.channels.includes('SMS')
-          ? 'SMS_GATEWAY_TIMEOUT'
-          : 'INVALID_PUSH_TOKEN',
-        errorMessage:
-          'Simulated transient gateway timeout during broadcast wave',
-        attemptCount: 1,
-        lastAttemptAt: new Date().toISOString(),
-      };
-      setDeliveries((prev) => [simulatedError, ...prev]);
-    }
-
-    if (targetStatus !== 'Draft') {
-      const feedEntry: ActivityFeedEntry = {
-        id: `act-${Date.now()}`,
-        announcementId: enrichedSaved.id,
-        announcementTitle: enrichedSaved.title,
-        eventDescription:
-          targetStatus === 'Scheduled'
-            ? `Scheduled in Asia/Dhaka (GMT+6) for ${enrichedSaved.totalRecipients} recipients`
-            : `Simulated broadcast completed (${enrichedSaved.deliveredCount}/${enrichedSaved.totalRecipients} delivered)`,
-        channel: enrichedSaved.channels[0] ?? 'In-App',
-        status: targetStatus === 'Scheduled' ? 'Scheduled' : 'Delivered',
-        timestamp: formatDhakaTimeOnly(new Date().toISOString()),
-        recipientCount: enrichedSaved.totalRecipients,
-      };
-      setActivityFeed((prev) => [feedEntry, ...prev]);
+      try {
+        await saveCloudAnnouncements([enrichedSaved], cloudUserId);
+        const auditAction =
+          targetStatus === 'Delivered' && !isEdit
+            ? 'published'
+            : isEdit
+              ? 'updated'
+              : 'created';
+        await rpcLogAnnouncementAudit(
+          enrichedSaved.id,
+          enrichedSaved.title,
+          auditAction,
+          `Saved as ${targetStatus}`
+        );
+        if (targetStatus === 'Delivered') {
+          await rpcDispatchAnnouncementDeliveries(enrichedSaved.id);
+          await loadCloudDeliveriesState();
+          broadcastWorkspaceSync('deliveries');
+        }
+        await loadCloudAnnouncementsState();
+        broadcastWorkspaceSync('announcements');
+      } catch (error: unknown) {
+        showToast(
+          `Could not save announcement to Supabase: ${getSupabaseFailureMessage(error)}`
+        );
+      }
+    } else if (targetStatus === 'Delivered') {
+      const nowIso = new Date().toISOString();
+      const targetUserIds = new Set(enrichedSaved.targeting.targetUserIds ?? []);
+      const matchingProfiles = managedProfiles.filter((profile) => {
+        if (profile.isDeleted || profile.accountStatus !== 'Active') return false;
+        if (targetUserIds.size > 0) return targetUserIds.has(profile.userId);
+        if (enrichedSaved.targeting.everyoneAttending) return true;
+        return enrichedSaved.targeting.roles.includes(profile.role as UserRole);
+      });
+      const localLogs: NotificationDelivery[] = [];
+      for (const recipient of matchingProfiles) {
+        for (const ch of enrichedSaved.channels) {
+          const isInApp = ch === 'In-App';
+          localLogs.push({
+            id: `del-${enrichedSaved.id}-${recipient.userId}-${ch}-${Date.now()}`,
+            announcementId: enrichedSaved.id,
+            recipientId: recipient.userId,
+            recipientName: recipient.fullName,
+            recipientRole: recipient.role as UserRole,
+            recipientContact:
+              ch === 'SMS'
+                ? recipient.phone || recipient.email || 'No phone on file'
+                : recipient.email || 'In-App session',
+            recipientEmail: recipient.email,
+            recipientPhone: recipient.phone,
+            channel: ch,
+            status: isInApp ? 'Delivered' : 'Gateway Not Configured',
+            gatewayProvider: isInApp ? 'baust-in-app' : `${ch.toLowerCase().replaceAll(' ', '_')}_unconfigured`,
+            errorCode: isInApp ? undefined : 'GATEWAY_NOT_CONFIGURED',
+            errorMessage: isInApp
+              ? undefined
+              : `${ch} delivery gateway is not configured in local mode.`,
+            attemptCount: 1,
+            lastAttemptAt: nowIso,
+            deliveredAt: isInApp ? nowIso : undefined,
+          });
+        }
+      }
+      if (localLogs.length > 0) {
+        setDeliveries((prev) => [
+          ...localLogs,
+          ...prev.filter((d) => d.announcementId !== enrichedSaved.id),
+        ]);
+      }
     }
 
     setEditingAnnouncement(null);
@@ -4465,227 +5210,311 @@ export default function App() {
         ? 'Saved announcement draft.'
         : targetStatus === 'Scheduled'
           ? 'Announcement scheduled (GMT+6).'
-          : 'Notice published and synced successfully.';
+          : 'Notice published and dispatched.';
     showToast(label);
   };
 
-  const handlePublishScheduledNow = (announcementId: string) => {
+  const handlePublishScheduledNow = async (announcementId: string) => {
     const existingAnnouncement = announcements.find(
       (a) => a.id === announcementId
     );
     if (!existingAnnouncement) return;
+    if (
+      activeRole !== 'Super Admin' &&
+      existingAnnouncement.senderId &&
+      activeProfileUserId &&
+      existingAnnouncement.senderId !== activeProfileUserId
+    ) {
+      showToast('Organizers can only dispatch notices they created.');
+      return;
+    }
     const nowIso = new Date().toISOString();
-    const delivered = existingAnnouncement.totalRecipients;
     const updatedAnnouncement: Announcement = {
       ...existingAnnouncement,
       status: 'Delivered',
       publishedAt: nowIso,
       pendingCount: 0,
-      deliveredCount: delivered,
-      readCount: Math.floor(delivered * 0.45),
-      clickCount: Math.floor(delivered * 0.18),
-      channelBreakdown: existingAnnouncement.channelBreakdown.map((ch) => ({
-        ...ch,
-        deliveredCount: ch.targetedCount,
-        pendingCount: 0,
-        readCount: Math.floor(ch.targetedCount * 0.45),
-        clickCount: Math.floor(ch.targetedCount * 0.18),
-      })),
     };
     skipNextAnnouncementSyncRef.current = true;
     setAnnouncements((prev) =>
       prev.map((a) => (a.id === announcementId ? updatedAnnouncement : a))
     );
     if (isSupabaseConfigured && supabase && cloudUserId) {
-      void saveCloudAnnouncements([updatedAnnouncement], cloudUserId)
-        .then(async () => {
-          await rpcLogAnnouncementAudit(
-            updatedAnnouncement.id,
-            updatedAnnouncement.title,
-            'published',
-            'Published scheduled announcement immediately'
-          );
-          broadcastWorkspaceSync('announcements');
-        })
-        .catch((error: unknown) => {
-          showToast(
-            `Could not sync published notice with Supabase: ${getSupabaseFailureMessage(error)}`
-          );
-        });
+      try {
+        await saveCloudAnnouncements([updatedAnnouncement], cloudUserId);
+        await rpcLogAnnouncementAudit(
+          updatedAnnouncement.id,
+          updatedAnnouncement.title,
+          'published',
+          'Published scheduled announcement immediately'
+        );
+        await rpcDispatchAnnouncementDeliveries(updatedAnnouncement.id);
+        await Promise.all([
+          loadCloudAnnouncementsState(),
+          loadCloudDeliveriesState(),
+        ]);
+        broadcastWorkspaceSync('deliveries');
+        broadcastWorkspaceSync('announcements');
+      } catch (error: unknown) {
+        showToast(
+          `Could not dispatch notice via Supabase: ${getSupabaseFailureMessage(error)}`
+        );
+        return;
+      }
     }
     showToast('Notice dispatched and published.');
   };
 
-  const handleRetryDelivery = (deliveryId: string) => {
+  const handleRetryDelivery = async (deliveryId: string) => {
     const target = deliveries.find((d) => d.id === deliveryId);
-    if (!target || target.status !== 'Failed') return;
+    if (
+      !target ||
+      (target.status !== 'Failed' &&
+        target.status !== 'Pending' &&
+        target.status !== 'Gateway Not Configured')
+    ) {
+      return;
+    }
+    const parentAnn = announcements.find((a) => a.id === target.announcementId);
+    if (
+      activeRole !== 'Super Admin' &&
+      parentAnn?.senderId &&
+      activeProfileUserId &&
+      parentAnn.senderId !== activeProfileUserId
+    ) {
+      showToast('Organizers can only retry deliveries for their own notices.');
+      return;
+    }
+
+    if (isSupabaseConfigured && supabase && cloudUserId) {
+      try {
+        const summary = await rpcRetryFailedDeliveries(
+          target.announcementId,
+          deliveryId
+        );
+        await Promise.all([
+          loadCloudDeliveriesState(),
+          loadCloudAnnouncementsState(),
+        ]);
+        broadcastWorkspaceSync('deliveries');
+        broadcastWorkspaceSync('announcements');
+        if (summary.deliveredCount > 0) {
+          showToast(
+            `Retry delivered ${target.recipientName} via ${target.channel}.`
+          );
+        } else if (summary.notConfiguredCount > 0) {
+          showToast(
+            `${target.channel} gateway is not configured on the backend yet (status recorded).`
+          );
+        } else {
+          showToast(`Retry logged for ${target.recipientName}.`);
+        }
+      } catch (error: unknown) {
+        showToast(
+          `Could not retry delivery: ${getSupabaseFailureMessage(error)}`
+        );
+      }
+      return;
+    }
 
     const nowIso = new Date().toISOString();
+    const isInApp = target.channel === 'In-App';
+    const nextStatus = isInApp ? 'Delivered' : 'Gateway Not Configured';
     setDeliveries((prev) =>
       prev.map((d) =>
         d.id === deliveryId
           ? {
               ...d,
-              status: 'Delivered',
-              errorCode: undefined,
-              errorMessage: undefined,
+              status: nextStatus,
+              errorCode: isInApp ? undefined : 'GATEWAY_NOT_CONFIGURED',
+              errorMessage: isInApp
+                ? undefined
+                : `${target.channel} gateway is not configured in local mode.`,
               attemptCount: d.attemptCount + 1,
               lastAttemptAt: nowIso,
-              deliveredAt: nowIso,
+              deliveredAt: isInApp ? nowIso : undefined,
             }
           : d
       )
     );
-
-    const existingAnnouncement = announcements.find(
-      (ann) => ann.id === target.announcementId
-    );
-    const updatedAnnouncement: Announcement | null = existingAnnouncement
-      ? {
-          ...existingAnnouncement,
-          deliveredCount: Math.min(
-            existingAnnouncement.totalRecipients,
-            existingAnnouncement.deliveredCount + 1
-          ),
-          failedCount: Math.max(0, existingAnnouncement.failedCount - 1),
-          channelBreakdown: existingAnnouncement.channelBreakdown.map((ch) =>
-            ch.channel === target.channel
-              ? {
-                  ...ch,
-                  deliveredCount: Math.min(
-                    ch.targetedCount,
-                    ch.deliveredCount + 1
-                  ),
-                  failedCount: Math.max(0, ch.failedCount - 1),
-                }
-              : ch
-          ),
-        }
-      : null;
-    skipNextAnnouncementSyncRef.current = true;
-    if (updatedAnnouncement) {
-      setAnnouncements((prev) =>
-        prev.map((ann) =>
-          ann.id === target.announcementId ? updatedAnnouncement : ann
-        )
-      );
-    }
-
-    if (updatedAnnouncement && isSupabaseConfigured && supabase && cloudUserId) {
-      void saveCloudAnnouncements([updatedAnnouncement], cloudUserId)
-        .then(() => broadcastWorkspaceSync('announcements'))
-        .catch((error: unknown) => {
-          showToast(`Could not sync retry state: ${getSupabaseFailureMessage(error)}`);
-        });
-    }
-
-    setActivityFeed((prev) => [
-      {
-        id: `act-retry-${Date.now()}`,
-        announcementId: target.announcementId,
-        announcementTitle: `Retry: ${target.recipientName}`,
-        eventDescription: `Simulated ${target.channel} gateway retry succeeded`,
-        channel: target.channel,
-        status: 'Retried',
-        timestamp: formatDhakaTimeOnly(nowIso),
-        recipientCount: 1,
-      },
-      ...prev,
-    ]);
-
     showToast(
-      `Retry succeeded for ${target.recipientName} via ${target.channel}.`
+      isInApp
+        ? `Delivered to ${target.recipientName}.`
+        : `${target.channel} gateway is not configured in local mode.`
     );
   };
 
-  const handleRetryAllFailedForAnnouncement = (announcementId: string) => {
+  const handleRetryAllFailedForAnnouncement = async (announcementId: string) => {
+    const parentAnn = announcements.find((a) => a.id === announcementId);
+    if (
+      activeRole !== 'Super Admin' &&
+      parentAnn?.senderId &&
+      activeProfileUserId &&
+      parentAnn.senderId !== activeProfileUserId
+    ) {
+      showToast('Organizers can only retry deliveries for their own notices.');
+      return;
+    }
+
+    if (isSupabaseConfigured && supabase && cloudUserId) {
+      try {
+        const summary = await rpcRetryFailedDeliveries(announcementId);
+        await Promise.all([
+          loadCloudDeliveriesState(),
+          loadCloudAnnouncementsState(),
+        ]);
+        broadcastWorkspaceSync('deliveries');
+        broadcastWorkspaceSync('announcements');
+        if (summary.retriedCount === 0) {
+          showToast('No retryable failed or pending deliveries found.');
+          return;
+        }
+        if (summary.deliveredCount > 0 && summary.notConfiguredCount === 0) {
+          showToast(`Retried and delivered ${summary.deliveredCount} dispatch(es).`);
+        } else {
+          showToast(
+            `Processed ${summary.retriedCount} retries: ${summary.deliveredCount} delivered, ${summary.notConfiguredCount} unconfigured gateway.`
+          );
+        }
+      } catch (error: unknown) {
+        showToast(
+          `Could not execute batch retry: ${getSupabaseFailureMessage(error)}`
+        );
+      }
+      return;
+    }
+
     const targets = deliveries.filter(
-      (d) => d.announcementId === announcementId && d.status === 'Failed'
+      (d) =>
+        d.announcementId === announcementId &&
+        (d.status === 'Failed' || d.status === 'Pending')
     );
     if (targets.length === 0) return;
-
     const nowIso = new Date().toISOString();
-    const countByChannel: Record<string, number> = {};
-    for (const t of targets) {
-      countByChannel[t.channel] = (countByChannel[t.channel] ?? 0) + 1;
-    }
-
     setDeliveries((prev) =>
-      prev.map((d) =>
-        d.announcementId === announcementId && d.status === 'Failed'
-          ? {
-              ...d,
-              status: 'Delivered',
-              errorCode: undefined,
-              errorMessage: undefined,
-              attemptCount: d.attemptCount + 1,
-              lastAttemptAt: nowIso,
-              deliveredAt: nowIso,
-            }
-          : d
-      )
-    );
-
-    const existingAnnouncement = announcements.find(
-      (ann) => ann.id === announcementId
-    );
-    const updatedAnnouncement: Announcement | null = existingAnnouncement
-      ? {
-          ...existingAnnouncement,
-          deliveredCount: Math.min(
-            existingAnnouncement.totalRecipients,
-            existingAnnouncement.deliveredCount + targets.length
-          ),
-          failedCount: Math.max(
-            0,
-            existingAnnouncement.failedCount - targets.length
-          ),
-          channelBreakdown: existingAnnouncement.channelBreakdown.map((ch) => {
-            const recovered = countByChannel[ch.channel] ?? 0;
-            if (recovered === 0) return ch;
-            return {
-              ...ch,
-              deliveredCount: Math.min(
-                ch.targetedCount,
-                ch.deliveredCount + recovered
-              ),
-              failedCount: Math.max(0, ch.failedCount - recovered),
-            };
-          }),
+      prev.map((d) => {
+        if (
+          d.announcementId !== announcementId ||
+          (d.status !== 'Failed' && d.status !== 'Pending')
+        ) {
+          return d;
         }
-      : null;
-    skipNextAnnouncementSyncRef.current = true;
-    if (updatedAnnouncement) {
-      setAnnouncements((prev) =>
-        prev.map((ann) =>
-          ann.id === announcementId ? updatedAnnouncement : ann
+        const isInApp = d.channel === 'In-App';
+        return {
+          ...d,
+          status: isInApp ? 'Delivered' : 'Gateway Not Configured',
+          errorCode: isInApp ? undefined : 'GATEWAY_NOT_CONFIGURED',
+          errorMessage: isInApp
+            ? undefined
+            : `${d.channel} gateway is not configured in local mode.`,
+          attemptCount: d.attemptCount + 1,
+          lastAttemptAt: nowIso,
+          deliveredAt: isInApp ? nowIso : undefined,
+        };
+      })
+    );
+    showToast(`Processed ${targets.length} delivery retry attempts.`);
+  };
+
+  const handleUpsertRoom = async (params: {
+    id?: string | null;
+    name: string;
+    building: string;
+    capacity: number | null;
+    isActive: boolean;
+  }): Promise<string | null> => {
+    if (activeRole !== 'Super Admin') {
+      return 'Only a Super Admin can manage campus rooms.';
+    }
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await rpcSuperAdminUpsertRoom(params);
+        await loadCloudRoomsState();
+        broadcastWorkspaceSync('rooms');
+        showToast(params.id ? `Updated room "${params.name}".` : `Created room "${params.name}".`);
+        return null;
+      } catch (error) {
+        return getSupabaseFailureMessage(error);
+      }
+    }
+    const nowIso = new Date().toISOString();
+    if (params.id) {
+      setRooms((prev) =>
+        prev.map((r) =>
+          r.id === params.id
+            ? {
+                ...r,
+                name: params.name,
+                building: params.building,
+                capacity: params.capacity,
+                isActive: params.isActive,
+                updatedAt: nowIso,
+              }
+            : r
         )
       );
+    } else {
+      setRooms((prev) => [
+        ...prev,
+        {
+          id: `room-${Date.now()}`,
+          name: params.name,
+          building: params.building,
+          capacity: params.capacity,
+          isActive: params.isActive,
+          createdBy: activeProfileUserId || null,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        },
+      ]);
     }
+    showToast(params.id ? `Updated room "${params.name}".` : `Created room "${params.name}".`);
+    return null;
+  };
 
-    if (updatedAnnouncement && isSupabaseConfigured && supabase && cloudUserId) {
-      void saveCloudAnnouncements([updatedAnnouncement], cloudUserId)
-        .then(() => broadcastWorkspaceSync('announcements'))
-        .catch((error: unknown) => {
-          showToast(`Could not sync batch retry state: ${getSupabaseFailureMessage(error)}`);
-        });
+  const handleToggleRoomActive = async (
+    roomId: string,
+    isActive: boolean
+  ): Promise<string | null> => {
+    if (activeRole !== 'Super Admin') {
+      return 'Only a Super Admin can change room availability.';
     }
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await rpcSuperAdminToggleRoomActive(roomId, isActive);
+        await loadCloudRoomsState();
+        broadcastWorkspaceSync('rooms');
+        showToast(isActive ? 'Room enabled.' : 'Room disabled.');
+        return null;
+      } catch (error) {
+        return getSupabaseFailureMessage(error);
+      }
+    }
+    setRooms((prev) =>
+      prev.map((r) => (r.id === roomId ? { ...r, isActive } : r))
+    );
+    showToast(isActive ? 'Room enabled.' : 'Room disabled.');
+    return null;
+  };
 
-    setActivityFeed((prev) => [
-      {
-        id: `act-retry-all-${Date.now()}`,
-        announcementId,
-        announcementTitle: `Batch Retry (${targets.length} recipients)`,
-        eventDescription: `All ${targets.length} failed dispatches recovered in simulated retry`,
-        channel: targets[0].channel,
-        status: 'Retried',
-        timestamp: formatDhakaTimeOnly(nowIso),
-        recipientCount: targets.length,
-      },
-      ...prev,
-    ]);
-
-    showToast(`Retried and delivered ${targets.length} failed dispatches.`);
+  const handleDeleteRoom = async (roomId: string): Promise<string | null> => {
+    if (activeRole !== 'Super Admin') {
+      return 'Only a Super Admin can delete rooms.';
+    }
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await rpcSuperAdminDeleteRoom(roomId);
+        await loadCloudRoomsState();
+        broadcastWorkspaceSync('rooms');
+        showToast('Room deleted.');
+        return null;
+      } catch (error) {
+        return getSupabaseFailureMessage(error);
+      }
+    }
+    setRooms((prev) => prev.filter((r) => r.id !== roomId));
+    showToast('Room deleted.');
+    return null;
   };
 
   // Real-time Participant Quick Actions & Staff Operations Handlers
@@ -5181,7 +6010,7 @@ export default function App() {
   const handleSignOut = async () => {
     authActivationRequestRef.current += 1;
     if (supabase) {
-      await rpcUpdateMyPresenceStatus('Offline').catch(() => {});
+      await rpcEndMyActiveSession().catch(() => {});
       const { error } = await supabase.auth.signOut();
       if (error) {
         showToast(`Could not sign out of Supabase: ${error.message}`);
@@ -5224,10 +6053,17 @@ export default function App() {
         approvalStatus={activeProfile.approvalStatus ?? 'Approved'}
         activeAttendeeRoute={activeRoute}
         unreadCount={unreadCount}
+        dndEnabled={enterpriseNotificationPrefs.dndEnabled}
+        soundSilenced={
+          enterpriseNotificationPrefs.muteAll ||
+          !enterpriseNotificationPrefs.soundEnabled ||
+          enterpriseNotificationPrefs.volume === 0
+        }
         isDark={darkMode}
         userName={activeProfile.fullName}
         avatarUrl={activeProfile.photoDataUrl || undefined}
         onToggleTheme={() => setDarkMode((prev) => !prev)}
+        onToggleDnd={handleToggleDnd}
         onChangeMode={handleChangeMode}
         onNavigateAttendeeRoute={(route) => {
           setInboxTargetNoticeId(null);
@@ -5249,11 +6085,11 @@ export default function App() {
             <Sidebar
               activeRole={activeRole}
               activeRoute={activeRoute}
-              failedDeliveryCount={failedDeliveryCount}
+              failedDeliveryCount={scopedFailedDeliveryCount}
               unreadNotificationCount={unreadCount}
               pendingRequestCount={pendingRequestCount}
               blockedUserCount={blockedUserCount}
-              trashItemCount={trashItemCount}
+              trashItemCount={scopedTrashItemCount}
               onlineUserCount={onlineUsersCount}
               openOpsCount={openOpsCount}
               mobileOpen={mobileMenuOpen}
@@ -5308,6 +6144,9 @@ export default function App() {
                   }
                   onSave={handleSaveUserProfile}
                   onSaveNotifications={handleSaveProfileNotifications}
+                  onOpenNotificationSettings={() =>
+                    handleNavigateSettings('notifications')
+                  }
                   onChangePassword={(currentPassword, newPassword) =>
                     handleChangeUserPassword(
                       activeProfile.userId,
@@ -5340,8 +6179,13 @@ export default function App() {
                       organizerPassword !== null ||
                       Boolean(profileState.credentials[DEMO_USERS.Organizer.id])
                     }
+                    enterpriseNotificationPrefs={enterpriseNotificationPrefs}
                     onSaveProfile={handleSaveOrganizerProfile}
                     onUpdateSettings={setOrganizerSettings}
+                    onUpdateEnterpriseNotificationPrefs={
+                      handleUpdateEnterpriseNotificationPrefs
+                    }
+                    onTestNotificationSound={handleTestNotificationToast}
                     onChangeSection={(nextSection) => {
                       setSettingsSection(nextSection);
                       setActiveRoute(
@@ -5369,8 +6213,12 @@ export default function App() {
                         (request) => request.id === activeProfile.userId
                       )
                     }
+                    enterpriseNotificationPrefs={enterpriseNotificationPrefs}
                     onSaveProfile={handleSaveUserProfile}
-                    onSaveNotifications={handleSaveProfileNotifications}
+                    onUpdateEnterpriseNotificationPrefs={
+                      handleUpdateEnterpriseNotificationPrefs
+                    }
+                    onTestNotificationSound={handleTestNotificationToast}
                     onChangePassword={(currentPassword, newPassword) =>
                       handleChangeUserPassword(
                         activeProfile.userId,
@@ -5380,7 +6228,7 @@ export default function App() {
                     }
                     onChangeSection={(nextSection) => {
                       setSettingsSection(nextSection);
-                      if (mode === 'organizer') {
+                      if (mode === 'organizer' && activeRole === 'Super Admin') {
                         setActiveRoute(
                           nextSection === 'security'
                             ? 'security-settings'
@@ -5406,9 +6254,9 @@ export default function App() {
                           ? 'Super Admin Dashboard'
                           : 'Organizer Dashboard'
                       }
-                      announcements={activeAnnouncements}
-                      activityFeed={activityFeed}
-                      failedCount={failedDeliveryCount}
+                      announcements={scopedActiveAnnouncements}
+                      activityFeed={dashboardActivityFeed}
+                      failedCount={scopedFailedDeliveryCount}
                       onlineUsersCount={onlineUsersCount}
                       onlineOrganizersCount={onlineOrganizersCount}
                       onlineParticipantsCount={onlineParticipantsCount}
@@ -5424,7 +6272,8 @@ export default function App() {
                   {activeRoute === 'announcements' && (
                     <AnnouncementsPage
                       key={activeRoute}
-                      announcements={announcements}
+                      announcements={scopedManagementAnnouncements}
+                      rooms={rooms}
                       initialTab="All"
                       activeRole={activeRole}
                       currentUserId={activeProfileUserId}
@@ -5447,6 +6296,7 @@ export default function App() {
                       approvalStatus={activeProfile.approvalStatus ?? 'Approved'}
                       activeUser={inboxUser}
                       announcements={activeAnnouncements}
+                      rooms={rooms}
                       initialSelectedNoticeId={inboxTargetNoticeId}
                       preferences={
                         preferencesByRole[inboxRole] ??
@@ -5555,6 +6405,13 @@ export default function App() {
                       senderId={activeProfileUserId}
                       senderName={activeProfile.fullName}
                       senderRole={activeRole}
+                      profiles={managedProfiles}
+                      rooms={rooms}
+                      onNavigateRooms={
+                        activeRole === 'Super Admin'
+                          ? () => setActiveRoute('rooms')
+                          : undefined
+                      }
                       onSaveAnnouncement={handleSaveAnnouncement}
                       onCancel={() => {
                         setEditingAnnouncement(null);
@@ -5566,9 +6423,10 @@ export default function App() {
                   {activeRoute === 'delivery-detail' &&
                     selectedAnnouncement && (
                       <DeliveryDetailPage
-                        announcements={activeAnnouncements}
+                        announcements={scopedActiveAnnouncements}
                         selectedAnnouncement={selectedAnnouncement}
-                        deliveries={deliveries}
+                        deliveries={scopedDeliveries}
+                        retryHistory={scopedRetryHistory}
                         activeRole={activeRole}
                         currentUserId={activeProfileUserId}
                         onSelectAnnouncement={(id) =>
@@ -5625,14 +6483,27 @@ export default function App() {
 
                   {activeRoute === 'analytics' && (
                     <AnalyticsPage
-                      announcements={activeAnnouncements}
+                      announcements={scopedActiveAnnouncements}
                       notificationEvents={analyticsNotificationEvents}
                       profiles={managedProfiles}
+                      rooms={rooms}
                     />
                   )}
 
+                  {activeRoute === 'rooms' &&
+                    activeRole === 'Super Admin' &&
+                    activeProfile.approvalStatus === 'Approved' && (
+                      <RoomsManagementPage
+                        rooms={rooms}
+                        onUpsertRoom={handleUpsertRoom}
+                        onToggleRoomActive={handleToggleRoomActive}
+                        onDeleteRoom={handleDeleteRoom}
+                      />
+                    )}
+
                   {(activeRoute === 'audit-logs' ||
-                    activeRoute === 'activity-logs') && (
+                    activeRoute === 'activity-logs') &&
+                    activeRole === 'Super Admin' && (
                     <MonitoringLogsPage
                       view={activeRoute === 'audit-logs' ? 'audit' : 'activity'}
                       profiles={managedProfiles}
@@ -5754,7 +6625,7 @@ export default function App() {
                             : 'deleted'
                       }
                       activeRole={activeRole}
-                      announcements={announcements}
+                      announcements={scopedManagementAnnouncements}
                       requests={registrationRequests}
                       deletedProfiles={deletedProfiles}
                       archivedProfiles={archivedProfiles}
@@ -5902,10 +6773,8 @@ export default function App() {
 
                   {(activeRoute === 'integrations' ||
                     activeRoute === 'system-health') &&
-                    canAccessOrganizerWorkspace(
-                      activeRole,
-                      activeProfile.approvalStatus
-                    ) && (
+                    activeRole === 'Super Admin' &&
+                    activeProfile.approvalStatus === 'Approved' && (
                       <SystemHealthPage
                         activeRole={activeRole}
                         profiles={managedProfiles}
@@ -5941,6 +6810,7 @@ export default function App() {
                   approvalStatus={activeProfile.approvalStatus ?? 'Approved'}
                   activeUser={inboxUser}
                   announcements={activeAnnouncements}
+                  rooms={rooms}
                   initialSelectedNoticeId={inboxTargetNoticeId}
                   preferences={
                     preferencesByRole[inboxRole] ??
@@ -6020,6 +6890,33 @@ export default function App() {
           </div>
         </main>
       </div>
+
+      <EnterpriseNotificationToastStack
+        toasts={enterpriseToasts}
+        onDismiss={(id) =>
+          setEnterpriseToasts((prev) => prev.filter((t) => t.id !== id))
+        }
+        onOpenToast={(toast) => {
+          if (toast.actionRoute === 'inbox') {
+            setInboxTargetNoticeId(toast.targetId ?? null);
+            setActiveRoute('inbox');
+          } else if (
+            toast.actionRoute &&
+            canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)
+          ) {
+            setMode('organizer');
+            setActiveRoute(toast.actionRoute as AppRoute);
+          } else if (toast.actionRoute === 'dashboard') {
+            setActiveRoute('dashboard');
+          }
+        }}
+        onAudioUnlocked={() => {
+          setEnterpriseToasts((prev) =>
+            prev.map((t) => ({ ...t, audioLocked: false }))
+          );
+          showToast('Notification browser sound enabled.');
+        }}
+      />
 
       {toastBanner}
     </div>

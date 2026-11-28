@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   Bell,
+  BellOff,
   ChevronDown,
   CircleHelp,
   Inbox,
@@ -8,12 +9,14 @@ import {
   LogOut,
   Menu,
   Moon,
+  MoonStar,
   Palette,
   Radio,
   Settings,
   ShieldCheck,
   Sun,
   UserRound,
+  Volume2,
 } from 'lucide-react';
 import { Modal } from './Modal';
 import type { ApprovalStatus, SettingsSection, WorkspaceRole } from '../types';
@@ -27,10 +30,13 @@ interface TopHeaderProps {
   approvalStatus?: ApprovalStatus;
   activeAttendeeRoute?: string;
   unreadCount: number;
+  dndEnabled?: boolean;
+  soundSilenced?: boolean;
   isDark: boolean;
   userName: string;
   avatarUrl?: string;
   onToggleTheme: () => void;
+  onToggleDnd?: () => void;
   onChangeMode: (mode: WorkspaceMode) => void;
   onNavigateAttendeeRoute?: (route: AttendeeRoute) => void;
   onOpenLogin: () => void;
@@ -46,10 +52,13 @@ export function TopHeader({
   approvalStatus = 'Approved',
   activeAttendeeRoute = 'dashboard',
   unreadCount,
+  dndEnabled = false,
+  soundSilenced = false,
   isDark,
   userName,
   avatarUrl,
   onToggleTheme,
+  onToggleDnd,
   onChangeMode,
   onNavigateAttendeeRoute,
   onOpenLogin,
@@ -241,6 +250,42 @@ export function TopHeader({
             </div>
           )}
 
+          {onToggleDnd && (
+            <button
+              type="button"
+              onClick={onToggleDnd}
+              title={
+                dndEnabled
+                  ? 'Do Not Disturb is active — click to resume sound & popup alerts'
+                  : soundSilenced
+                    ? 'Notification sounds muted — click to toggle Do Not Disturb'
+                    : 'Live notification sounds active — click to enable Do Not Disturb'
+              }
+              aria-label={
+                dndEnabled
+                  ? 'Disable Do Not Disturb mode'
+                  : 'Enable Do Not Disturb mode'
+              }
+              aria-pressed={dndEnabled}
+              className={`hidden h-9 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-semibold transition-colors sm:inline-flex ${
+                dndEnabled
+                  ? 'border-amber-400/50 bg-amber-500/15 text-amber-200 hover:bg-amber-500/25'
+                  : 'border-emerald-800/80 bg-[#073626] text-emerald-100/85 hover:border-emerald-400/70 hover:bg-emerald-900/60'
+              }`}
+            >
+              {dndEnabled ? (
+                <MoonStar className="h-3.5 w-3.5 text-amber-300" aria-hidden="true" />
+              ) : soundSilenced ? (
+                <BellOff className="h-3.5 w-3.5 text-emerald-300/75" aria-hidden="true" />
+              ) : (
+                <Volume2 className="h-3.5 w-3.5 text-emerald-300" aria-hidden="true" />
+              )}
+              <span className="hidden lg:inline">
+                {dndEnabled ? 'DND On' : soundSilenced ? 'Muted' : 'Sound On'}
+              </span>
+            </button>
+          )}
+
           <div className="relative" ref={accountMenuRef}>
             <button
               type="button"
@@ -358,8 +403,27 @@ export function TopHeader({
                       className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-[13px] transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 dark:hover:bg-emerald-900/40"
                     >
                       <Bell className="h-4 w-4 text-slate-500 dark:text-emerald-300/75" />
-                      Notification Preferences
+                      Notification &amp; Sound Preferences
                     </button>
+                    {onToggleDnd && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setAccountMenuOpen(false);
+                          onToggleDnd();
+                        }}
+                        className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left text-[13px] transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 dark:hover:bg-emerald-900/40"
+                      >
+                        <span className="flex items-center gap-3">
+                          <MoonStar className="h-4 w-4 text-slate-500 dark:text-emerald-300/75" />
+                          Do Not Disturb
+                        </span>
+                        <span className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
+                          {dndEnabled ? 'On' : 'Off'}
+                        </span>
+                      </button>
+                    )}
                     <button
                       type="button"
                       role="menuitem"

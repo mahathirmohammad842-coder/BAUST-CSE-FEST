@@ -16,7 +16,7 @@ import {
 import { PriorityBadge, StatusBadge } from '../components/Badge';
 import { ChannelPill } from '../components/ChannelPill';
 import { StatCard } from '../components/StatCard';
-import { ALL_CHANNELS, DAILY_ENGAGEMENT_TREND } from '../data/mockData';
+import { ALL_CHANNELS } from '../data/mockData';
 import type {
   ActivityFeedEntry,
   Announcement,
@@ -27,6 +27,14 @@ import {
   formatPercent,
   summarizeTargeting,
 } from '../utils/formatters';
+
+interface EngagementTrendPoint {
+  label: string;
+  sent: number;
+  delivered: number;
+  opened: number;
+  clicked: number;
+}
 
 interface DashboardPageProps {
   title?: string;
@@ -55,9 +63,7 @@ export function DashboardPage({
   onInspectAnnouncement,
   onViewAllAnnouncements,
 }: DashboardPageProps) {
-  const [hoveredTrendIdx, setHoveredTrendIdx] = useState<number>(
-    DAILY_ENGAGEMENT_TREND.length - 1
-  );
+  const [hoveredTrendIdx, setHoveredTrendIdx] = useState<number | null>(null);
   const [selectedChannel, setSelectedChannel] = useState<
     NotificationChannel | 'All'
   >('All');
@@ -128,8 +134,54 @@ export function DashboardPage({
     return activityFeed.filter((entry) => entry.channel === selectedChannel);
   }, [activityFeed, selectedChannel]);
 
+  const dailyTrend = useMemo<EngagementTrendPoint[]>(() => {
+    const dispatched = announcements.filter(
+      (a) => a.status !== 'Draft' && a.status !== 'Scheduled'
+    );
+    if (dispatched.length === 0) return [];
+    const buckets = new Map<
+      string,
+      EngagementTrendPoint & { sortKey: string }
+    >();
+    const dayKeyFmt = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Dhaka',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    const labelFmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Dhaka',
+      month: 'short',
+      day: 'numeric',
+    });
+    for (const ann of dispatched) {
+      const iso = ann.publishedAt || ann.createdAt;
+      const dateObj = new Date(iso);
+      const validDate = Number.isNaN(dateObj.getTime()) ? new Date() : dateObj;
+      const sortKey = dayKeyFmt.format(validDate);
+      const label = labelFmt.format(validDate);
+      const prev = buckets.get(sortKey) ?? {
+        label,
+        sortKey,
+        sent: 0,
+        delivered: 0,
+        opened: 0,
+        clicked: 0,
+      };
+      prev.sent += ann.totalRecipients;
+      prev.delivered += ann.deliveredCount;
+      prev.opened += ann.readCount;
+      prev.clicked += ann.clickCount;
+      buckets.set(sortKey, prev);
+    }
+    return Array.from(buckets.values())
+      .sort((a, b) => a.sortKey.localeCompare(b.sortKey))
+      .slice(-6)
+      .map(({ sortKey: _sortKey, ...rest }) => rest);
+  }, [announcements]);
+
   const maxTrendValue = Math.max(
-    ...DAILY_ENGAGEMENT_TREND.map((d) => d.sent),
+    ...dailyTrend.map((d) => Math.max(d.sent, d.delivered, d.opened, d.clicked)),
     1
   );
   const svgWidth = 600;
@@ -141,20 +193,29 @@ export function DashboardPage({
 
   const getCoords = (index: number, value: number) => {
     const x =
-      padX +
-      (index / Math.max(DAILY_ENGAGEMENT_TREND.length - 1, 1)) * chartW;
+      dailyTrend.length <= 1
+        ? padX + chartW / 2
+        : padX + (index / Math.max(dailyTrend.length - 1, 1)) * chartW;
     const y = padY + chartH - (value / maxTrendValue) * chartH;
     return { x, y };
   };
 
   const buildPolyline = (key: 'delivered' | 'opened' | 'clicked') =>
-    DAILY_ENGAGEMENT_TREND.map((pt, idx) => {
-      const { x, y } = getCoords(idx, pt[key]);
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    }).join(' ');
+    dailyTrend
+      .map((pt, idx) => {
+        const { x, y } = getCoords(idx, pt[key]);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      })
+      .join(' ');
 
-  const hoveredPoint = DAILY_ENGAGEMENT_TREND[hoveredTrendIdx];
-  const colStep = chartW / Math.max(DAILY_ENGAGEMENT_TREND.length - 1, 1);
+  const effectiveHoveredIdx =
+    hoveredTrendIdx !== null &&
+    hoveredTrendIdx >= 0 &&
+    hoveredTrendIdx < dailyTrend.length
+      ? hoveredTrendIdx
+      : Math.max(dailyTrend.length - 1, 0);
+  const hoveredPoint = dailyTrend[effectiveHoveredIdx];
+  const colStep = chartW / Math.max(dailyTrend.length - 1, 1);
 
   return (
     <div className="space-y-4">
@@ -433,153 +494,165 @@ export function DashboardPage({
               </div>
             </div>
 
-            <div className="mt-3 pt-1">
-              <svg
-                viewBox={`0 0 ${svgWidth} ${svgHeight}`}
-                className="h-44 w-full overflow-visible"
-                role="img"
-                aria-label="Engagement over time chart"
-              >
-                {[0.25, 0.5, 0.75, 1].map((fraction) => {
-                  const y = padY + chartH - fraction * chartH;
-                  const val = Math.round(maxTrendValue * fraction);
-                  return (
-                    <g key={fraction}>
-                      <line
-                        x1={padX}
-                        y1={y}
-                        x2={svgWidth - padX}
-                        y2={y}
-                        className="stroke-emerald-100 dark:stroke-emerald-900/60"
-                        strokeDasharray="3 3"
-                      />
-                      <text
-                        x={padX - 8}
-                        y={y + 4}
-                        textAnchor="end"
-                        className="fill-emerald-900/45 dark:fill-emerald-300/55 font-mono text-[10px]"
-                      >
-                        {val}
-                      </text>
-                    </g>
-                  );
-                })}
-
-                <polyline
-                  fill="none"
-                  className="stroke-[#064E3B] dark:stroke-emerald-400"
-                  strokeWidth="2.5"
-                  strokeLinejoin="round"
-                  strokeLinecap="round"
-                  points={buildPolyline('delivered')}
-                />
-                <polyline
-                  fill="none"
-                  className="stroke-[#10B981] dark:stroke-emerald-300"
-                  strokeWidth="2.5"
-                  strokeLinejoin="round"
-                  strokeLinecap="round"
-                  points={buildPolyline('opened')}
-                />
-                <polyline
-                  fill="none"
-                  className="stroke-[#0D9488] dark:stroke-teal-400"
-                  strokeWidth="2.5"
-                  strokeLinejoin="round"
-                  strokeLinecap="round"
-                  points={buildPolyline('clicked')}
-                />
-
-                {DAILY_ENGAGEMENT_TREND.map((pt, idx) => {
-                  const d = getCoords(idx, pt.delivered);
-                  const o = getCoords(idx, pt.opened);
-                  const c = getCoords(idx, pt.clicked);
-                  const isActive = idx === hoveredTrendIdx;
-
-                  return (
-                    <g
-                      key={pt.label}
-                      className="cursor-pointer"
-                      onMouseEnter={() => setHoveredTrendIdx(idx)}
-                      onClick={() => setHoveredTrendIdx(idx)}
-                    >
-                      <rect
-                        x={d.x - colStep / 2}
-                        y={padY}
-                        width={colStep}
-                        height={chartH + 18}
-                        fill="transparent"
-                      />
-                      {isActive && (
+            {dailyTrend.length === 0 ? (
+              <div className="mt-4 flex h-44 items-center justify-center rounded-lg border border-dashed border-emerald-200/80 bg-emerald-50/30 px-4 text-center text-xs text-emerald-900/60 dark:border-emerald-800/60 dark:bg-[#041811] dark:text-emerald-300/65">
+                No dispatched notices yet. Real daily delivery, open, and click telemetry will appear here once notices are published.
+              </div>
+            ) : (
+              <div className="mt-3 pt-1">
+                <svg
+                  viewBox={`0 0 ${svgWidth} ${svgHeight}`}
+                  className="h-44 w-full overflow-visible"
+                  role="img"
+                  aria-label="Engagement over time chart"
+                >
+                  {[0.25, 0.5, 0.75, 1].map((fraction) => {
+                    const y = padY + chartH - fraction * chartH;
+                    const val = Math.round(maxTrendValue * fraction);
+                    return (
+                      <g key={fraction}>
                         <line
-                          x1={d.x}
-                          y1={padY}
-                          x2={d.x}
-                          y2={padY + chartH}
-                          className="stroke-emerald-200 dark:stroke-emerald-700"
+                          x1={padX}
+                          y1={y}
+                          x2={svgWidth - padX}
+                          y2={y}
+                          className="stroke-emerald-100 dark:stroke-emerald-900/60"
+                          strokeDasharray="3 3"
+                        />
+                        <text
+                          x={padX - 8}
+                          y={y + 4}
+                          textAnchor="end"
+                          className="fill-emerald-900/45 dark:fill-emerald-300/55 font-mono text-[10px]"
+                        >
+                          {val}
+                        </text>
+                      </g>
+                    );
+                  })}
+
+                  {dailyTrend.length > 1 && (
+                    <>
+                      <polyline
+                        fill="none"
+                        className="stroke-[#064E3B] dark:stroke-emerald-400"
+                        strokeWidth="2.5"
+                        strokeLinejoin="round"
+                        strokeLinecap="round"
+                        points={buildPolyline('delivered')}
+                      />
+                      <polyline
+                        fill="none"
+                        className="stroke-[#10B981] dark:stroke-emerald-300"
+                        strokeWidth="2.5"
+                        strokeLinejoin="round"
+                        strokeLinecap="round"
+                        points={buildPolyline('opened')}
+                      />
+                      <polyline
+                        fill="none"
+                        className="stroke-[#0D9488] dark:stroke-teal-400"
+                        strokeWidth="2.5"
+                        strokeLinejoin="round"
+                        strokeLinecap="round"
+                        points={buildPolyline('clicked')}
+                      />
+                    </>
+                  )}
+
+                  {dailyTrend.map((pt, idx) => {
+                    const d = getCoords(idx, pt.delivered);
+                    const o = getCoords(idx, pt.opened);
+                    const c = getCoords(idx, pt.clicked);
+                    const isActive = idx === effectiveHoveredIdx;
+
+                    return (
+                      <g
+                        key={pt.label}
+                        className="cursor-pointer"
+                        onMouseEnter={() => setHoveredTrendIdx(idx)}
+                        onClick={() => setHoveredTrendIdx(idx)}
+                      >
+                        <rect
+                          x={d.x - colStep / 2}
+                          y={padY}
+                          width={colStep}
+                          height={chartH + 18}
+                          fill="transparent"
+                        />
+                        {isActive && (
+                          <line
+                            x1={d.x}
+                            y1={padY}
+                            x2={d.x}
+                            y2={padY + chartH}
+                            className="stroke-emerald-200 dark:stroke-emerald-700"
+                            strokeWidth="1.5"
+                          />
+                        )}
+                        <circle
+                          cx={d.x}
+                          cy={d.y}
+                          r={isActive ? 5 : 3.5}
+                          className="fill-[#064E3B] dark:fill-emerald-400 stroke-white dark:stroke-[#061D15]"
                           strokeWidth="1.5"
                         />
-                      )}
-                      <circle
-                        cx={d.x}
-                        cy={d.y}
-                        r={isActive ? 5 : 3.5}
-                        className="fill-[#064E3B] dark:fill-emerald-400 stroke-white dark:stroke-[#061D15]"
-                        strokeWidth="1.5"
-                      />
-                      <circle
-                        cx={o.x}
-                        cy={o.y}
-                        r={isActive ? 5 : 3.5}
-                        className="fill-[#10B981] dark:fill-emerald-300 stroke-white dark:stroke-[#061D15]"
-                        strokeWidth="1.5"
-                      />
-                      <circle
-                        cx={c.x}
-                        cy={c.y}
-                        r={isActive ? 5 : 3.5}
-                        className="fill-[#0D9488] dark:fill-teal-400 stroke-white dark:stroke-[#061D15]"
-                        strokeWidth="1.5"
-                      />
-                      <text
-                        x={d.x}
-                        y={svgHeight - 2}
-                        textAnchor="middle"
-                        className={`font-sans text-[11px] ${
-                          isActive
-                            ? 'fill-emerald-950 dark:fill-emerald-50 font-semibold'
-                            : 'fill-emerald-900/55 dark:fill-emerald-300/60'
-                        }`}
-                      >
-                        {pt.label}
-                      </text>
-                    </g>
-                  );
-                })}
-              </svg>
-            </div>
+                        <circle
+                          cx={o.x}
+                          cy={o.y}
+                          r={isActive ? 5 : 3.5}
+                          className="fill-[#10B981] dark:fill-emerald-300 stroke-white dark:stroke-[#061D15]"
+                          strokeWidth="1.5"
+                        />
+                        <circle
+                          cx={c.x}
+                          cy={c.y}
+                          r={isActive ? 5 : 3.5}
+                          className="fill-[#0D9488] dark:fill-teal-400 stroke-white dark:stroke-[#061D15]"
+                          strokeWidth="1.5"
+                        />
+                        <text
+                          x={d.x}
+                          y={svgHeight - 2}
+                          textAnchor="middle"
+                          className={`font-sans text-[11px] ${
+                            isActive
+                              ? 'fill-emerald-950 dark:fill-emerald-50 font-semibold'
+                              : 'fill-emerald-900/55 dark:fill-emerald-300/60'
+                          }`}
+                        >
+                          {pt.label}
+                        </text>
+                      </g>
+                    );
+                  })}
+                </svg>
+              </div>
+            )}
           </div>
 
-          <div className="mt-3 grid grid-cols-3 gap-3 border-t border-emerald-100 pt-3 text-xs dark:border-emerald-800/60 tabular-nums">
-            <div>
-              <div className="text-emerald-900/60 dark:text-emerald-300/65">{hoveredPoint.label} Delivered</div>
-              <div className="mt-0.5 font-display text-base font-bold text-emerald-950 dark:text-emerald-50">
-                {hoveredPoint.delivered.toLocaleString()}
+          {hoveredPoint && (
+            <div className="mt-3 grid grid-cols-3 gap-3 border-t border-emerald-100 pt-3 text-xs dark:border-emerald-800/60 tabular-nums">
+              <div>
+                <div className="text-emerald-900/60 dark:text-emerald-300/65">{hoveredPoint.label} Delivered</div>
+                <div className="mt-0.5 font-display text-base font-bold text-emerald-950 dark:text-emerald-50">
+                  {hoveredPoint.delivered.toLocaleString()}
+                </div>
+              </div>
+              <div>
+                <div className="text-emerald-900/60 dark:text-emerald-300/65">Opened</div>
+                <div className="mt-0.5 font-display text-base font-bold text-emerald-700 dark:text-emerald-400">
+                  {hoveredPoint.opened.toLocaleString()}
+                </div>
+              </div>
+              <div>
+                <div className="text-emerald-900/60 dark:text-emerald-300/65">Link / File Clicks</div>
+                <div className="mt-0.5 font-display text-base font-bold text-teal-700 dark:text-teal-400">
+                  {hoveredPoint.clicked.toLocaleString()}
+                </div>
               </div>
             </div>
-            <div>
-              <div className="text-emerald-900/60 dark:text-emerald-300/65">Opened</div>
-              <div className="mt-0.5 font-display text-base font-bold text-emerald-700 dark:text-emerald-400">
-                {hoveredPoint.opened.toLocaleString()}
-              </div>
-            </div>
-            <div>
-              <div className="text-emerald-900/60 dark:text-emerald-300/65">Link / File Clicks</div>
-              <div className="mt-0.5 font-display text-base font-bold text-teal-700 dark:text-teal-400">
-                {hoveredPoint.clicked.toLocaleString()}
-              </div>
-            </div>
-          </div>
+          )}
         </section>
       </div>
 

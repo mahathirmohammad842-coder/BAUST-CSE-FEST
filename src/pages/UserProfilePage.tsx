@@ -51,6 +51,7 @@ interface UserProfilePageProps {
   hasPasswordCredential: boolean;
   onSave: (profile: UserProfile) => void;
   onSaveNotifications: (profile: UserProfile) => void;
+  onOpenNotificationSettings?: () => void;
   onChangePassword: (
     currentPassword: string,
     newPassword: string
@@ -665,6 +666,7 @@ export function UserProfilePage({
   hasPasswordCredential,
   onSave,
   onSaveNotifications,
+  onOpenNotificationSettings,
   onChangePassword,
   isDark,
   onToggleTheme,
@@ -996,6 +998,15 @@ export function UserProfilePage({
               onChange={() => updatePreference(key, !profile.notificationPreferences[key])}
             />
           ))}
+          {onOpenNotificationSettings && (
+            <button
+              type="button"
+              onClick={onOpenNotificationSettings}
+              className="mt-3 inline-flex min-h-9 w-full items-center justify-center gap-2 rounded-lg border border-emerald-200 px-3 py-2 text-xs font-semibold text-emerald-900 transition hover:bg-emerald-50 dark:border-emerald-800/70 dark:text-emerald-100 dark:hover:bg-emerald-950/40"
+            >
+              Configure Notification Sounds &amp; DND
+            </button>
+          )}
         </section>
 
         <section className="min-w-0 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm dark:border-emerald-900/70 dark:bg-[#071D16]">

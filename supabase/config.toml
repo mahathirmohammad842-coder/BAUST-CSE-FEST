@@ -1,4 +1,4 @@
-project_id = "baust-cse-fest-notification-system"
+project_id = "qnxtsnbpzxxmvhbgbqdm"
 
 [api]
 enabled = true
@@ -17,3 +17,9 @@ schema_paths = []
 
 [db.seed]
 enabled = false
+
+[functions.admin-delete-user]
+verify_jwt = true
+
+[functions.admin-reset-user-password]
+verify_jwt = true

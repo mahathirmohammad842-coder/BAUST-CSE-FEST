@@ -57,6 +57,7 @@ import type {
   OrganizerContact,
   OrganizerMessageThread,
   PresenceUserEntry,
+  RoomRecord,
   SystemUser,
   UserPreferenceMatrix,
   WorkspaceRole,
@@ -80,6 +81,7 @@ interface UserInboxPageProps {
   approvalStatus?: ApprovalStatus;
   activeUser: SystemUser;
   announcements: Announcement[];
+  rooms?: RoomRecord[];
   initialSelectedNoticeId?: string | null;
   preferences: UserPreferenceMatrix;
   notificationStates: Record<string, PersonalNotificationState>;
@@ -201,6 +203,7 @@ export function UserInboxPage({
   approvalStatus = 'Approved',
   activeUser,
   announcements,
+  rooms = [],
   initialSelectedNoticeId = null,
   preferences,
   notificationStates,
@@ -257,9 +260,14 @@ export function UserInboxPage({
   >('messages');
   const quickMenuRef = useRef<HTMLDivElement>(null);
 
+  const roomOptions = useMemo(() => {
+    const active = rooms.filter((r) => r.isActive).map((r) => r.name);
+    return active.length > 0 ? active : BAUST_ROOMS;
+  }, [rooms]);
+
   const [incidentType, setIncidentType] = useState('Lab / Hardware Issue');
   const [incidentRoom, setIncidentRoom] = useState(
-    activeUser.assignedRoom || BAUST_ROOMS[0]
+    activeUser.assignedRoom || roomOptions[0] || ''
   );
   const [incidentSeverity, setIncidentSeverity] =
     useState<IncidentSeverity>('Medium');
@@ -287,11 +295,11 @@ export function UserInboxPage({
     setIsSearchFocused(false);
     setQuickMenuOpen(false);
     setMobileReaderOpen(false);
-    setIncidentRoom(activeUser.assignedRoom || BAUST_ROOMS[0]);
+    setIncidentRoom(activeUser.assignedRoom || roomOptions[0] || '');
     setSelectedNotificationIds([]);
     setFilterPill('all');
     setLabelFilter('');
-  }, [activeRole, activeUser.assignedRoom]);
+  }, [activeRole, activeUser.assignedRoom, roomOptions]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setReminderTime(Date.now()), 30_000);
@@ -779,11 +787,9 @@ export function UserInboxPage({
     flashFeedback(`Opened attachment: ${fileName}`);
   };
 
-  const handleSimulatedActionLink = (noticeId: string, label: string) => {
+  const handleActionLink = (noticeId: string, label: string) => {
     onTrackClick(noticeId);
-    flashFeedback(
-      `Opened action link "${label}" (click tracked in demo metrics)`
-    );
+    flashFeedback(`Opened "${label}"`);
   };
 
   const availableLabels = Array.from(
@@ -2077,7 +2083,7 @@ export function UserInboxPage({
                   <button
                     type="button"
                     onClick={() =>
-                      handleSimulatedActionLink(
+                      handleActionLink(
                         selectedNotice.id,
                         selectedNotice.actionLabel || 'Open'
                       )
@@ -2577,7 +2583,7 @@ export function UserInboxPage({
               onChange={(e) => setIncidentRoom(e.target.value)}
               className="mt-1 w-full rounded-lg border border-emerald-200/80 bg-white px-3 py-2 text-sm text-emerald-950 focus:border-emerald-700 focus:outline-none dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50 dark:focus:border-emerald-400"
             >
-              {BAUST_ROOMS.map((r) => (
+              {roomOptions.map((r) => (
                 <option key={r} value={r}>
                   {r}
                 </option>

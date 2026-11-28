@@ -8,11 +8,15 @@ import type {
   ApprovalLogAction,
   ApprovalStatus,
   Attachment,
+  EnterpriseNotificationPreferences,
   EventInfoRequest,
   IncidentReport,
   IncidentSeverity,
   IncidentStatus,
   InfoRequestStatus,
+  NotificationChannel,
+  NotificationDelivery,
+  NotificationDeliveryLogStatus,
   OrganizerContact,
   OrganizerMessageReply,
   OrganizerMessageThread,
@@ -21,12 +25,15 @@ import type {
   ProfilePersonalInfo,
   ProfileSocialLinks,
   RegistrableRole,
+  RetryHistoryEntry,
   RoleChangeLog,
   RolePermissionEntry,
+  RoomRecord,
   StaffNotificationAlert,
   UserDeletionAuditAction,
   UserDeletionAuditLog,
   UserProfile,
+  UserRole,
   VerificationLog,
   VerificationStatus,
   WorkspaceRole,
@@ -35,6 +42,7 @@ import {
   isEmailLikeValue,
   sanitizeProfileTextField,
 } from '../utils/profileStore';
+import { normalizeEnterpriseNotificationPreferences } from './notificationSound';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 const supabasePublishableKey = import.meta.env
@@ -702,13 +710,41 @@ export async function invokeAdminPermanentDeleteUser(
   }>('admin-delete-user', {
     body: { userId, notes },
   });
-  if (error) {
-    const detail = await extractFunctionsInvokeError(error);
-    throw new Error(detail);
+
+  if (!error) {
+    if (data?.error) {
+      throw new Error(data.error);
+    }
+    return;
   }
-  if (data?.error) {
-    throw new Error(data.error);
+
+  const detail = await extractFunctionsInvokeError(error);
+  const edgeUnavailable =
+    detail.includes('Failed to send a request to the Edge Function') ||
+    detail.includes('404') ||
+    detail.includes('NOT_FOUND') ||
+    detail.includes('FunctionsFetchError');
+
+  if (edgeUnavailable) {
+    const { error: rpcError } = await supabase.rpc(
+      'super_admin_permanent_delete_user',
+      {
+        target_user_id: userId,
+        delete_notes: notes,
+      }
+    );
+    if (!rpcError) {
+      return;
+    }
+    if (isMissingRelationError(rpcError)) {
+      throw new Error(
+        'Permanent delete requires deploying the "admin-delete-user" Edge Function or applying database migration 20261128120000.'
+      );
+    }
+    throw new Error(rpcError.message);
   }
+
+  throw new Error(detail);
 }
 
 export async function fetchCloudAnnouncements(): Promise<Announcement[]> {
@@ -873,6 +909,7 @@ export async function extractFunctionsInvokeError(error: unknown): Promise<strin
     'context' in error &&
     error.context instanceof Response
   ) {
+    const status = error.context.status;
     try {
       const cloned = error.context.clone();
       const payload: unknown = await cloned.json();
@@ -885,7 +922,9 @@ export async function extractFunctionsInvokeError(error: unknown): Promise<strin
         return payload.error;
       }
     } catch {
-      // Fall back to standard message below.
+      if (status === 404) {
+        return 'Edge Function returned HTTP 404 (NOT_FOUND).';
+      }
     }
   }
   if (error instanceof Error) return error.message;
@@ -966,6 +1005,9 @@ export async function runSupabaseConnectivityCheck(): Promise<SupabaseDiagnostic
   const tables: { id: string; table: string; label: string }[] = [
     { id: 'db-profiles', table: 'user_profiles', label: 'Table: user_profiles (RLS)' },
     { id: 'db-announcements', table: 'announcements', label: 'Table: announcements (RLS)' },
+    { id: 'db-rooms', table: 'rooms', label: 'Table: rooms (Dynamic Venues)' },
+    { id: 'db-delivery-logs', table: 'notification_delivery_logs', label: 'Table: notification_delivery_logs (Gateway)' },
+    { id: 'db-retry-history', table: 'notification_retry_history', label: 'Table: notification_retry_history (Audit)' },
     { id: 'db-actions', table: 'personal_notification_actions', label: 'Table: personal_notification_actions (RLS)' },
     { id: 'db-permissions', table: 'role_permissions', label: 'Table: role_permissions (RBAC)' },
     { id: 'db-activity', table: 'activity_logs', label: 'Table: activity_logs (Audit)' },
@@ -1006,37 +1048,51 @@ export async function runSupabaseConnectivityCheck(): Promise<SupabaseDiagnostic
       : `Private bucket accessible (${files?.length ?? 0} top-level item sampled)`,
   });
 
-  // 5. Edge Function check (admin-reset-user-password)
-  const fnStart = performance.now();
-  try {
-    const fnResponse = await fetch(
-      `${supabaseUrl}/functions/v1/admin-reset-user-password`,
-      {
-        method: 'OPTIONS',
-        headers: { apikey: supabasePublishableKey },
-      }
-    );
-    const fnLatency = Math.round(performance.now() - fnStart);
-    items.push({
+  // 5. Edge Function checks
+  const edgeFunctions = [
+    {
+      id: 'edge-fn-delete',
+      name: 'admin-delete-user',
+      fallbackNote: 'SQL RPC fallback (super_admin_permanent_delete_user) active when migration is applied.',
+    },
+    {
       id: 'edge-fn',
-      label: 'Edge Function: admin-reset-user-password',
-      status: fnResponse.ok ? 'ok' : 'warning',
-      latencyMs: fnLatency,
-      detail: fnResponse.ok
-        ? 'Deployed and responding to preflight checks.'
-        : `Responded with HTTP ${fnResponse.status}. Deploy the function via Supabase CLI if password reset is needed.`,
-    });
-  } catch (error) {
-    items.push({
-      id: 'edge-fn',
-      label: 'Edge Function: admin-reset-user-password',
-      status: 'warning',
-      latencyMs: Math.round(performance.now() - fnStart),
-      detail:
-        error instanceof Error
-          ? `Not reachable (${error.message}). Password recovery remains available.`
-          : 'Not reachable.',
-    });
+      name: 'admin-reset-user-password',
+      fallbackNote: 'Password recovery email remains available.',
+    },
+  ];
+  for (const fn of edgeFunctions) {
+    const fnStart = performance.now();
+    try {
+      const fnResponse = await fetch(
+        `${supabaseUrl}/functions/v1/${fn.name}`,
+        {
+          method: 'OPTIONS',
+          headers: { apikey: supabasePublishableKey },
+        }
+      );
+      const fnLatency = Math.round(performance.now() - fnStart);
+      items.push({
+        id: fn.id,
+        label: `Edge Function: ${fn.name}`,
+        status: fnResponse.ok ? 'ok' : 'warning',
+        latencyMs: fnLatency,
+        detail: fnResponse.ok
+          ? 'Deployed and responding to preflight checks.'
+          : `HTTP ${fnResponse.status} (not deployed). ${fn.fallbackNote}`,
+      });
+    } catch (error) {
+      items.push({
+        id: fn.id,
+        label: `Edge Function: ${fn.name}`,
+        status: 'warning',
+        latencyMs: Math.round(performance.now() - fnStart),
+        detail:
+          error instanceof Error
+            ? `Not reachable (${error.message}). ${fn.fallbackNote}`
+            : `Not reachable. ${fn.fallbackNote}`,
+      });
+    }
   }
 
   return {
@@ -1456,3 +1512,355 @@ export async function markStaffNotificationAlertRead(
     console.warn('Could not mark alert read:', error.message);
   }
 }
+
+// ============================================================================
+// DYNAMIC ROOMS, REAL DELIVERY LOGS, RETRY HISTORY & ACTIVE SESSIONS
+// ============================================================================
+
+export async function fetchCloudRooms(): Promise<RoomRecord[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from('rooms')
+    .select('*')
+    .order('name', { ascending: true });
+  if (error) {
+    if (isMissingRelationError(error)) return [];
+    throw error;
+  }
+  return (data ?? []).map((row) => ({
+    id: String(row.id),
+    name: String(row.name ?? ''),
+    building: String(row.building ?? ''),
+    capacity:
+      typeof row.capacity === 'number'
+        ? row.capacity
+        : row.capacity !== null && row.capacity !== undefined
+          ? Number(row.capacity)
+          : null,
+    isActive: row.is_active !== false,
+    createdBy: row.created_by ? String(row.created_by) : null,
+    createdAt: String(row.created_at ?? ''),
+    updatedAt: String(row.updated_at ?? row.created_at ?? ''),
+  }));
+}
+
+export async function rpcSuperAdminUpsertRoom(params: {
+  id?: string | null;
+  name: string;
+  building: string;
+  capacity: number | null;
+  isActive: boolean;
+}): Promise<string> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { data, error } = await supabase.rpc('super_admin_upsert_room', {
+    room_id: params.id ?? null,
+    room_name: params.name,
+    building_name: params.building,
+    room_capacity: params.capacity,
+    room_is_active: params.isActive,
+  });
+  if (error) throw error;
+  return String(data);
+}
+
+export async function rpcSuperAdminToggleRoomActive(
+  roomId: string,
+  isActive: boolean
+): Promise<void> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { error } = await supabase.rpc('super_admin_toggle_room_active', {
+    room_id: roomId,
+    active_state: isActive,
+  });
+  if (error) throw error;
+}
+
+export async function rpcSuperAdminDeleteRoom(roomId: string): Promise<void> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { error } = await supabase.rpc('super_admin_delete_room', {
+    room_id: roomId,
+  });
+  if (error) throw error;
+}
+
+const DELIVERY_LOG_STATUSES: NotificationDeliveryLogStatus[] = [
+  'Delivered',
+  'Pending',
+  'Failed',
+  'Gateway Not Configured',
+  'Skipped',
+];
+
+function normalizeChannelName(raw: unknown): NotificationChannel {
+  const val = String(raw ?? 'In-App');
+  if (
+    val === 'In-App' ||
+    val === 'Email' ||
+    val === 'SMS' ||
+    val === 'Push Notification' ||
+    val === 'Web Notification'
+  ) {
+    return val;
+  }
+  return 'In-App';
+}
+
+export async function fetchCloudDeliveryLogs(
+  announcementId?: string
+): Promise<NotificationDelivery[]> {
+  if (!supabase) return [];
+  let query = supabase
+    .from('notification_delivery_logs')
+    .select('*')
+    .order('last_attempt_at', { ascending: false })
+    .limit(1000);
+  if (announcementId) {
+    query = query.eq('announcement_id', announcementId);
+  }
+  const { data, error } = await query;
+  if (error) {
+    if (isMissingRelationError(error)) return [];
+    throw error;
+  }
+  return (data ?? []).map((row) => {
+    const channel = normalizeChannelName(row.channel);
+    const email = String(row.recipient_email ?? '');
+    const phone = String(row.recipient_phone ?? '');
+    const contact =
+      channel === 'SMS'
+        ? phone || email || 'No phone on file'
+        : channel === 'Email'
+          ? email || 'No email on file'
+          : email || phone || String(row.recipient_id ?? 'In-App session');
+    const rawStatus = String(row.status ?? 'Pending');
+    const status = (
+      DELIVERY_LOG_STATUSES.includes(rawStatus as NotificationDeliveryLogStatus)
+        ? rawStatus
+        : 'Pending'
+    ) as NotificationDeliveryLogStatus;
+    return {
+      id: String(row.id),
+      announcementId: String(row.announcement_id),
+      recipientId: row.recipient_id ? String(row.recipient_id) : '',
+      recipientName: String(row.recipient_name ?? 'Unknown Recipient'),
+      recipientRole: normalizeWorkspaceRole(row.recipient_role) as UserRole,
+      recipientContact: contact,
+      recipientEmail: email,
+      recipientPhone: phone,
+      channel,
+      status,
+      gatewayProvider: row.gateway_provider ? String(row.gateway_provider) : undefined,
+      errorCode: row.error_code ? String(row.error_code) : undefined,
+      errorMessage: row.error_message ? String(row.error_message) : undefined,
+      attemptCount: Number(row.attempt_count ?? 1),
+      lastAttemptAt: String(row.last_attempt_at ?? row.created_at),
+      deliveredAt: row.delivered_at ? String(row.delivered_at) : undefined,
+      createdAt: String(row.created_at ?? row.last_attempt_at),
+    };
+  });
+}
+
+export async function fetchCloudRetryHistory(
+  announcementId?: string
+): Promise<RetryHistoryEntry[]> {
+  if (!supabase) return [];
+  let query = supabase
+    .from('notification_retry_history')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(500);
+  if (announcementId) {
+    query = query.eq('announcement_id', announcementId);
+  }
+  const { data, error } = await query;
+  if (error) {
+    if (isMissingRelationError(error)) return [];
+    throw error;
+  }
+  return (data ?? []).map((row) => ({
+    id: String(row.id),
+    deliveryLogId: String(row.delivery_log_id),
+    announcementId: String(row.announcement_id),
+    channel: normalizeChannelName(row.channel),
+    attemptNumber: Number(row.attempt_number ?? 1),
+    previousStatus: (DELIVERY_LOG_STATUSES.includes(row.previous_status)
+      ? row.previous_status
+      : 'Pending') as NotificationDeliveryLogStatus,
+    newStatus: (DELIVERY_LOG_STATUSES.includes(row.new_status)
+      ? row.new_status
+      : 'Pending') as NotificationDeliveryLogStatus,
+    errorCode: row.error_code ? String(row.error_code) : undefined,
+    errorMessage: row.error_message ? String(row.error_message) : undefined,
+    retriedBy: row.retried_by ? String(row.retried_by) : null,
+    retriedByName: String(row.retried_by_name ?? 'System'),
+    createdAt: String(row.created_at),
+  }));
+}
+
+export async function rpcDispatchAnnouncementDeliveries(
+  announcementId: string
+): Promise<Announcement | null> {
+  if (!supabase) return null;
+  const { data, error } = await supabase.rpc(
+    'dispatch_announcement_deliveries',
+    {
+      target_announcement_id: announcementId,
+    }
+  );
+  if (error) {
+    if (isMissingRelationError(error)) return null;
+    throw error;
+  }
+  return data && typeof data === 'object' ? (data as Announcement) : null;
+}
+
+export interface RetryDispatchSummary {
+  retriedCount: number;
+  deliveredCount: number;
+  remainingCount: number;
+  notConfiguredCount: number;
+}
+
+export async function rpcRetryFailedDeliveries(
+  announcementId: string,
+  deliveryId?: string
+): Promise<RetryDispatchSummary> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { data, error } = await supabase.rpc('retry_failed_deliveries', {
+    target_announcement_id: announcementId,
+    target_delivery_id: deliveryId ?? null,
+  });
+  if (error) throw error;
+  const result = (data ?? {}) as Record<string, unknown>;
+  return {
+    retriedCount: Number(result.retriedCount ?? 0),
+    deliveredCount: Number(result.deliveredCount ?? 0),
+    remainingCount: Number(result.remainingCount ?? 0),
+    notConfiguredCount: Number(result.notConfiguredCount ?? 0),
+  };
+}
+
+export async function rpcUpsertMyActiveSession(
+  sessionId: string,
+  status: PresenceStatus,
+  route = ''
+): Promise<void> {
+  if (!supabase) return;
+  const { error } = await supabase.rpc('upsert_my_active_session', {
+    p_session_id: sessionId,
+    p_status: status,
+    p_route: route,
+  });
+  if (error && !isMissingRelationError(error)) {
+    // Fall back silently to legacy presence rpc if new migration hasn't run yet
+    await rpcUpdateMyPresenceStatus(status);
+  }
+}
+
+export async function rpcEndMyActiveSession(sessionId?: string): Promise<void> {
+  if (!supabase) return;
+  const { error } = await supabase.rpc('end_my_active_session', {
+    p_session_id: sessionId ?? null,
+  });
+  if (error && !isMissingRelationError(error)) {
+    await rpcUpdateMyPresenceStatus('Offline');
+  }
+}
+
+export function keepaliveEndActiveSession(
+  sessionId: string,
+  accessToken: string | null
+): void {
+  if (!supabaseUrl || !supabasePublishableKey || !accessToken) return;
+  try {
+    void fetch(`${supabaseUrl}/rest/v1/rpc/end_my_active_session`, {
+      method: 'POST',
+      keepalive: true,
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: supabasePublishableKey,
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ p_session_id: sessionId }),
+    });
+  } catch {
+    // Ignore pagehide network errors
+  }
+}
+
+export async function fetchCloudNotificationPreferences(
+  userId: string,
+  fallbackChannels?: Partial<ProfileNotificationPreferences>
+): Promise<EnterpriseNotificationPreferences> {
+  if (!supabase || !userId) {
+    return normalizeEnterpriseNotificationPreferences(null, fallbackChannels);
+  }
+  const { data, error } = await supabase
+    .from('user_notification_preferences')
+    .select('*')
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (error) {
+    if (isMissingRelationError(error)) {
+      return normalizeEnterpriseNotificationPreferences(null, fallbackChannels);
+    }
+    throw error;
+  }
+
+  if (!data) {
+    return normalizeEnterpriseNotificationPreferences(null, fallbackChannels);
+  }
+
+  return normalizeEnterpriseNotificationPreferences(data, fallbackChannels);
+}
+
+export async function saveCloudNotificationPreferences(
+  userId: string,
+  preferences: EnterpriseNotificationPreferences
+): Promise<void> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+  if (authError || !user?.id || user.id !== userId) {
+    throw new Error('Authenticated user mismatch when saving preferences.');
+  }
+
+  const normalized = normalizeEnterpriseNotificationPreferences(preferences);
+  const { error } = await supabase.rpc('upsert_my_notification_preferences', {
+    p_email_enabled: normalized.email,
+    p_push_enabled: normalized.push,
+    p_in_app_enabled: normalized.inApp,
+    p_security_alerts_enabled: normalized.securityAlerts,
+    p_sound_enabled: normalized.soundEnabled,
+    p_mute_all: normalized.muteAll,
+    p_dnd_enabled: normalized.dndEnabled,
+    p_volume: normalized.volume,
+    p_per_type_settings: normalized.perType,
+  });
+
+  if (error) {
+    if (isMissingRelationError(error)) {
+      // Graceful fallback if the sound preferences migration hasn't run yet
+      const { error: legacyErr } = await supabase
+        .from('user_profiles')
+        .update({
+          notification_preferences: {
+            email: normalized.email,
+            push: normalized.push,
+            inApp: normalized.inApp,
+            securityAlerts: normalized.securityAlerts,
+          },
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', user.id);
+      if (legacyErr) throw legacyErr;
+      return;
+    }
+    throw error;
+  }
+}
+
+

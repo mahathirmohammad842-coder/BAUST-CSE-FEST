@@ -5,6 +5,7 @@ import {
   Bell,
   ChevronDown,
   CircleUserRound,
+  DoorOpen,
   FileSearch,
   History,
   LayoutDashboard,
@@ -48,6 +49,7 @@ export type OrganizerRoute =
   | 'users'
   | 'profiles'
   | 'profile'
+  | 'rooms'
   | 'settings'
   | 'system-settings'
   | 'integrations'
@@ -267,48 +269,69 @@ export function Sidebar({
             icon: BarChart3,
             keywords: ['metrics', 'engagement', 'delivery rate'],
           },
-          {
-            id: 'audit-logs',
-            label: 'Audit Logs',
-            icon: FileSearch,
-            keywords: ['deletions', 'restores', 'roles', 'approvals'],
-          },
-          {
-            id: 'activity-logs',
-            label: 'Activity Logs',
-            icon: History,
-            keywords: ['events', 'logins', 'timeline'],
-          },
+          ...(activeRole === 'Super Admin'
+            ? [
+                {
+                  id: 'audit-logs' as const,
+                  label: 'Audit Logs',
+                  icon: FileSearch,
+                  keywords: ['deletions', 'restores', 'roles', 'approvals'],
+                },
+                {
+                  id: 'activity-logs' as const,
+                  label: 'Activity Logs',
+                  icon: History,
+                  keywords: ['events', 'logins', 'timeline'],
+                },
+              ]
+            : []),
         ],
       },
       {
         id: 'system',
-        label: 'System',
+        label: activeRole === 'Super Admin' ? 'System' : 'Preferences',
         icon: Settings,
-        items: [
-          {
-            id: 'system-settings',
-            label: 'System Settings',
-            icon: Settings,
-            settingsSection: 'account',
-            matchRoutes: ['system-settings', 'settings'],
-            keywords: ['preferences', 'appearance', 'notifications'],
-          },
-          {
-            id: 'integrations',
-            label: 'Integrations',
-            icon: Plug,
-            matchRoutes: ['integrations', 'system-health'],
-            keywords: ['supabase', 'connectivity', 'diagnostics', 'database'],
-          },
-          {
-            id: 'security-settings',
-            label: 'Security Settings',
-            icon: LockKeyhole,
-            settingsSection: 'security',
-            keywords: ['password', 'rbac', 'session'],
-          },
-        ],
+        items:
+          activeRole === 'Super Admin'
+            ? [
+                {
+                  id: 'rooms',
+                  label: 'Rooms & Venues',
+                  icon: DoorOpen,
+                  keywords: ['venues', 'labs', 'halls', 'capacity'],
+                },
+                {
+                  id: 'system-settings',
+                  label: 'System Settings',
+                  icon: Settings,
+                  settingsSection: 'account',
+                  matchRoutes: ['system-settings', 'settings'],
+                  keywords: ['preferences', 'appearance', 'notifications'],
+                },
+                {
+                  id: 'integrations',
+                  label: 'Integrations',
+                  icon: Plug,
+                  matchRoutes: ['integrations', 'system-health'],
+                  keywords: ['supabase', 'connectivity', 'diagnostics', 'database'],
+                },
+                {
+                  id: 'security-settings',
+                  label: 'Security Settings',
+                  icon: LockKeyhole,
+                  settingsSection: 'security',
+                  keywords: ['password', 'rbac', 'session'],
+                },
+              ]
+            : [
+                {
+                  id: 'settings',
+                  label: 'My Settings',
+                  icon: Settings,
+                  settingsSection: 'account',
+                  keywords: ['preferences', 'appearance', 'notifications', 'password'],
+                },
+              ],
       },
     ],
     [

@@ -108,6 +108,53 @@ export interface ProfileNotificationPreferences {
   securityAlerts: boolean;
 }
 
+export type NotificationSoundEventType =
+  | 'general'
+  | 'announcement'
+  | 'approval_request'
+  | 'approval_granted'
+  | 'approval_rejected'
+  | 'new_message'
+  | 'system_alert'
+  | 'high_priority';
+
+export type NotificationSoundPreset =
+  | 'teams_chime'
+  | 'discord_pop'
+  | 'slack_knock'
+  | 'crisp_bell'
+  | 'approval_chime'
+  | 'soft_drop'
+  | 'alert_pulse'
+  | 'urgent_siren';
+
+export interface NotificationTypeSoundPreference {
+  enabled: boolean;
+  sound: NotificationSoundPreset;
+}
+
+export interface EnterpriseNotificationPreferences
+  extends ProfileNotificationPreferences {
+  soundEnabled: boolean;
+  muteAll: boolean;
+  dndEnabled: boolean;
+  volume: number;
+  perType: Record<NotificationSoundEventType, NotificationTypeSoundPreference>;
+}
+
+export interface EnterpriseNotificationToast {
+  id: string;
+  eventType: NotificationSoundEventType;
+  title: string;
+  message: string;
+  priority?: NotificationPriority;
+  receivedAt: string;
+  actionLabel?: string;
+  actionRoute?: string;
+  targetId?: string;
+  audioLocked?: boolean;
+}
+
 export interface ProfilePersonalInfo {
   studentId: string;
   batch: string;
@@ -421,6 +468,17 @@ export interface AttachmentDeliveryOptions {
   push: boolean;
 }
 
+export interface RoomRecord {
+  id: string;
+  name: string;
+  building: string;
+  capacity: number | null;
+  isActive: boolean;
+  createdBy?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface TargetingCriteria {
   everyoneAttending: boolean;
   roles: UserRole[];
@@ -430,6 +488,8 @@ export interface TargetingCriteria {
   competitions: string[];
   categories: AnnouncementCategory[];
   individualUsers: string[];
+  targetUserIds?: string[];
+  departments?: string[];
 }
 
 export interface ChannelDeliverySummary {
@@ -442,12 +502,24 @@ export interface ChannelDeliverySummary {
   clickCount: number;
 }
 
+export type NotificationDeliveryLogStatus =
+  | 'Delivered'
+  | 'Pending'
+  | 'Failed'
+  | 'Gateway Not Configured'
+  | 'Skipped';
+
 export type DeliveryErrorCode =
+  | 'GATEWAY_NOT_CONFIGURED'
+  | 'PREFERENCE_DISABLED'
+  | 'MISSING_EMAIL'
+  | 'MISSING_PHONE'
   | 'SMS_GATEWAY_TIMEOUT'
   | 'INVALID_PUSH_TOKEN'
   | 'EMAIL_BOUNCE'
   | 'WEB_SUBSCRIPTION_EXPIRED'
-  | 'CARRIER_RATE_LIMIT';
+  | 'CARRIER_RATE_LIMIT'
+  | string;
 
 export interface NotificationDelivery {
   id: string;
@@ -456,8 +528,11 @@ export interface NotificationDelivery {
   recipientName: string;
   recipientRole: UserRole;
   recipientContact: string;
+  recipientEmail?: string;
+  recipientPhone?: string;
   channel: NotificationChannel;
-  status: 'Delivered' | 'Pending' | 'Failed';
+  status: NotificationDeliveryLogStatus;
+  gatewayProvider?: string;
   errorCode?: DeliveryErrorCode;
   errorMessage?: string;
   attemptCount: number;
@@ -465,6 +540,27 @@ export interface NotificationDelivery {
   deliveredAt?: string;
   readAt?: string;
   clickedAt?: string;
+  createdAt?: string;
+}
+
+export interface RetryHistoryEntry {
+  id: string;
+  deliveryLogId: string;
+  announcementId: string;
+  channel: NotificationChannel;
+  attemptNumber: number;
+  previousStatus: NotificationDeliveryLogStatus;
+  newStatus: NotificationDeliveryLogStatus;
+  errorCode?: string;
+  errorMessage?: string;
+  retriedBy?: string | null;
+  retriedByName: string;
+  createdAt: string;
+}
+
+export interface NotificationRetrySettings {
+  autoRetry: boolean;
+  maxRetries: number;
 }
 
 export interface Announcement {
@@ -478,6 +574,7 @@ export interface Announcement {
   status: DeliveryStatus;
   channels: NotificationChannel[];
   targeting: TargetingCriteria;
+  retrySettings?: NotificationRetrySettings;
   senderId?: string;
   senderName: string;
   senderRole: UserRole;

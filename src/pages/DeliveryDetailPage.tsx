@@ -1,16 +1,18 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Archive,
   AlertTriangle,
   ArrowLeft,
   Bookmark,
   CheckCircle2,
+  Clock,
   Copy,
   Download,
   Edit3,
   Eye,
   FileDown,
   FileText,
+  History,
   Pin,
   Printer,
   RefreshCw,
@@ -27,6 +29,8 @@ import { Modal } from '../components/Modal';
 import type {
   Announcement,
   NotificationDelivery,
+  NotificationDeliveryLogStatus,
+  RetryHistoryEntry,
   WorkspaceRole,
 } from '../types';
 import type {
@@ -42,6 +46,7 @@ interface DeliveryDetailPageProps {
   announcements: Announcement[];
   selectedAnnouncement: Announcement;
   deliveries: NotificationDelivery[];
+  retryHistory?: RetryHistoryEntry[];
   activeRole?: WorkspaceRole;
   currentUserId?: string | null;
   onSelectAnnouncement: (id: string) => void;
@@ -56,9 +61,11 @@ interface DeliveryDetailPageProps {
   onPermanentDeleteAnnouncement?: (
     announcementId: string
   ) => Promise<string | null> | string | null | void;
-  onRetryDelivery: (deliveryId: string) => void;
-  onRetryAllFailedForAnnouncement: (announcementId: string) => void;
-  onPublishScheduledNow: (announcementId: string) => void;
+  onRetryDelivery: (deliveryId: string) => void | Promise<void>;
+  onRetryAllFailedForAnnouncement: (
+    announcementId: string
+  ) => void | Promise<void>;
+  onPublishScheduledNow: (announcementId: string) => void | Promise<void>;
   personalStatus: PersonalNotificationState;
   onToggleRead: (nextRead: boolean) => void;
   onUpdatePersonalStatus: (
@@ -68,10 +75,28 @@ interface DeliveryDetailPageProps {
   onNotify: (message: string) => void;
 }
 
+function getDeliveryStatusBadgeStyle(status: NotificationDeliveryLogStatus): string {
+  switch (status) {
+    case 'Delivered':
+      return 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-300';
+    case 'Failed':
+      return 'bg-red-100 text-red-800 dark:bg-red-950/70 dark:text-red-300';
+    case 'Pending':
+      return 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300';
+    case 'Gateway Not Configured':
+      return 'bg-slate-100 text-slate-700 dark:bg-slate-800/80 dark:text-slate-300';
+    case 'Skipped':
+      return 'bg-emerald-50 text-emerald-900/70 dark:bg-emerald-950/50 dark:text-emerald-200/70';
+    default:
+      return 'bg-slate-100 text-slate-700';
+  }
+}
+
 export function DeliveryDetailPage({
   announcements,
   selectedAnnouncement,
   deliveries,
+  retryHistory = [],
   activeRole = 'Organizer',
   currentUserId,
   onSelectAnnouncement,
@@ -92,21 +117,66 @@ export function DeliveryDetailPage({
   const [confirmPermanentOpen, setConfirmPermanentOpen] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [retryBusyId, setRetryBusyId] = useState<string | null>(null);
+  const [retryAllBusy, setRetryAllBusy] = useState(false);
+  const [logFilter, setLogFilter] = useState<
+    'all' | 'actionable' | 'delivered' | 'unconfigured'
+  >('all');
 
-  const canManageAnnouncementDelete =
+  const canManageAnnouncement =
     activeRole === 'Super Admin' ||
     (activeRole === 'Organizer' &&
       (!selectedAnnouncement.senderId ||
         !currentUserId ||
         selectedAnnouncement.senderId === currentUserId));
-  const announcementDeliveries = deliveries.filter(
-    (d) => d.announcementId === selectedAnnouncement.id
+  const canManageAnnouncementDelete = canManageAnnouncement;
+
+  const announcementDeliveries = useMemo(
+    () =>
+      deliveries.filter(
+        (d) => d.announcementId === selectedAnnouncement.id
+      ),
+    [deliveries, selectedAnnouncement.id]
   );
-  const failedDeliveries = announcementDeliveries.filter(
-    (d) => d.status === 'Failed'
+
+  const retryableDeliveries = useMemo(
+    () =>
+      announcementDeliveries.filter(
+        (d) =>
+          d.status === 'Failed' ||
+          d.status === 'Pending' ||
+          d.status === 'Gateway Not Configured'
+      ),
+    [announcementDeliveries]
   );
-  const retriedDeliveries = announcementDeliveries.filter(
-    (d) => d.status === 'Delivered' && d.attemptCount > 1
+
+  const failedDeliveries = useMemo(
+    () => announcementDeliveries.filter((d) => d.status === 'Failed'),
+    [announcementDeliveries]
+  );
+
+  const filteredDeliveries = useMemo(() => {
+    switch (logFilter) {
+      case 'actionable':
+        return retryableDeliveries;
+      case 'delivered':
+        return announcementDeliveries.filter((d) => d.status === 'Delivered');
+      case 'unconfigured':
+        return announcementDeliveries.filter(
+          (d) =>
+            d.status === 'Gateway Not Configured' || d.status === 'Skipped'
+        );
+      default:
+        return announcementDeliveries;
+    }
+  }, [announcementDeliveries, logFilter, retryableDeliveries]);
+
+  const announcementRetryHistory = useMemo(
+    () =>
+      retryHistory.filter(
+        (entry) => entry.announcementId === selectedAnnouncement.id
+      ),
+    [retryHistory, selectedAnnouncement.id]
   );
 
   const copyText = async (text: string, successMessage: string) => {
@@ -171,25 +241,28 @@ export function DeliveryDetailPage({
         </div>
 
         <div className="flex items-center gap-2">
-          {(selectedAnnouncement.status === 'Scheduled' ||
-            selectedAnnouncement.status === 'Draft') && (
+          {canManageAnnouncement &&
+            (selectedAnnouncement.status === 'Scheduled' ||
+              selectedAnnouncement.status === 'Draft') && (
+              <button
+                type="button"
+                onClick={() => void onPublishScheduledNow(selectedAnnouncement.id)}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white hover:bg-emerald-600 dark:bg-emerald-600 dark:hover:bg-emerald-500 whitespace-nowrap"
+              >
+                <Send className="h-3.5 w-3.5" aria-hidden="true" />
+                Dispatch Now
+              </button>
+            )}
+          {canManageAnnouncement && (
             <button
               type="button"
-              onClick={() => onPublishScheduledNow(selectedAnnouncement.id)}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white hover:bg-emerald-600 dark:bg-emerald-600 dark:hover:bg-emerald-500 whitespace-nowrap"
+              onClick={() => onEditAnnouncement(selectedAnnouncement)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-3.5 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800/70 dark:bg-[#061D15] dark:text-emerald-100 dark:hover:bg-[#09291E] whitespace-nowrap"
             >
-              <Send className="h-3.5 w-3.5" aria-hidden="true" />
-              Dispatch Now (Simulated)
+              <Edit3 className="h-3.5 w-3.5" aria-hidden="true" />
+              Edit Notice
             </button>
           )}
-          <button
-            type="button"
-            onClick={() => onEditAnnouncement(selectedAnnouncement)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-3.5 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800/70 dark:bg-[#061D15] dark:text-emerald-100 dark:hover:bg-[#09291E] whitespace-nowrap"
-          >
-            <Edit3 className="h-3.5 w-3.5" aria-hidden="true" />
-            Edit Notice
-          </button>
           {selectedAnnouncement.trashedAt ? (
             <>
               {onRestoreAnnouncement && (
@@ -565,7 +638,7 @@ export function DeliveryDetailPage({
 
         {selectedAnnouncement.channelBreakdown.length === 0 ? (
           <div className="p-6 text-sm text-emerald-900/60 dark:text-emerald-300/65">
-            This notice has not been dispatched yet ({selectedAnnouncement.status}). Breakdown metrics will populate immediately upon simulated send.
+            This notice has not been dispatched yet ({selectedAnnouncement.status}). Breakdown metrics populate automatically upon dispatch.
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -619,39 +692,86 @@ export function DeliveryDetailPage({
             <div className="flex items-center gap-2">
               <AlertTriangle
                 className={`h-4 w-4 ${
-                  failedDeliveries.length > 0 ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400'
+                  failedDeliveries.length > 0
+                    ? 'text-red-600 dark:text-red-400'
+                    : 'text-emerald-600 dark:text-emerald-400'
                 }`}
                 aria-hidden="true"
               />
               <h3 className="font-display text-base font-bold text-emerald-950 dark:text-emerald-50">
-                Failed Deliveries &amp; Gateway Retry Queue
+                Delivery Logs &amp; Gateway Retry Queue
               </h3>
             </div>
             <p className="mt-0.5 text-xs text-emerald-900/60 dark:text-emerald-300/65">
-              Retry failed SMS, Push, or Email dispatches in real time.
+              Live per-recipient delivery status across In-App, Email, SMS, Push, and Web channels.
             </p>
           </div>
 
-          {failedDeliveries.length > 0 && (
-            <button
-              type="button"
-              onClick={() =>
-                onRetryAllFailedForAnnouncement(selectedAnnouncement.id)
-              }
-              className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-red-600 px-3.5 py-2 text-xs font-semibold text-white transition-colors hover:bg-red-700 whitespace-nowrap shrink-0"
-            >
-              <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
-              Retry All Failed ({failedDeliveries.length})
-            </button>
-          )}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="inline-flex rounded-lg border border-emerald-200/80 bg-emerald-50/60 p-0.5 dark:border-emerald-800/70 dark:bg-[#041811]">
+              {(
+                [
+                  { id: 'all', label: `All (${announcementDeliveries.length})` },
+                  { id: 'actionable', label: `Retryable (${retryableDeliveries.length})` },
+                  { id: 'delivered', label: 'Delivered' },
+                  { id: 'unconfigured', label: 'Not Configured / Skipped' },
+                ] as const
+              ).map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setLogFilter(tab.id)}
+                  className={`rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors ${
+                    logFilter === tab.id
+                      ? 'bg-[#064E3B] text-white dark:bg-emerald-600'
+                      : 'text-emerald-900/70 hover:text-emerald-950 dark:text-emerald-200/70'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+
+            {canManageAnnouncement && retryableDeliveries.length > 0 && (
+              <button
+                type="button"
+                disabled={retryAllBusy}
+                onClick={async () => {
+                  setRetryAllBusy(true);
+                  try {
+                    await onRetryAllFailedForAnnouncement(selectedAnnouncement.id);
+                  } finally {
+                    setRetryAllBusy(false);
+                  }
+                }}
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-red-600 px-3.5 py-2 text-xs font-semibold text-white transition-colors hover:bg-red-700 disabled:opacity-60 whitespace-nowrap shrink-0"
+              >
+                <RefreshCw
+                  className={`h-3.5 w-3.5 ${retryAllBusy ? 'animate-spin' : ''}`}
+                  aria-hidden="true"
+                />
+                {retryAllBusy
+                  ? 'Retrying…'
+                  : `Retry All (${retryableDeliveries.length})`}
+              </button>
+            )}
+          </div>
         </div>
 
-        {failedDeliveries.length === 0 && retriedDeliveries.length === 0 ? (
+        {filteredDeliveries.length === 0 ? (
           <div className="p-6">
             <EmptyState
               icon={CheckCircle2}
-              title="Zero failed deliveries for this announcement"
-              description="All targeted recipients for this notice were reached cleanly without gateway errors."
+              title={
+                announcementDeliveries.length === 0
+                  ? 'No delivery log entries recorded yet'
+                  : 'No matching delivery logs for this filter'
+              }
+              description={
+                announcementDeliveries.length === 0
+                  ? 'Real delivery logs are generated automatically when an announcement is dispatched.'
+                  : 'Switch the status tab above to inspect other delivery attempts.'
+              }
             />
           </div>
         ) : (
@@ -661,77 +781,158 @@ export function DeliveryDetailPage({
                 <tr className="border-b border-emerald-100 bg-emerald-50/45 text-xs font-semibold text-emerald-900/70 dark:border-emerald-800/60 dark:bg-[#041811] dark:text-emerald-200/80">
                   <th className="px-5 py-3">Recipient</th>
                   <th className="px-4 py-3">Channel</th>
-                  <th className="px-4 py-3">Gateway Error Code</th>
+                  <th className="px-4 py-3">Gateway / Details</th>
                   <th className="px-4 py-3">Status</th>
                   <th className="px-5 py-3 text-right">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-emerald-100/70 dark:divide-emerald-800/50">
-                {[...failedDeliveries, ...retriedDeliveries].map((del) => (
-                  <tr key={del.id} className="hover:bg-emerald-50/35 dark:hover:bg-[#09291E]/70">
-                    <td className="px-5 py-3.5">
-                      <div className="flex items-center gap-2">
-                        <span className="font-semibold text-emerald-950 dark:text-emerald-50">
-                          {del.recipientName}
-                        </span>
-                        <RoleBadge role={del.recipientRole} />
-                      </div>
-                      <div className="mt-0.5 font-mono text-xs text-emerald-900/60 dark:text-emerald-300/65">
-                        {del.recipientContact}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3.5">
-                      <ChannelPill channel={del.channel} />
-                    </td>
-                    <td className="px-4 py-3.5">
-                      {del.errorCode ? (
-                        <div>
-                          <span className="inline-flex rounded bg-red-50 px-2 py-0.5 font-mono text-xs font-semibold text-red-700 dark:bg-red-950/70 dark:text-red-300">
-                            {del.errorCode}
+                {filteredDeliveries.map((del) => {
+                  const canRetryRow =
+                    del.status === 'Failed' ||
+                    del.status === 'Pending' ||
+                    del.status === 'Gateway Not Configured';
+                  return (
+                    <tr
+                      key={del.id}
+                      className="hover:bg-emerald-50/35 dark:hover:bg-[#09291E]/70"
+                    >
+                      <td className="px-5 py-3.5">
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-emerald-950 dark:text-emerald-50">
+                            {del.recipientName}
                           </span>
-                          <div className="mt-1 text-xs text-emerald-900/65 dark:text-emerald-200/75 max-w-xs">
-                            {del.errorMessage}
-                          </div>
+                          <RoleBadge role={del.recipientRole} />
                         </div>
-                      ) : (
-                        <span className="text-xs text-emerald-700 dark:text-emerald-400 font-medium">
-                          Resolved on attempt #{del.attemptCount}
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3.5">
-                      {del.status === 'Failed' ? (
-                        <StatusBadge status="Failed" />
-                      ) : (
-                        <StatusBadge status="Retried" />
-                      )}
-                      <div className="mt-1 font-mono text-[11px] text-emerald-900/50 dark:text-emerald-300/55 tabular-nums">
-                        Attempts: {del.attemptCount}
-                      </div>
-                    </td>
-                    <td className="px-5 py-3.5 text-right whitespace-nowrap">
-                      {del.status === 'Failed' ? (
-                        <button
-                          type="button"
-                          onClick={() => onRetryDelivery(del.id)}
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-950 hover:bg-emerald-50 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-100 dark:hover:bg-[#09291E]"
+                        <div className="mt-0.5 font-mono text-xs text-emerald-900/60 dark:text-emerald-300/65">
+                          {del.recipientContact}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3.5">
+                        <ChannelPill channel={del.channel} />
+                      </td>
+                      <td className="px-4 py-3.5">
+                        {del.errorCode ? (
+                          <div>
+                            <span
+                              className={`inline-flex rounded px-2 py-0.5 font-mono text-xs font-semibold ${
+                                del.status === 'Failed'
+                                  ? 'bg-red-50 text-red-700 dark:bg-red-950/70 dark:text-red-300'
+                                  : 'bg-slate-100 text-slate-700 dark:bg-slate-800/80 dark:text-slate-300'
+                              }`}
+                            >
+                              {del.errorCode}
+                            </span>
+                            {del.errorMessage && (
+                              <div className="mt-1 max-w-xs text-xs text-emerald-900/65 dark:text-emerald-200/75">
+                                {del.errorMessage}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-xs font-medium text-emerald-700 dark:text-emerald-400">
+                            {del.gatewayProvider ?? 'supabase-realtime-in-app'}
+                            {del.deliveredAt
+                              ? ` · ${formatDhakaDateTime(del.deliveredAt)}`
+                              : ''}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3.5">
+                        <span
+                          className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${getDeliveryStatusBadgeStyle(del.status)}`}
                         >
-                          <RefreshCw className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
-                          Retry Failed
-                        </button>
-                      ) : (
-                        <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">
-                          Delivered
+                          {del.status}
                         </span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                        <div className="mt-1 font-mono text-[11px] tabular-nums text-emerald-900/50 dark:text-emerald-300/55">
+                          Attempts: {del.attemptCount}
+                        </div>
+                      </td>
+                      <td className="px-5 py-3.5 text-right whitespace-nowrap">
+                        {canManageAnnouncement && canRetryRow ? (
+                          <button
+                            type="button"
+                            disabled={retryBusyId === del.id}
+                            onClick={async () => {
+                              setRetryBusyId(del.id);
+                              try {
+                                await onRetryDelivery(del.id);
+                              } finally {
+                                setRetryBusyId(null);
+                              }
+                            }}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-950 hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-100 dark:hover:bg-[#09291E]"
+                          >
+                            <RefreshCw
+                              className={`h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400 ${
+                                retryBusyId === del.id ? 'animate-spin' : ''
+                              }`}
+                              aria-hidden="true"
+                            />
+                            {retryBusyId === del.id ? 'Retrying…' : 'Retry Failed'}
+                          </button>
+                        ) : (
+                          <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">
+                            {del.status}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
       </section>
+
+      {announcementRetryHistory.length > 0 && (
+        <section className="rounded-xl border border-emerald-200/70 bg-white overflow-hidden dark:border-emerald-800/60 dark:bg-[#061D15]">
+          <div className="flex items-center gap-2 border-b border-emerald-100 px-5 py-4 dark:border-emerald-800/60">
+            <History className="h-4 w-4 text-emerald-700 dark:text-emerald-400" />
+            <div>
+              <h3 className="font-display text-base font-bold text-emerald-950 dark:text-emerald-50">
+                Retry Attempt History
+              </h3>
+              <p className="text-xs text-emerald-900/60 dark:text-emerald-300/65">
+                Recorded gateway retry executions for this announcement
+              </p>
+            </div>
+          </div>
+          <div className="divide-y divide-emerald-100/70 dark:divide-emerald-800/50">
+            {announcementRetryHistory.map((item) => (
+              <div
+                key={item.id}
+                className="flex flex-col gap-2 px-5 py-3 text-xs sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <ChannelPill channel={item.channel} />
+                  <span className="font-mono font-semibold text-emerald-950 dark:text-emerald-100">
+                    Attempt #{item.attemptNumber}
+                  </span>
+                  <span className="text-emerald-900/65 dark:text-emerald-200/70">
+                    {item.previousStatus} →{' '}
+                    <strong className="text-emerald-950 dark:text-emerald-50">
+                      {item.newStatus}
+                    </strong>
+                  </span>
+                  {item.errorMessage && (
+                    <span className="text-emerald-900/60 dark:text-emerald-300/65">
+                      ({item.errorMessage})
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 text-emerald-900/60 dark:text-emerald-300/65">
+                  <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>{item.retriedByName}</span>
+                  <span>·</span>
+                  <span>{formatDhakaDateTime(item.createdAt)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       <Modal
         open={confirmDeleteOpen}
