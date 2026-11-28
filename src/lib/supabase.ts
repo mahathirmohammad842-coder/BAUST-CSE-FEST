@@ -1,13 +1,17 @@
 import { createClient } from '@supabase/supabase-js';
 import type {
+  ActivityLogEntry,
   Announcement,
   ApprovalLog,
   ApprovalLogAction,
+  ApprovalStatus,
   Attachment,
   ProfileNotificationPreferences,
+  ProfilePersonalInfo,
   ProfileSocialLinks,
   RegistrableRole,
   RoleChangeLog,
+  RolePermissionEntry,
   UserProfile,
   VerificationLog,
   VerificationStatus,
@@ -40,7 +44,6 @@ const WORKSPACE_ROLES: WorkspaceRole[] = [
   'Guest',
   'Sponsor',
   'Mentor',
-  'Admin',
   'Super Admin',
 ];
 const REGISTRABLE_ROLES: RegistrableRole[] = [
@@ -56,21 +59,34 @@ const VERIFICATION_STATUSES: VerificationStatus[] = [
   'Verified',
   'Rejected',
 ];
+const APPROVAL_STATUSES: ApprovalStatus[] = ['Pending', 'Approved', 'Rejected'];
 const ATTACHMENT_BUCKET = 'notice-attachments';
+
+function normalizeWorkspaceRole(raw: unknown): WorkspaceRole {
+  if (raw === 'Admin') return 'Organizer';
+  if (typeof raw === 'string' && WORKSPACE_ROLES.includes(raw as WorkspaceRole)) {
+    return raw as WorkspaceRole;
+  }
+  return 'Participant';
+}
 
 export interface CloudProfile {
   id: string;
   full_name: string;
   email: string;
   phone: string;
-  role: WorkspaceRole;
+  role: WorkspaceRole | 'Admin';
+  assigned_role?: WorkspaceRole | 'Admin';
   department: string;
   institution: string;
+  address?: string;
+  personal_info?: Partial<ProfilePersonalInfo>;
   biography: string;
   photo_url: string;
   social_links: ProfileSocialLinks;
   notification_preferences: ProfileNotificationPreferences;
   account_status: UserProfile['accountStatus'];
+  approval_status?: ApprovalStatus;
   verified: boolean;
   verification_status?: VerificationStatus;
   created_at: string;
@@ -79,7 +95,7 @@ export interface CloudProfile {
   requested_role: string;
   can_manage_approvals?: boolean;
   recommended_action?: 'Approve' | 'Reject' | null;
-  recommended_role?: WorkspaceRole | null;
+  recommended_role?: WorkspaceRole | 'Admin' | null;
   recommended_by?: string | null;
   recommended_by_name?: string | null;
   recommendation_notes?: string | null;
@@ -99,13 +115,14 @@ export interface SupabaseDiagnosticsReport {
   checkedAt: string;
   projectUrl: string | null;
   configured: boolean;
-  emailAutoConfirm: boolean | null;
-  emailProviderEnabled: boolean | null;
   items: ConnectivityCheckItem[];
 }
 
 export function mapCloudProfile(row: CloudProfile): UserProfile {
-  const role = WORKSPACE_ROLES.includes(row.role) ? row.role : 'Participant';
+  const role = normalizeWorkspaceRole(row.role);
+  const assignedRole = row.assigned_role
+    ? normalizeWorkspaceRole(row.assigned_role)
+    : role;
   const requestedRole = REGISTRABLE_ROLES.includes(
     row.requested_role as RegistrableRole
   )
@@ -121,15 +138,45 @@ export function mapCloudProfile(row: CloudProfile): UserProfile {
         ? 'Rejected'
         : 'Pending';
 
+  const accountStatus: UserProfile['accountStatus'] =
+    row.account_status === 'Pending Approval'
+      ? 'Active'
+      : row.account_status === 'Suspended' || row.account_status === 'Rejected'
+        ? row.account_status
+        : 'Active';
+
+  const approvalStatus: ApprovalStatus = APPROVAL_STATUSES.includes(
+    row.approval_status as ApprovalStatus
+  )
+    ? (row.approval_status as ApprovalStatus)
+    : row.account_status === 'Pending Approval'
+      ? 'Pending'
+      : row.account_status === 'Rejected'
+        ? 'Rejected'
+        : 'Approved';
+
+  const info = row.personal_info ?? {};
+
   return {
     userId: row.id,
     role,
+    assignedRole,
     requestedRole,
     fullName: row.full_name,
     email: row.email,
     phone: row.phone ?? '',
     department: row.department ?? '',
     institution: row.institution ?? '',
+    address: row.address ?? '',
+    personalInfo: {
+      studentId: typeof info.studentId === 'string' ? info.studentId : '',
+      batch: typeof info.batch === 'string' ? info.batch : '',
+      tshirtSize: typeof info.tshirtSize === 'string' ? info.tshirtSize : '',
+      emergencyContact:
+        typeof info.emergencyContact === 'string' ? info.emergencyContact : '',
+      dietaryNotes:
+        typeof info.dietaryNotes === 'string' ? info.dietaryNotes : '',
+    },
     biography: row.biography ?? '',
     photoDataUrl: row.photo_url ?? '',
     socialLinks: row.social_links ?? { website: '', linkedIn: '', github: '' },
@@ -139,17 +186,17 @@ export function mapCloudProfile(row: CloudProfile): UserProfile {
       inApp: true,
       securityAlerts: true,
     },
-    accountStatus: row.account_status,
+    accountStatus,
+    approvalStatus,
     verified: verificationStatus === 'Verified' || row.verified,
     verificationStatus,
     createdAt: row.created_at,
     lastLoginAt: row.last_login_at ?? null,
     canManageApprovals: Boolean(row.can_manage_approvals),
     recommendedAction: row.recommended_action ?? null,
-    recommendedRole:
-      row.recommended_role && WORKSPACE_ROLES.includes(row.recommended_role)
-        ? row.recommended_role
-        : null,
+    recommendedRole: row.recommended_role
+      ? normalizeWorkspaceRole(row.recommended_role)
+      : null,
     recommendedById: row.recommended_by ?? null,
     recommendedByName: row.recommended_by_name ?? null,
     recommendationNotes: row.recommendation_notes ?? null,
@@ -201,12 +248,8 @@ export async function fetchCloudRoleChangeLogs(): Promise<RoleChangeLog[]> {
     userId: String(row.user_id),
     userEmail: String(row.user_email ?? ''),
     userName: String(row.user_name ?? ''),
-    previousRole: (WORKSPACE_ROLES.includes(row.previous_role)
-      ? row.previous_role
-      : 'Participant') as WorkspaceRole,
-    newRole: (WORKSPACE_ROLES.includes(row.new_role)
-      ? row.new_role
-      : 'Participant') as WorkspaceRole,
+    previousRole: normalizeWorkspaceRole(row.previous_role),
+    newRole: normalizeWorkspaceRole(row.new_role),
     changedById: String(row.changed_by ?? ''),
     changedByName: String(row.changed_by_name ?? 'System'),
     changedAt: String(row.changed_at),
@@ -232,7 +275,10 @@ export async function fetchCloudApprovalLogs(): Promise<ApprovalLog[]> {
     userName: String(row.user_name ?? ''),
     action: String(row.action ?? 'status_changed') as ApprovalLogAction,
     requestedRole: String(row.requested_role ?? 'Participant'),
-    assignedRole: String(row.assigned_role ?? 'Participant'),
+    assignedRole:
+      row.assigned_role === 'Admin'
+        ? 'Organizer'
+        : String(row.assigned_role ?? 'Participant'),
     previousStatus: String(row.previous_status ?? ''),
     newStatus: String(row.new_status ?? ''),
     actorId: String(row.actor_id ?? ''),
@@ -271,12 +317,87 @@ export async function fetchCloudVerificationLogs(): Promise<VerificationLog[]> {
   }));
 }
 
+export async function fetchCloudActivityLogs(): Promise<ActivityLogEntry[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from('activity_logs')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(500);
+  if (error) {
+    if (isMissingRelationError(error)) return [];
+    throw error;
+  }
+  return (data ?? []).map((row) => ({
+    id: String(row.id),
+    userId: String(row.user_id),
+    userEmail: String(row.user_email ?? ''),
+    userName: String(row.user_name ?? ''),
+    actorId: String(row.actor_id ?? ''),
+    actorName: String(row.actor_name ?? 'System'),
+    action: String(row.action ?? 'account_event'),
+    category: (['auth', 'profile', 'governance', 'security', 'notifications'].includes(
+      String(row.category)
+    )
+      ? row.category
+      : 'profile') as ActivityLogEntry['category'],
+    details: String(row.details ?? ''),
+    createdAt: String(row.created_at),
+  }));
+}
+
+export async function fetchCloudRolePermissions(): Promise<
+  RolePermissionEntry[]
+> {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from('role_permissions')
+    .select('*')
+    .order('hierarchy_level', { ascending: false });
+  if (error) {
+    if (isMissingRelationError(error)) return [];
+    throw error;
+  }
+  return (data ?? []).map((row) => ({
+    role: normalizeWorkspaceRole(row.role),
+    hierarchyLevel: Number(row.hierarchy_level ?? 0),
+    canManageUsers: Boolean(row.can_manage_users),
+    canApproveUsers: Boolean(row.can_approve_users),
+    canRecommendApprovals: Boolean(row.can_recommend_approvals),
+    canVerifyUsers: Boolean(row.can_verify_users),
+    canChangeRoles: Boolean(row.can_change_roles),
+    canAssignOrganizer: Boolean(row.can_assign_organizer),
+    canAssignSuperAdmin: Boolean(row.can_assign_super_admin),
+    canPublishAnnouncements: Boolean(row.can_publish_announcements),
+    canAccessOrganizerPanel: Boolean(row.can_access_organizer_panel),
+    canAccessSuperAdminPanel: Boolean(row.can_access_super_admin_panel),
+    canAccessJudgeFeatures: Boolean(row.can_access_judge_features),
+    canManageEvents: Boolean(row.can_manage_events),
+  }));
+}
+
 export async function rpcRecordMyLastLogin(): Promise<void> {
   if (!supabase) return;
   const { error } = await supabase.rpc('record_my_last_login');
   if (error && !isMissingRelationError(error)) {
-    // Non-fatal if migration hasn't been applied yet
     console.warn('Could not record last_login_at:', error.message);
+  }
+}
+
+export async function rpcLogUserActivity(
+  actionName: string,
+  categoryName: ActivityLogEntry['category'],
+  detailsText: string
+): Promise<void> {
+  if (!supabase) return;
+  const { error } = await supabase.rpc('log_user_activity', {
+    action_name: actionName,
+    category_name: categoryName,
+    details_text: detailsText,
+    metadata_json: {},
+  });
+  if (error && !isMissingRelationError(error)) {
+    console.warn('Could not record activity log:', error.message);
   }
 }
 
@@ -389,6 +510,19 @@ export async function rpcSuperAdminSetOrganizerPermission(
   if (error) throw error;
 }
 
+export async function rpcSuperAdminPromoteToOrganizer(
+  targetUserId: string
+): Promise<void> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { error } = await supabase.rpc(
+    'super_admin_promote_user_to_organizer',
+    {
+      target_user_id: targetUserId,
+    }
+  );
+  if (error) throw error;
+}
+
 export async function fetchCloudAnnouncements(): Promise<Announcement[]> {
   if (!supabase) throw new Error('Supabase is not configured.');
   const { data, error } = await supabase
@@ -485,6 +619,8 @@ export async function saveCloudProfile(profile: UserProfile): Promise<void> {
       phone: profile.phone,
       department: profile.department,
       institution: profile.institution,
+      address: profile.address,
+      personal_info: profile.personalInfo,
       biography: profile.biography,
       photo_url: profile.photoDataUrl,
       social_links: profile.socialLinks,
@@ -551,53 +687,6 @@ export async function extractFunctionsInvokeError(error: unknown): Promise<strin
   return 'Edge function request failed.';
 }
 
-export async function fetchAuthHealthSettings(): Promise<{
-  emailEnabled: boolean | null;
-  mailerAutoconfirm: boolean | null;
-  latencyMs: number;
-  error?: string;
-}> {
-  if (!supabaseUrl || !supabasePublishableKey) {
-    return {
-      emailEnabled: null,
-      mailerAutoconfirm: null,
-      latencyMs: 0,
-      error: 'Supabase environment variables are not configured.',
-    };
-  }
-  const startedAt = performance.now();
-  try {
-    const response = await fetch(`${supabaseUrl}/auth/v1/settings`, {
-      headers: { apikey: supabasePublishableKey },
-    });
-    const latencyMs = Math.round(performance.now() - startedAt);
-    if (!response.ok) {
-      return {
-        emailEnabled: null,
-        mailerAutoconfirm: null,
-        latencyMs,
-        error: `HTTP ${response.status}`,
-      };
-    }
-    const payload = (await response.json()) as {
-      external?: { email?: boolean };
-      mailer_autoconfirm?: boolean;
-    };
-    return {
-      emailEnabled: payload.external?.email ?? null,
-      mailerAutoconfirm: payload.mailer_autoconfirm ?? null,
-      latencyMs,
-    };
-  } catch (error) {
-    return {
-      emailEnabled: null,
-      mailerAutoconfirm: null,
-      latencyMs: Math.round(performance.now() - startedAt),
-      error: error instanceof Error ? error.message : 'Network error',
-    };
-  }
-}
-
 export async function runSupabaseConnectivityCheck(): Promise<SupabaseDiagnosticsReport> {
   const checkedAt = new Date().toISOString();
   const items: ConnectivityCheckItem[] = [];
@@ -614,8 +703,6 @@ export async function runSupabaseConnectivityCheck(): Promise<SupabaseDiagnostic
       checkedAt,
       projectUrl: supabaseUrl ?? null,
       configured: false,
-      emailAutoConfirm: null,
-      emailProviderEnabled: null,
       items,
     };
   }
@@ -628,32 +715,29 @@ export async function runSupabaseConnectivityCheck(): Promise<SupabaseDiagnostic
     detail: `Connected to ${supabaseUrl}`,
   });
 
-  // 1. Auth settings & SMTP/confirmation status
-  const authHealth = await fetchAuthHealthSettings();
-  if (authHealth.error) {
+  // 1. Auth endpoint availability (instant signup & login)
+  const authStart = performance.now();
+  try {
+    const response = await fetch(`${supabaseUrl}/auth/v1/settings`, {
+      headers: { apikey: supabasePublishableKey },
+    });
+    const latencyMs = Math.round(performance.now() - authStart);
     items.push({
       id: 'auth',
-      label: 'Supabase Auth service',
+      label: 'Supabase Auth Service',
+      status: response.ok ? 'ok' : 'warning',
+      latencyMs,
+      detail: response.ok
+        ? 'Auth endpoint online for instant registration and password sign-in.'
+        : `Auth endpoint responded with HTTP ${response.status}.`,
+    });
+  } catch (error) {
+    items.push({
+      id: 'auth',
+      label: 'Supabase Auth Service',
       status: 'error',
-      latencyMs: authHealth.latencyMs,
-      detail: `Auth endpoint unreachable: ${authHealth.error}`,
-    });
-  } else if (authHealth.mailerAutoconfirm === false) {
-    items.push({
-      id: 'auth',
-      label: 'Supabase Auth & Signup Email Policy',
-      status: 'warning',
-      latencyMs: authHealth.latencyMs,
-      detail:
-        'Auth is reachable, but Confirm Email is ON. Supabase built-in SMTP caps at 2 emails/hour; configure Custom SMTP or enable Auto-Confirm so registrations are not rate-limited.',
-    });
-  } else {
-    items.push({
-      id: 'auth',
-      label: 'Supabase Auth & Signup Email Policy',
-      status: 'ok',
-      latencyMs: authHealth.latencyMs,
-      detail: 'Auth service online with email auto-confirm enabled.',
+      latencyMs: Math.round(performance.now() - authStart),
+      detail: error instanceof Error ? error.message : 'Network error',
     });
   }
 
@@ -677,11 +761,9 @@ export async function runSupabaseConnectivityCheck(): Promise<SupabaseDiagnostic
   const tables: { id: string; table: string; label: string }[] = [
     { id: 'db-profiles', table: 'user_profiles', label: 'Table: user_profiles (RLS)' },
     { id: 'db-announcements', table: 'announcements', label: 'Table: announcements (RLS)' },
-    {
-      id: 'db-actions',
-      table: 'personal_notification_actions',
-      label: 'Table: personal_notification_actions (RLS)',
-    },
+    { id: 'db-actions', table: 'personal_notification_actions', label: 'Table: personal_notification_actions (RLS)' },
+    { id: 'db-permissions', table: 'role_permissions', label: 'Table: role_permissions (RBAC)' },
+    { id: 'db-activity', table: 'activity_logs', label: 'Table: activity_logs (Audit)' },
   ];
   for (const entry of tables) {
     const start = performance.now();
@@ -744,7 +826,7 @@ export async function runSupabaseConnectivityCheck(): Promise<SupabaseDiagnostic
       latencyMs: Math.round(performance.now() - fnStart),
       detail:
         error instanceof Error
-          ? `Not reachable (${error.message}). Email-based password recovery remains available.`
+          ? `Not reachable (${error.message}). Password recovery remains available.`
           : 'Not reachable.',
     });
   }
@@ -753,8 +835,6 @@ export async function runSupabaseConnectivityCheck(): Promise<SupabaseDiagnostic
     checkedAt,
     projectUrl: supabaseUrl,
     configured: true,
-    emailAutoConfirm: authHealth.mailerAutoconfirm,
-    emailProviderEnabled: authHealth.emailEnabled,
     items,
   };
 }

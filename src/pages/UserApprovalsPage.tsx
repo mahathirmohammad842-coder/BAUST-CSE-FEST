@@ -81,7 +81,6 @@ const REGISTRABLE_ROLES: RegistrableRole[] = [
 const SUPER_ADMIN_APPROVAL_ROLES: WorkspaceRole[] = [
   ...REGISTRABLE_ROLES,
   'Organizer',
-  'Admin',
 ];
 
 function formatRegistrationDate(value?: string) {
@@ -181,20 +180,24 @@ export function UserApprovalsPage({
     setRecommendNotesDraft(request.recommendationNotes ?? '');
   };
 
+  const isPendingRequest = (request: RegistrationRequest) =>
+    request.approvalStatus === 'Pending' || request.status === 'Pending Approval';
+
+  const isRejectedRequest = (request: RegistrationRequest) =>
+    request.approvalStatus === 'Rejected' || request.status === 'Rejected';
+
   const counts = useMemo(() => {
     const activeRequests = requests.filter((request) => !request.trashedAt);
     return {
       total: existingAccountCount + activeRequests.length,
-      pending: activeRequests.filter(
-        (request) => request.status === 'Pending Approval'
-      ).length,
+      pending: activeRequests.filter(isPendingRequest).length,
       approved:
         existingAccountCount +
-        activeRequests.filter((request) => request.status === 'Approved')
-          .length,
-      rejected: activeRequests.filter(
-        (request) => request.status === 'Rejected'
-      ).length,
+        activeRequests.filter(
+          (request) =>
+            !isPendingRequest(request) && !isRejectedRequest(request)
+        ).length,
+      rejected: activeRequests.filter(isRejectedRequest).length,
     };
   }, [existingAccountCount, requests]);
 
@@ -206,7 +209,12 @@ export function UserApprovalsPage({
           filter === 'Trash'
             ? Boolean(request.trashedAt)
             : !request.trashedAt &&
-              (filter === 'All' || request.status === filter);
+              (filter === 'All' ||
+                (filter === 'Pending Approval'
+                  ? isPendingRequest(request)
+                  : filter === 'Rejected'
+                    ? isRejectedRequest(request)
+                    : !isPendingRequest(request) && !isRejectedRequest(request)));
         if (!matchesTab) return false;
         if (roleFilter !== 'All' && request.role !== roleFilter) return false;
         if (
@@ -239,7 +247,7 @@ export function UserApprovalsPage({
       visibleRequests.filter(
         (request) =>
           !request.trashedAt &&
-          request.status === 'Pending Approval' &&
+          isPendingRequest(request) &&
           request.id !== currentUserId
       ),
     [currentUserId, visibleRequests]
@@ -466,7 +474,7 @@ export function UserApprovalsPage({
             </h1>
           </div>
           <p className="mt-1 text-xs text-emerald-900/60 dark:text-emerald-300/65">
-            All new registrations start with Assigned Role = Participant under Pending Approval until verified and approved.
+            New registrations start with Assigned Role = Participant and active basic access while their role request awaits Organizer or Super Admin approval.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">

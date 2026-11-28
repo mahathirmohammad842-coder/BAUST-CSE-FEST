@@ -62,9 +62,9 @@ interface ProfileManagementPageProps {
   onSendResetEmail?: (email: string) => Promise<string | null>;
   onRefreshProfiles?: () => Promise<string | null>;
   onNotify?: (message: string) => void;
-  canPromoteToAdmin: boolean;
+  canPromoteToOrganizer: boolean;
   currentUserId: string;
-  onPromoteToAdmin: (userId: string) => Promise<string | null>;
+  onPromoteToOrganizer: (userId: string) => Promise<string | null>;
 }
 
 const durationOptions: { value: BlockDuration; label: string; ms: number }[] = [
@@ -119,9 +119,9 @@ export function ProfileManagementPage({
   onSendResetEmail,
   onRefreshProfiles,
   onNotify,
-  canPromoteToAdmin,
+  canPromoteToOrganizer,
   currentUserId,
-  onPromoteToAdmin,
+  onPromoteToOrganizer,
 }: ProfileManagementPageProps) {
   const [query, setQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState('All');
@@ -196,9 +196,16 @@ export function ProfileManagementPage({
       if (roleFilter !== 'All' && profile.role !== roleFilter) return false;
       const isBlocked = Boolean(activeBlock(profile, blocks));
       if (statusFilter === 'Blocked' && !isBlocked) return false;
+      const isPendingApproval =
+        profile.approvalStatus === 'Pending' ||
+        profile.accountStatus === 'Pending Approval';
+      if (statusFilter === 'Pending Approval' && (isBlocked || !isPendingApproval)) {
+        return false;
+      }
       if (
         statusFilter !== 'All' &&
         statusFilter !== 'Blocked' &&
+        statusFilter !== 'Pending Approval' &&
         (isBlocked || profile.accountStatus !== statusFilter)
       ) {
         return false;
@@ -339,12 +346,12 @@ export function ProfileManagementPage({
     }
   };
 
-  const promoteUserToAdmin = async () => {
+  const promoteUserToOrganizer = async () => {
     if (!promoteTarget) return;
     setWorking(true);
     setPromotionError(null);
     try {
-      const error = await onPromoteToAdmin(promoteTarget.userId);
+      const error = await onPromoteToOrganizer(promoteTarget.userId);
       if (error) {
         setPromotionError(error);
         return;
@@ -578,15 +585,23 @@ export function ProfileManagementPage({
                         </span>
                       </td>
                       <td className="px-4 py-3.5">
-                        <span
-                          className={`rounded-full border px-2 py-1 text-[10px] font-semibold ${
-                            block || profile.accountStatus === 'Suspended'
-                              ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-900/70 dark:bg-red-950/50 dark:text-red-300'
-                              : 'border-slate-200 bg-slate-50 text-slate-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-200'
-                          }`}
-                        >
-                          {status}
-                        </span>
+                        <div className="flex flex-col items-start gap-1">
+                          <span
+                            className={`rounded-full border px-2 py-1 text-[10px] font-semibold ${
+                              block || profile.accountStatus === 'Suspended'
+                                ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-900/70 dark:bg-red-950/50 dark:text-red-300'
+                                : 'border-slate-200 bg-slate-50 text-slate-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-200'
+                            }`}
+                          >
+                            {status}
+                          </span>
+                          {(profile.approvalStatus === 'Pending' ||
+                            profile.accountStatus === 'Pending Approval') && (
+                            <span className="text-[10px] font-medium text-amber-700 dark:text-amber-300">
+                              Role Approval Pending
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-4 py-3.5">
                         <span
@@ -789,10 +804,10 @@ export function ProfileManagementPage({
                   </button>
                 </>
               )}
-              {canPromoteToAdmin &&
+              {canPromoteToOrganizer &&
                 selectedProfile.accountStatus === 'Active' &&
                 selectedProfile.userId !== currentUserId &&
-                !['Admin', 'Super Admin'].includes(selectedProfile.role) && (
+                !['Organizer', 'Super Admin'].includes(selectedProfile.role) && (
                   <button
                     type="button"
                     onClick={() => {
@@ -802,7 +817,7 @@ export function ProfileManagementPage({
                     className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 px-3 py-2 text-xs font-semibold text-violet-800 hover:bg-violet-50 dark:border-violet-800/70 dark:text-violet-300 dark:hover:bg-violet-950/30"
                   >
                     <ShieldCheck className="h-3.5 w-3.5" />
-                    Promote to Admin
+                    Promote to Organizer
                   </button>
                 )}
             </div>
@@ -844,8 +859,8 @@ export function ProfileManagementPage({
           setPromoteTarget(null);
           setPromotionError(null);
         }}
-        title="Promote user to Admin?"
-        subtitle="This grants access to staff tools and profile administration."
+        title="Promote user to Organizer?"
+        subtitle="This grants access to event operations and staff tools."
         maxWidthClass="max-w-md"
         footer={
           <>
@@ -860,7 +875,7 @@ export function ProfileManagementPage({
             <button
               type="button"
               disabled={working}
-              onClick={() => void promoteUserToAdmin()}
+              onClick={() => void promoteUserToOrganizer()}
               className="rounded-lg bg-violet-700 px-3 py-2 text-xs font-semibold text-white hover:bg-violet-800 disabled:opacity-60"
             >
               {working ? 'Promoting…' : 'Confirm promotion'}
@@ -872,7 +887,7 @@ export function ProfileManagementPage({
           <div className="space-y-3">
             <p className="text-sm text-slate-700 dark:text-emerald-100">
               Promote <strong>{promoteTarget.fullName}</strong> (
-              {promoteTarget.email}) from {promoteTarget.role} to Admin?
+              {promoteTarget.email}) from {promoteTarget.role} to Organizer?
             </p>
             {promotionError && (
               <p
@@ -952,7 +967,7 @@ export function ProfileManagementPage({
               </select>
             </label>
             <label className="block text-xs font-semibold">
-              Admin note (optional)
+              Staff note (optional)
               <textarea
                 rows={3}
                 maxLength={500}

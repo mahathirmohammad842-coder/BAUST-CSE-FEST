@@ -1,8 +1,11 @@
 import type {
+  ActivityLogEntry,
   ApprovalLog,
+  ApprovalStatus,
   ProfileAuditEvent,
   ProfileCredential,
   ProfileLoginEvent,
+  ProfilePersonalInfo,
   ProfileState,
   RoleChangeLog,
   UserProfile,
@@ -19,15 +22,18 @@ const PROFILE_ROLES = [
   'Guest',
   'Sponsor',
   'Mentor',
-  'Admin',
   'Super Admin',
 ] as const;
+
 const PROFILE_STATUSES = [
   'Active',
   'Pending Approval',
   'Rejected',
   'Suspended',
 ] as const;
+
+const APPROVAL_STATUSES = ['Pending', 'Approved', 'Rejected'] as const;
+
 const PROFILE_ACTIONS = [
   'profile-updated',
   'profile-verified',
@@ -39,6 +45,14 @@ const PROFILE_ACTIONS = [
   'notifications-updated',
 ] as const;
 
+export const DEFAULT_PERSONAL_INFO: ProfilePersonalInfo = {
+  studentId: '',
+  batch: '',
+  tshirtSize: '',
+  emergencyContact: '',
+  dietaryNotes: '',
+};
+
 const EMPTY_PROFILE_STATE: ProfileState = {
   profiles: [],
   events: [],
@@ -48,44 +62,96 @@ const EMPTY_PROFILE_STATE: ProfileState = {
   roleChangeLogs: [],
   approvalLogs: [],
   verificationLogs: [],
+  activityLogs: [],
+  rolePermissions: [],
 };
 
 function isValidDate(value: unknown): value is string {
   return typeof value === 'string' && !Number.isNaN(Date.parse(value));
 }
 
-function isUserProfile(value: unknown): value is UserProfile {
-  if (typeof value !== 'object' || value === null) return false;
-  const profile = value as Partial<UserProfile>;
-  const links = profile.socialLinks;
-  const preferences = profile.notificationPreferences;
-  return (
-    typeof profile.userId === 'string' &&
-    PROFILE_ROLES.includes(profile.role as (typeof PROFILE_ROLES)[number]) &&
-    typeof profile.fullName === 'string' &&
-    typeof profile.email === 'string' &&
-    typeof profile.phone === 'string' &&
-    typeof profile.department === 'string' &&
-    typeof profile.institution === 'string' &&
-    typeof profile.biography === 'string' &&
-    typeof profile.photoDataUrl === 'string' &&
-    typeof links === 'object' &&
-    links !== null &&
-    typeof links.website === 'string' &&
-    typeof links.linkedIn === 'string' &&
-    typeof links.github === 'string' &&
-    typeof preferences === 'object' &&
-    preferences !== null &&
-    typeof preferences.email === 'boolean' &&
-    typeof preferences.push === 'boolean' &&
-    typeof preferences.inApp === 'boolean' &&
-    typeof preferences.securityAlerts === 'boolean' &&
-    PROFILE_STATUSES.includes(
-      profile.accountStatus as (typeof PROFILE_STATUSES)[number]
-    ) &&
-    typeof profile.verified === 'boolean' &&
-    isValidDate(profile.createdAt)
-  );
+function normalizeStoredProfile(value: unknown): UserProfile | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const raw = value as Omit<Partial<UserProfile>, 'role' | 'assignedRole'> & {
+    role?: string;
+    assignedRole?: string;
+  };
+  const rawRole = raw.role === 'Admin' ? 'Organizer' : raw.role;
+  const links = raw.socialLinks;
+  const preferences = raw.notificationPreferences;
+  if (
+    typeof raw.userId !== 'string' ||
+    !PROFILE_ROLES.includes(rawRole as (typeof PROFILE_ROLES)[number]) ||
+    typeof raw.fullName !== 'string' ||
+    typeof raw.email !== 'string' ||
+    typeof raw.phone !== 'string' ||
+    typeof raw.department !== 'string' ||
+    typeof raw.institution !== 'string' ||
+    typeof raw.biography !== 'string' ||
+    typeof raw.photoDataUrl !== 'string' ||
+    typeof links !== 'object' ||
+    links === null ||
+    typeof links.website !== 'string' ||
+    typeof links.linkedIn !== 'string' ||
+    typeof links.github !== 'string' ||
+    typeof preferences !== 'object' ||
+    preferences === null ||
+    typeof preferences.email !== 'boolean' ||
+    typeof preferences.push !== 'boolean' ||
+    typeof preferences.inApp !== 'boolean' ||
+    typeof preferences.securityAlerts !== 'boolean' ||
+    !PROFILE_STATUSES.includes(
+      raw.accountStatus as (typeof PROFILE_STATUSES)[number]
+    ) ||
+    typeof raw.verified !== 'boolean' ||
+    !isValidDate(raw.createdAt)
+  ) {
+    return null;
+  }
+
+  const normalizedAccountStatus =
+    raw.accountStatus === 'Pending Approval' ? 'Active' : raw.accountStatus!;
+  const normalizedApprovalStatus: ApprovalStatus = APPROVAL_STATUSES.includes(
+    raw.approvalStatus as ApprovalStatus
+  )
+    ? (raw.approvalStatus as ApprovalStatus)
+    : raw.accountStatus === 'Pending Approval'
+      ? 'Pending'
+      : raw.accountStatus === 'Rejected'
+        ? 'Rejected'
+        : 'Approved';
+
+  const info =
+    typeof raw.personalInfo === 'object' && raw.personalInfo !== null
+      ? raw.personalInfo
+      : DEFAULT_PERSONAL_INFO;
+
+  return {
+    ...(raw as UserProfile),
+    role: rawRole as UserProfile['role'],
+    assignedRole:
+      raw.assignedRole &&
+      PROFILE_ROLES.includes(
+        (raw.assignedRole === 'Admin'
+          ? 'Organizer'
+          : raw.assignedRole) as (typeof PROFILE_ROLES)[number]
+      )
+        ? ((raw.assignedRole === 'Admin'
+            ? 'Organizer'
+            : raw.assignedRole) as UserProfile['role'])
+        : (rawRole as UserProfile['role']),
+    accountStatus: normalizedAccountStatus,
+    approvalStatus: normalizedApprovalStatus,
+    address: typeof raw.address === 'string' ? raw.address : '',
+    personalInfo: {
+      studentId: typeof info.studentId === 'string' ? info.studentId : '',
+      batch: typeof info.batch === 'string' ? info.batch : '',
+      tshirtSize: typeof info.tshirtSize === 'string' ? info.tshirtSize : '',
+      emergencyContact:
+        typeof info.emergencyContact === 'string' ? info.emergencyContact : '',
+      dietaryNotes: typeof info.dietaryNotes === 'string' ? info.dietaryNotes : '',
+    },
+  };
 }
 
 function isProfileAuditEvent(value: unknown): value is ProfileAuditEvent {
@@ -159,6 +225,57 @@ function isVerificationLog(value: unknown): value is VerificationLog {
   );
 }
 
+function isActivityLog(value: unknown): value is ActivityLogEntry {
+  if (typeof value !== 'object' || value === null) return false;
+  const log = value as Partial<ActivityLogEntry>;
+  return (
+    typeof log.id === 'string' &&
+    typeof log.userId === 'string' &&
+    typeof log.action === 'string' &&
+    isValidDate(log.createdAt)
+  );
+}
+
+export function calculateProfileCompletion(profile: UserProfile): {
+  percentage: number;
+  completedCount: number;
+  totalCount: number;
+  missingFields: string[];
+} {
+  const checks: { label: string; filled: boolean }[] = [
+    { label: 'Full Name', filled: Boolean(profile.fullName.trim()) },
+    { label: 'Phone Number', filled: Boolean(profile.phone.trim()) },
+    { label: 'Department', filled: Boolean(profile.department.trim()) },
+    { label: 'Institution', filled: Boolean(profile.institution.trim()) },
+    { label: 'Address', filled: Boolean(profile.address?.trim()) },
+    {
+      label: 'Student / Staff ID',
+      filled: Boolean(profile.personalInfo?.studentId?.trim()),
+    },
+    {
+      label: 'Emergency Contact',
+      filled: Boolean(profile.personalInfo?.emergencyContact?.trim()),
+    },
+    { label: 'Bio', filled: Boolean(profile.biography.trim()) },
+    { label: 'Profile Photo', filled: Boolean(profile.photoDataUrl) },
+    {
+      label: 'Social / Portfolio Link',
+      filled: Boolean(
+        profile.socialLinks.website.trim() ||
+          profile.socialLinks.linkedIn.trim() ||
+          profile.socialLinks.github.trim()
+      ),
+    },
+  ];
+  const completedCount = checks.filter((item) => item.filled).length;
+  const totalCount = checks.length;
+  const percentage = Math.round((completedCount / totalCount) * 100);
+  const missingFields = checks
+    .filter((item) => !item.filled)
+    .map((item) => item.label);
+  return { percentage, completedCount, totalCount, missingFields };
+}
+
 export function loadProfileState(): ProfileState {
   try {
     const stored = window.localStorage.getItem(PROFILE_STORAGE_KEY);
@@ -182,7 +299,9 @@ export function loadProfileState(): ProfileState {
 
     return {
       profiles: Array.isArray(state.profiles)
-        ? state.profiles.filter(isUserProfile)
+        ? state.profiles
+            .map(normalizeStoredProfile)
+            .filter((item): item is UserProfile => item !== null)
         : [],
       events: Array.isArray(state.events)
         ? state.events.filter(isProfileAuditEvent)
@@ -205,6 +324,10 @@ export function loadProfileState(): ProfileState {
       verificationLogs: Array.isArray(state.verificationLogs)
         ? state.verificationLogs.filter(isVerificationLog)
         : [],
+      activityLogs: Array.isArray(state.activityLogs)
+        ? state.activityLogs.filter(isActivityLog)
+        : [],
+      rolePermissions: [],
     };
   } catch {
     return { ...EMPTY_PROFILE_STATE };

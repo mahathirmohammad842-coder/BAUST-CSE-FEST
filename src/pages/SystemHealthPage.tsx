@@ -48,7 +48,7 @@ const ROLE_CAPABILITIES: {
     role: 'Super Admin',
     scope: 'Full Platform Governance',
     capabilities: [
-      'Promote active users to Admin',
+      'Promote active users to Organizer',
       'Trash & restore rejected registrations',
       'Manage all profiles, blocks & suspensions',
       'Publish announcements & inspect diagnostics',
@@ -58,19 +58,10 @@ const ROLE_CAPABILITIES: {
     role: 'Organizer',
     scope: 'Event Operations & Staff Control',
     capabilities: [
-      'Approve / reject registrations',
+      'Approve / reject registrations (when delegated)',
       'Create, schedule & dispatch notices',
       'Manage attendee profiles & blocks',
       'Cannot modify or reset Super Admin',
-    ],
-  },
-  {
-    role: 'Admin',
-    scope: 'Directory Verification',
-    capabilities: [
-      'View user profiles in directory',
-      'Verify participant & guest profiles',
-      'Access Attendee Inbox & personal profile',
     ],
   },
   {
@@ -249,11 +240,7 @@ export function SystemHealthPage({
         <StatCard
           label="Warnings"
           value={warningCount.toString()}
-          sublabel={
-            report?.emailAutoConfirm === false
-              ? 'Email confirmation ON (2/hr SMTP limit)'
-              : 'Optional or policy notices'
-          }
+          sublabel="Optional or policy notices"
           icon={AlertTriangle}
           tone={warningCount > 0 ? 'amber' : 'success'}
         />
@@ -265,28 +252,6 @@ export function SystemHealthPage({
           tone={errorCount > 0 ? 'danger' : 'default'}
         />
       </section>
-
-      {report?.emailAutoConfirm === false && (
-        <div
-          role="status"
-          className="flex items-start gap-3 rounded-xl border border-amber-300 bg-amber-50/90 p-4 text-xs leading-relaxed text-amber-950 dark:border-amber-800/70 dark:bg-amber-950/35 dark:text-amber-200"
-        >
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700 dark:text-amber-300" />
-          <div>
-            <p className="font-semibold">
-              Supabase Signup Email Confirmation is currently ON
-            </p>
-            <p className="mt-1 opacity-90">
-              Because new accounts already require organizer/Super Admin approval in{' '}
-              <strong>User Approvals</strong>, Supabase&apos;s built-in confirmation email
-              hits the free 2 emails/hour rate limit during bursts. In your Supabase Dashboard
-              under <strong>Authentication → Providers → Email</strong>, turn{' '}
-              <strong>Confirm email OFF</strong> (or configure a Custom SMTP provider under{' '}
-              <strong>Authentication → SMTP Settings</strong>) for uninterrupted registrations.
-            </p>
-          </div>
-        </div>
-      )}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
         <section className="overflow-hidden rounded-xl border border-emerald-200/70 bg-white dark:border-emerald-800/60 dark:bg-[#061D15] lg:col-span-7">

@@ -21,10 +21,12 @@ import {
 import { Modal } from '../components/Modal';
 import { StatCard } from '../components/StatCard';
 import type {
+  ActivityLogEntry,
   ApprovalLog,
   ProfileAccountStatus,
   RegistrableRole,
   RoleChangeLog,
+  RolePermissionEntry,
   UserProfile,
   VerificationLog,
   VerificationStatus,
@@ -33,7 +35,7 @@ import type {
 import { downloadCsv } from '../utils/csvExport';
 
 type PanelTab = 'directory' | 'approval-queue' | 'verification-queue' | 'audit-reports';
-type AuditSubTab = 'role-changes' | 'approvals' | 'verifications';
+type AuditSubTab = 'role-changes' | 'approvals' | 'verifications' | 'activities' | 'permissions';
 type SortField =
   | 'fullName'
   | 'requestedRole'
@@ -49,6 +51,8 @@ interface SuperAdminUsersPageProps {
   roleChangeLogs: RoleChangeLog[];
   approvalLogs: ApprovalLog[];
   verificationLogs: VerificationLog[];
+  activityLogs?: ActivityLogEntry[];
+  rolePermissions?: RolePermissionEntry[];
   onAssignRole: (
     userId: string,
     newRole: WorkspaceRole,
@@ -111,7 +115,6 @@ const ASSIGNABLE_ROLES: WorkspaceRole[] = [
   'Sponsor',
   'Mentor',
   'Organizer',
-  'Admin',
   'Super Admin',
 ];
 
@@ -159,10 +162,17 @@ function getRoleBadgeClass(role: WorkspaceRole) {
   if (role === 'Super Admin') {
     return 'border-violet-200 bg-violet-50 text-violet-800 dark:border-violet-800/70 dark:bg-violet-950/50 dark:text-violet-300';
   }
-  if (role === 'Admin' || role === 'Organizer') {
+  if (role === 'Organizer') {
     return 'border-emerald-300 bg-emerald-100/80 text-emerald-950 dark:border-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-200';
   }
   return 'border-slate-200 bg-slate-50 text-slate-800 dark:border-emerald-800/60 dark:bg-[#041811] dark:text-emerald-100';
+}
+
+function isPendingApprovalProfile(profile: UserProfile): boolean {
+  return (
+    profile.approvalStatus === 'Pending' ||
+    profile.accountStatus === 'Pending Approval'
+  );
 }
 
 export function SuperAdminUsersPage({
@@ -171,6 +181,8 @@ export function SuperAdminUsersPage({
   roleChangeLogs,
   approvalLogs,
   verificationLogs,
+  activityLogs = [],
+  rolePermissions = [],
   onAssignRole,
   onBulkAssignRoles,
   onReviewRegistration,
@@ -229,16 +241,19 @@ export function SuperAdminUsersPage({
 
   const metrics = useMemo(() => {
     const pendingApprovals = activeDirectoryProfiles.filter(
-      (p) => p.accountStatus === 'Pending Approval'
+      isPendingApprovalProfile
     ).length;
     const pendingVerifications = activeDirectoryProfiles.filter(
       (p) => (p.verificationStatus ?? (p.verified ? 'Verified' : 'Pending')) === 'Pending'
     ).length;
     const staffCount = activeDirectoryProfiles.filter((p) =>
-      ['Organizer', 'Admin', 'Super Admin'].includes(p.role)
+      ['Organizer', 'Super Admin'].includes(p.role)
     ).length;
     const totalAudit =
-      roleChangeLogs.length + approvalLogs.length + verificationLogs.length;
+      roleChangeLogs.length +
+      approvalLogs.length +
+      verificationLogs.length +
+      activityLogs.length;
     return {
       total: activeDirectoryProfiles.length,
       pendingApprovals,
@@ -246,7 +261,13 @@ export function SuperAdminUsersPage({
       staffCount,
       totalAudit,
     };
-  }, [activeDirectoryProfiles, approvalLogs.length, roleChangeLogs.length, verificationLogs.length]);
+  }, [
+    activeDirectoryProfiles,
+    activityLogs.length,
+    approvalLogs.length,
+    roleChangeLogs.length,
+    verificationLogs.length,
+  ]);
 
   const historyCountsByUser = useMemo(() => {
     const map: Record<string, number> = {};
@@ -267,7 +288,7 @@ export function SuperAdminUsersPage({
     return activeDirectoryProfiles
       .filter((profile) => {
         if (activeTab === 'approval-queue') {
-          if (profile.accountStatus !== 'Pending Approval') return false;
+          if (!isPendingApprovalProfile(profile)) return false;
         }
         if (activeTab === 'verification-queue') {
           const v = profile.verificationStatus ?? (profile.verified ? 'Verified' : 'Pending');
@@ -283,8 +304,12 @@ export function SuperAdminUsersPage({
         if (assignedRoleFilter !== 'All' && profile.role !== assignedRoleFilter) {
           return false;
         }
-        if (accountStatusFilter !== 'All' && profile.accountStatus !== accountStatusFilter) {
-          return false;
+        if (accountStatusFilter !== 'All') {
+          if (accountStatusFilter === 'Pending Approval') {
+            if (!isPendingApprovalProfile(profile)) return false;
+          } else if (profile.accountStatus !== accountStatusFilter) {
+            return false;
+          }
         }
         if (needle) {
           const haystack = [
@@ -591,6 +616,17 @@ export function SuperAdminUsersPage({
     );
   }, [auditSearch, verificationLogs]);
 
+  const filteredActivityLogs = useMemo(() => {
+    const q = auditSearch.trim().toLowerCase();
+    if (!q) return activityLogs;
+    return activityLogs.filter((l) =>
+      [l.userName, l.userEmail, l.action, l.category, l.details]
+        .join(' ')
+        .toLowerCase()
+        .includes(q)
+    );
+  }, [activityLogs, auditSearch]);
+
   const handleExportDirectoryCsv = () => {
     const ok = downloadCsv(
       `baust-super-admin-users-${new Date().toISOString().slice(0, 10)}.csv`,
@@ -739,7 +775,7 @@ export function SuperAdminUsersPage({
         <StatCard
           label="Total Accounts"
           value={metrics.total.toLocaleString()}
-          sublabel={`${metrics.staffCount} organizer / admin staff`}
+          sublabel={`${metrics.staffCount} organizer & super admin staff`}
           icon={UserRound}
         />
         <StatCard
@@ -892,6 +928,8 @@ export function SuperAdminUsersPage({
                     { id: 'role-changes', label: `Role Change Logs (${roleChangeLogs.length})` },
                     { id: 'approvals', label: `Approval Logs (${approvalLogs.length})` },
                     { id: 'verifications', label: `Verification Logs (${verificationLogs.length})` },
+                    { id: 'activities', label: `Activity Logs (${activityLogs.length})` },
+                    { id: 'permissions', label: `Role Permissions (${rolePermissions.length})` },
                   ] as const
                 ).map((sub) => (
                   <button
@@ -1181,6 +1219,81 @@ export function SuperAdminUsersPage({
                 </tbody>
               </table>
             )}
+
+            {auditTab === 'activities' && (
+              <table className="w-full min-w-[820px] text-left">
+                <thead className="bg-emerald-50/70 text-[10px] font-semibold uppercase tracking-wide text-emerald-900/65 dark:bg-emerald-950/30 dark:text-emerald-200/65">
+                  <tr>
+                    <th className="px-4 py-3">Timestamp</th>
+                    <th className="px-4 py-3">User</th>
+                    <th className="px-4 py-3">Category</th>
+                    <th className="px-4 py-3">Action</th>
+                    <th className="px-4 py-3">Description</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-emerald-100 dark:divide-emerald-900/50 text-xs">
+                  {filteredActivityLogs.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="px-4 py-10 text-center text-emerald-900/60 dark:text-emerald-300/65">
+                        No user activity events recorded yet.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredActivityLogs.map((log) => (
+                      <tr key={log.id} className="hover:bg-emerald-50/30 dark:hover:bg-[#09291E]/50">
+                        <td className="px-4 py-3 font-mono text-[11px] tabular-nums text-emerald-900/70 dark:text-emerald-300/70 whitespace-nowrap">
+                          {formatDateTime(log.createdAt)}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="font-semibold text-emerald-950 dark:text-emerald-50">{log.userName || '—'}</div>
+                          <div className="text-[11px] text-emerald-900/60 dark:text-emerald-300/65">{log.userEmail}</div>
+                        </td>
+                        <td className="px-4 py-3 capitalize text-emerald-900 dark:text-emerald-200">{log.category}</td>
+                        <td className="px-4 py-3 font-mono text-[11px] text-emerald-950 dark:text-emerald-100">{log.action}</td>
+                        <td className="px-4 py-3 text-emerald-900/75 dark:text-emerald-200/75">{log.details || '—'}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            )}
+
+            {auditTab === 'permissions' && (
+              <table className="w-full min-w-[780px] text-left">
+                <thead className="bg-emerald-50/70 text-[10px] font-semibold uppercase tracking-wide text-emerald-900/65 dark:bg-emerald-950/30 dark:text-emerald-200/65">
+                  <tr>
+                    <th className="px-4 py-3">Role</th>
+                    <th className="px-4 py-3">Manage Users</th>
+                    <th className="px-4 py-3">Approve Users</th>
+                    <th className="px-4 py-3">Change Roles</th>
+                    <th className="px-4 py-3">Publish Notices</th>
+                    <th className="px-4 py-3">Organizer Panel</th>
+                    <th className="px-4 py-3">Super Admin Panel</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-emerald-100 dark:divide-emerald-900/50 text-xs">
+                  {rolePermissions.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="px-4 py-10 text-center text-emerald-900/60 dark:text-emerald-300/65">
+                        Role permission matrix loads from Supabase when connected.
+                      </td>
+                    </tr>
+                  ) : (
+                    rolePermissions.map((perm) => (
+                      <tr key={perm.role} className="hover:bg-emerald-50/30 dark:hover:bg-[#09291E]/50">
+                        <td className="px-4 py-3 font-semibold text-emerald-950 dark:text-emerald-50">{perm.role}</td>
+                        <td className="px-4 py-3">{perm.canManageUsers ? 'Yes' : 'No'}</td>
+                        <td className="px-4 py-3">{perm.canApproveUsers ? 'Yes' : 'No'}</td>
+                        <td className="px-4 py-3">{perm.canChangeRoles ? 'Yes' : 'No'}</td>
+                        <td className="px-4 py-3">{perm.canPublishAnnouncements ? 'Yes' : 'No'}</td>
+                        <td className="px-4 py-3">{perm.canAccessOrganizerPanel ? 'Yes' : 'No'}</td>
+                        <td className="px-4 py-3">{perm.canAccessSuperAdminPanel ? 'Yes' : 'No'}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            )}
           </div>
         ) : filteredDirectory.length === 0 ? (
           <div className="flex flex-col items-center px-6 py-14 text-center">
@@ -1258,9 +1371,9 @@ export function SuperAdminUsersPage({
                     profile.verificationStatus ??
                     (profile.verified ? 'Verified' : 'Pending');
                   const historyCount = historyCountsByUser[profile.userId] ?? 0;
+                  const pendingApproval = isPendingApprovalProfile(profile);
                   const roleMismatch =
-                    reqRole !== profile.role &&
-                    profile.accountStatus === 'Pending Approval';
+                    reqRole !== profile.role && pendingApproval;
 
                   return (
                     <tr
@@ -1356,11 +1469,18 @@ export function SuperAdminUsersPage({
                       </td>
 
                       <td className="px-3 py-3.5 align-top">
-                        <span
-                          className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-semibold ${getAccountStatusBadgeClass(profile.accountStatus, profile.trashedAt)}`}
-                        >
-                          {profile.trashedAt ? 'Trash' : profile.accountStatus}
-                        </span>
+                        <div className="flex flex-col items-start gap-1">
+                          <span
+                            className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-semibold ${getAccountStatusBadgeClass(profile.accountStatus, profile.trashedAt)}`}
+                          >
+                            {profile.trashedAt ? 'Trash' : profile.accountStatus}
+                          </span>
+                          {!profile.trashedAt && pendingApproval && (
+                            <span className="inline-flex rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-800 dark:border-amber-800/70 dark:bg-amber-950/40 dark:text-amber-300">
+                              Approval: Pending
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       <td className="px-3 py-3.5 align-top text-[11px] tabular-nums">
@@ -1397,7 +1517,7 @@ export function SuperAdminUsersPage({
                           </span>
                         ) : (
                           <div className="inline-flex flex-wrap justify-end gap-1.5">
-                            {profile.accountStatus === 'Pending Approval' && (
+                            {pendingApproval && (
                               <>
                                 <button
                                   type="button"

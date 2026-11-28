@@ -6,13 +6,14 @@ export type WorkspaceRole =
   | 'Guest'
   | 'Sponsor'
   | 'Mentor'
-  | 'Admin'
   | 'Super Admin';
 
 export type RegistrableRole = Exclude<
   WorkspaceRole,
-  'Organizer' | 'Admin' | 'Super Admin'
+  'Organizer' | 'Super Admin'
 >;
+
+export type ApprovalStatus = 'Pending' | 'Approved' | 'Rejected';
 
 export type VerificationStatus = 'Pending' | 'Verified' | 'Rejected';
 
@@ -30,6 +31,7 @@ export interface RegistrationRequest {
   affiliation: string;
   registeredAt: string;
   status: RegistrationStatus;
+  approvalStatus?: ApprovalStatus;
   verificationStatus?: VerificationStatus;
   lastLoginAt?: string;
   recommendedAction?: 'Approve' | 'Reject' | null;
@@ -103,20 +105,32 @@ export interface ProfileNotificationPreferences {
   securityAlerts: boolean;
 }
 
+export interface ProfilePersonalInfo {
+  studentId: string;
+  batch: string;
+  tshirtSize: string;
+  emergencyContact: string;
+  dietaryNotes: string;
+}
+
 export interface UserProfile {
   userId: string;
   role: WorkspaceRole;
+  assignedRole?: WorkspaceRole;
   requestedRole?: RegistrableRole;
   fullName: string;
   email: string;
   phone: string;
   department: string;
   institution: string;
+  address: string;
+  personalInfo: ProfilePersonalInfo;
   biography: string;
   photoDataUrl: string;
   socialLinks: ProfileSocialLinks;
   notificationPreferences: ProfileNotificationPreferences;
   accountStatus: ProfileAccountStatus;
+  approvalStatus: ApprovalStatus;
   verified: boolean;
   verificationStatus?: VerificationStatus;
   createdAt: string;
@@ -213,6 +227,36 @@ export interface VerificationLog {
   verificationNotes: string;
 }
 
+export interface ActivityLogEntry {
+  id: string;
+  userId: string;
+  userEmail: string;
+  userName: string;
+  actorId: string;
+  actorName: string;
+  action: string;
+  category: 'auth' | 'profile' | 'governance' | 'security' | 'notifications';
+  details: string;
+  createdAt: string;
+}
+
+export interface RolePermissionEntry {
+  role: WorkspaceRole;
+  hierarchyLevel: number;
+  canManageUsers: boolean;
+  canApproveUsers: boolean;
+  canRecommendApprovals: boolean;
+  canVerifyUsers: boolean;
+  canChangeRoles: boolean;
+  canAssignOrganizer: boolean;
+  canAssignSuperAdmin: boolean;
+  canPublishAnnouncements: boolean;
+  canAccessOrganizerPanel: boolean;
+  canAccessSuperAdminPanel: boolean;
+  canAccessJudgeFeatures: boolean;
+  canManageEvents: boolean;
+}
+
 export interface ProfileState {
   profiles: UserProfile[];
   events: ProfileAuditEvent[];
@@ -222,6 +266,8 @@ export interface ProfileState {
   roleChangeLogs?: RoleChangeLog[];
   approvalLogs?: ApprovalLog[];
   verificationLogs?: VerificationLog[];
+  activityLogs?: ActivityLogEntry[];
+  rolePermissions?: RolePermissionEntry[];
 }
 
 export type NotificationChannel =

@@ -108,7 +108,6 @@ export function RoleBadge({ role, inverse = false }: RoleBadgeProps) {
   }
 
   const toneMap: Record<UserRole, string> = {
-    Admin: 'border-emerald-300 bg-emerald-100 text-emerald-950 dark:border-emerald-700 dark:bg-emerald-900/60 dark:text-emerald-100',
     'Super Admin': 'border-violet-300 bg-violet-100 text-violet-950 dark:border-violet-700 dark:bg-violet-900/60 dark:text-violet-100',
     Organizer: 'border-emerald-900 bg-[#064E3B] text-white dark:border-emerald-700 dark:bg-emerald-700 dark:text-white',
     Participant: 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-800/70 dark:bg-emerald-950/60 dark:text-emerald-200',

@@ -50,6 +50,7 @@ import {
 } from '../data/mockData';
 import type {
   Announcement,
+  ApprovalStatus,
   NotificationChannel,
   NotificationType,
   SystemUser,
@@ -72,6 +73,7 @@ import { getAttachmentsForChannel } from '../utils/attachmentUtils';
 
 interface UserInboxPageProps {
   activeRole: WorkspaceRole;
+  approvalStatus?: ApprovalStatus;
   activeUser: SystemUser;
   announcements: Announcement[];
   preferences: UserPreferenceMatrix;
@@ -167,6 +169,7 @@ function toLocalDateTimeValue(value: string | null) {
 
 export function UserInboxPage({
   activeRole,
+  approvalStatus = 'Approved',
   activeUser,
   announcements,
   preferences,
@@ -364,7 +367,16 @@ export function UserInboxPage({
 
   const roleNotices = useMemo(() => {
     return announcements
-      .filter((a) => isAnnouncementVisibleToRole(a, activeRole))
+      .filter((a) => {
+        if (approvalStatus === 'Pending') {
+          return (
+            isAnnouncementVisibleToRole(a, 'Participant') &&
+            (a.targeting.everyoneAttending ||
+              a.targeting.roles.includes('Participant'))
+          );
+        }
+        return isAnnouncementVisibleToRole(a, activeRole);
+      })
       .sort((a, b) => {
         const pinnedDifference =
           Number(notificationStates[b.id]?.pinned ?? false) -
@@ -376,7 +388,7 @@ export function UserInboxPage({
           a.publishedAt || a.createdAt
         );
       });
-  }, [announcements, activeRole, notificationStates]);
+  }, [announcements, activeRole, approvalStatus, notificationStates]);
 
   const emergencyNotices = useMemo(
     () =>
@@ -905,6 +917,9 @@ export function UserInboxPage({
             </h1>
             <p className="text-xs text-emerald-900/60 dark:text-emerald-300/65">
               {activeUser.affiliation} · Venue: {activeUser.assignedRoom}
+              {approvalStatus === 'Pending'
+                ? ' · Approval pending (showing public & participant notices)'
+                : ''}
             </p>
           </div>
 

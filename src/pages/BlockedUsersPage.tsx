@@ -315,7 +315,7 @@ export function BlockedUsersPage({
               <th className="px-4 py-3">Block expiry time</th>
               <th className="px-4 py-3">Remaining time</th>
               <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3 text-right">Admin actions</th>
+              <th className="px-4 py-3 text-right">Organizer actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-emerald-100 dark:divide-emerald-900/50">
@@ -447,14 +447,14 @@ export function BlockedUsersPage({
       <Modal
         open={selectedRecord !== null}
         onClose={() => setSelectedRecord(null)}
-        title="Block history & admin notes"
+        title="Block history & organizer notes"
         subtitle={selectedRecord ? `${identities.get(selectedRecord.userId)?.fullName ?? 'Deleted user'} · ${selectedRecord.reason}` : undefined}
         maxWidthClass="max-w-xl"
       >
         {selectedRecord && (
           <div className="space-y-5">
             <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4 text-xs dark:border-emerald-800/60 dark:bg-emerald-950/20">
-              <p className="font-semibold text-emerald-950 dark:text-emerald-50">Admin note</p>
+              <p className="font-semibold text-emerald-950 dark:text-emerald-50">Organizer note</p>
               <p className="mt-1 whitespace-pre-wrap text-emerald-900/70 dark:text-emerald-200/75">{selectedRecord.note || 'No note was added for this block.'}</p>
             </div>
             <div>

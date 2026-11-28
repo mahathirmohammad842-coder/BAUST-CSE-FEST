@@ -90,7 +90,10 @@ export function RejectedTrashPage({
     () =>
       requests
         .filter(
-          (request) => !request.trashedAt && request.status === 'Rejected'
+          (request) =>
+            !request.trashedAt &&
+            (request.approvalStatus === 'Rejected' ||
+              request.status === 'Rejected')
         )
         .sort(
           (a, b) =>

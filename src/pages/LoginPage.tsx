@@ -5,7 +5,6 @@ import {
   ArrowRight,
   Building2,
   Check,
-  Clock3,
   Eye,
   EyeOff,
   KeyRound,
@@ -44,7 +43,7 @@ const PORTAL_CAPABILITIES = [
     index: '03',
     title: 'Approval-gated governance',
     detail:
-      'Verified role isolation across participants, volunteers, judges, admins, and super admins.',
+      'Verified role isolation across participants, volunteers, judges, organizers, and super admins.',
   },
 ];
 
@@ -181,7 +180,6 @@ export function LoginPage({
   const [isSettingNewPassword, setIsSettingNewPassword] =
     useState(isPasswordRecovery);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [rateLimitCooldown, setRateLimitCooldown] = useState(0);
   const [registration, setRegistration] = useState<RegistrationInput>({
     fullName: '',
     email: '',
@@ -190,14 +188,6 @@ export function LoginPage({
     affiliation: '',
     password: '',
   });
-
-  useEffect(() => {
-    if (rateLimitCooldown <= 0) return;
-    const timer = window.setInterval(() => {
-      setRateLimitCooldown((prev) => (prev <= 1 ? 0 : prev - 1));
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [rateLimitCooldown]);
 
   useEffect(() => {
     if (!isPasswordRecovery) return;
@@ -257,7 +247,7 @@ export function LoginPage({
 
   const handleRegistrationSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (isSubmitting || rateLimitCooldown > 0) return;
+    if (isSubmitting) return;
     setErrorMessage(null);
     setInvalidField(null);
 
@@ -307,9 +297,6 @@ export function LoginPage({
         affiliation: trimmedAffiliation,
       });
       if (error) {
-        if (/rate.?limit|too many requests|smtp/i.test(error)) {
-          setRateLimitCooldown(60);
-        }
         setErrorMessage(error);
         return;
       }
@@ -321,7 +308,7 @@ export function LoginPage({
         password: '',
       }));
       setSuccessMessage(
-        'Your registration request has been submitted and is awaiting organizer approval.'
+        'Your account is registered with instant Participant access while your requested role is under Organizer or Super Admin review.'
       );
       setIsRegistering(false);
     } finally {
@@ -345,9 +332,6 @@ export function LoginPage({
     try {
       const error = await onRequestPasswordReset(trimmedEmail);
       if (error) {
-        if (/rate.?limit|too many requests|smtp/i.test(error)) {
-          setRateLimitCooldown(60);
-        }
         setErrorMessage(error);
         return;
       }
@@ -587,7 +571,7 @@ export function LoginPage({
                 </h2>
                 <p className="text-sm leading-relaxed text-slate-600 dark:text-emerald-200/80">
                   {isRegistering
-                    ? 'Submit your participant or staff details. Access activates once an Organizer or Super Admin approves your account.'
+                    ? 'Register to enter the portal immediately as a Participant while Organizers or Super Admins review your requested role.'
                     : isSettingNewPassword
                       ? 'Choose a strong password for your BAUST CSE Fest account.'
                       : isForgotPassword
@@ -612,18 +596,6 @@ export function LoginPage({
                   </div>
                 )}
 
-              {rateLimitCooldown > 0 && (
-                <div
-                  role="status"
-                  className="mt-4 flex items-center gap-2.5 rounded-xl border border-amber-200 bg-amber-50/90 px-4 py-3 text-xs font-medium text-amber-900 dark:border-amber-800/70 dark:bg-amber-950/50 dark:text-amber-200"
-                >
-                  <Clock3 className="h-4 w-4 shrink-0" aria-hidden="true" />
-                  <span className="tabular-nums">
-                    Email dispatch rate limit active. You can retry in{' '}
-                    <strong>{rateLimitCooldown}s</strong>.
-                  </span>
-                </div>
-              )}
 
               {isRegistering ? (
                 <form
@@ -768,7 +740,7 @@ export function LoginPage({
                         </select>
                       </div>
                       <p className="mt-1 text-[11px] leading-snug text-slate-500 dark:text-emerald-300/65">
-                        New accounts start as Participant (Pending Approval) until verified &amp; approved.
+                        New accounts receive instant Participant access while your requested role is reviewed.
                       </p>
                     </div>
 
@@ -920,17 +892,15 @@ export function LoginPage({
 
                   <button
                     type="submit"
-                    disabled={isSubmitting || rateLimitCooldown > 0}
+                    disabled={isSubmitting}
                     className="group inline-flex min-h-[46px] w-full items-center justify-center gap-2 rounded-xl bg-[#064E3B] px-5 py-2.5 text-sm font-semibold text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.16),0_2px_6px_-1px_rgba(6,78,59,0.28)] transition-all duration-150 hover:bg-[#053D2E] disabled:cursor-not-allowed disabled:opacity-65 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700 focus-visible:ring-offset-2 dark:bg-emerald-400 dark:text-[#022017] dark:hover:bg-emerald-300 dark:focus-visible:ring-emerald-400 dark:focus-visible:ring-offset-[#061D15]"
                   >
                     <span>
-                      {rateLimitCooldown > 0
-                        ? `Wait ${rateLimitCooldown}s before retrying`
-                        : isSubmitting
-                          ? 'Submitting request…'
-                          : 'Submit for Organizer Approval'}
+                      {isSubmitting
+                        ? 'Creating account…'
+                        : 'Create Account & Enter Portal'}
                     </span>
-                    {!isSubmitting && rateLimitCooldown === 0 && (
+                    {!isSubmitting && (
                       <ArrowRight
                         className="h-4 w-4 transition-transform duration-150 group-hover:translate-x-0.5"
                         aria-hidden="true"
@@ -1133,14 +1103,12 @@ export function LoginPage({
 
                   <button
                     type="submit"
-                    disabled={isSubmitting || rateLimitCooldown > 0}
+                    disabled={isSubmitting}
                     className="inline-flex min-h-[46px] w-full items-center justify-center rounded-xl bg-[#064E3B] px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#053D2E] disabled:cursor-not-allowed disabled:opacity-65 dark:bg-emerald-400 dark:text-[#022017] dark:hover:bg-emerald-300"
                   >
-                    {rateLimitCooldown > 0
-                      ? `Wait ${rateLimitCooldown}s before retrying`
-                      : isSubmitting
-                        ? 'Sending recovery link…'
-                        : 'Send Password Reset Link'}
+                    {isSubmitting
+                      ? 'Sending recovery link…'
+                      : 'Send Password Reset Link'}
                   </button>
                 </form>
               ) : (
@@ -1300,7 +1268,7 @@ export function LoginPage({
             </div>
 
             <footer className="mx-auto mt-10 w-full max-w-[440px] border-t border-slate-200/70 pt-5 text-xs leading-relaxed text-slate-500 sm:mt-12 dark:border-emerald-800/50 dark:text-emerald-300/65">
-              Authorized access for BAUST CSE Fest organizers, administrators, judges, volunteers, and registered participants.
+              Authorized access for BAUST CSE Fest super admins, organizers, judges, volunteers, and registered participants.
             </footer>
           </section>
         </div>

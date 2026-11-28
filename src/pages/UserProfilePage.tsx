@@ -26,16 +26,24 @@ import {
   UserRound,
 } from 'lucide-react';
 import type {
+  ActivityLogEntry,
+  ApprovalLog,
   ProfileAuditEvent,
   ProfileLoginEvent,
   UserProfile,
   WorkspaceRole,
 } from '../types';
+import {
+  calculateProfileCompletion,
+  DEFAULT_PERSONAL_INFO,
+} from '../utils/profileStore';
 
 interface UserProfilePageProps {
   profile: UserProfile;
   events: ProfileAuditEvent[];
   loginHistory: ProfileLoginEvent[];
+  approvalLogs?: ApprovalLog[];
+  activityLogs?: ActivityLogEntry[];
   blockedUntil: string | null;
   passwordResetRequired: boolean;
   hasPasswordCredential: boolean;
@@ -87,7 +95,14 @@ export function ProfileFieldsEditor({
   onSave,
   submitLabel = 'Save profile',
 }: ProfileFieldsEditorProps) {
-  const [draft, setDraft] = useState(profile);
+  const [draft, setDraft] = useState<UserProfile>(() => ({
+    ...profile,
+    address: profile.address ?? '',
+    personalInfo: {
+      ...DEFAULT_PERSONAL_INFO,
+      ...(profile.personalInfo ?? {}),
+    },
+  }));
   const [photoError, setPhotoError] = useState<string | null>(null);
 
   const update = <K extends keyof UserProfile>(
@@ -102,6 +117,19 @@ export function ProfileFieldsEditor({
     ...current,
     socialLinks: { ...current.socialLinks, [key]: value },
   }));
+
+  const updatePersonalInfo = (
+    key: keyof NonNullable<UserProfile['personalInfo']>,
+    value: string
+  ) =>
+    setDraft((current) => ({
+      ...current,
+      personalInfo: {
+        ...DEFAULT_PERSONAL_INFO,
+        ...(current.personalInfo ?? {}),
+        [key]: value,
+      },
+    }));
 
   const handlePhoto = (file?: File) => {
     setPhotoError(null);
@@ -124,13 +152,22 @@ export function ProfileFieldsEditor({
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const info = draft.personalInfo ?? DEFAULT_PERSONAL_INFO;
     onSave({
       ...draft,
       fullName: draft.fullName.trim(),
       phone: draft.phone.trim(),
       department: draft.department.trim(),
       institution: draft.institution.trim(),
+      address: (draft.address ?? '').trim(),
       biography: draft.biography.trim(),
+      personalInfo: {
+        studentId: info.studentId.trim(),
+        batch: info.batch.trim(),
+        tshirtSize: info.tshirtSize.trim(),
+        emergencyContact: info.emergencyContact.trim(),
+        dietaryNotes: info.dietaryNotes.trim(),
+      },
     });
   };
 
@@ -205,6 +242,75 @@ export function ProfileFieldsEditor({
             className={fieldClass}
             value={draft.institution}
             onChange={(event) => update('institution', event.target.value)}
+          />
+        </label>
+        <label className="text-xs font-semibold text-slate-700 dark:text-emerald-100 sm:col-span-2">
+          Home / campus address
+          <input
+            maxLength={200}
+            autoComplete="street-address"
+            className={fieldClass}
+            value={draft.address ?? ''}
+            onChange={(event) => update('address', event.target.value)}
+            placeholder="e.g., BAUST Residential Hall / Saidpur, Nilphamari"
+          />
+        </label>
+      </div>
+
+      <div className="grid gap-3 rounded-xl border border-slate-100 bg-slate-50/70 p-3.5 dark:border-emerald-900/50 dark:bg-[#041811]/70 sm:grid-cols-2 lg:grid-cols-3">
+        <label className="text-xs font-semibold text-slate-700 dark:text-emerald-100">
+          Student / Staff ID
+          <input
+            maxLength={60}
+            className={fieldClass}
+            value={draft.personalInfo?.studentId ?? ''}
+            onChange={(event) => updatePersonalInfo('studentId', event.target.value)}
+            placeholder="e.g., 210101045"
+          />
+        </label>
+        <label className="text-xs font-semibold text-slate-700 dark:text-emerald-100">
+          Batch / Year
+          <input
+            maxLength={40}
+            className={fieldClass}
+            value={draft.personalInfo?.batch ?? ''}
+            onChange={(event) => updatePersonalInfo('batch', event.target.value)}
+            placeholder="e.g., 16th Batch"
+          />
+        </label>
+        <label className="text-xs font-semibold text-slate-700 dark:text-emerald-100">
+          T-Shirt Size
+          <select
+            className={fieldClass}
+            value={draft.personalInfo?.tshirtSize ?? ''}
+            onChange={(event) => updatePersonalInfo('tshirtSize', event.target.value)}
+          >
+            <option value="">Select size</option>
+            <option value="S">S</option>
+            <option value="M">M</option>
+            <option value="L">L</option>
+            <option value="XL">XL</option>
+            <option value="XXL">XXL</option>
+          </select>
+        </label>
+        <label className="text-xs font-semibold text-slate-700 dark:text-emerald-100">
+          Emergency contact
+          <input
+            maxLength={100}
+            className={fieldClass}
+            value={draft.personalInfo?.emergencyContact ?? ''}
+            onChange={(event) => updatePersonalInfo('emergencyContact', event.target.value)}
+            placeholder="Guardian name & phone"
+          />
+        </label>
+        <label className="text-xs font-semibold text-slate-700 dark:text-emerald-100 sm:col-span-2">
+          Dietary / accessibility notes
+          <input
+            maxLength={160}
+            className={fieldClass}
+            value={draft.personalInfo?.dietaryNotes ?? ''}
+            onChange={(event) => updatePersonalInfo('dietaryNotes', event.target.value)}
+            placeholder="Optional fest hospitality preferences"
           />
         </label>
       </div>
@@ -285,19 +391,28 @@ const completionFields = [
   ['Phone number', (profile: UserProfile) => Boolean(profile.phone.trim())],
   ['Department', (profile: UserProfile) => Boolean(profile.department.trim())],
   ['Institution', (profile: UserProfile) => Boolean(profile.institution.trim())],
+  ['Address', (profile: UserProfile) => Boolean((profile.address ?? '').trim())],
+  [
+    'Personal info',
+    (profile: UserProfile) =>
+      Boolean(
+        profile.personalInfo?.studentId?.trim() ||
+          profile.personalInfo?.batch?.trim() ||
+          profile.personalInfo?.emergencyContact?.trim()
+      ),
+  ],
   ['Biography', (profile: UserProfile) => Boolean(profile.biography.trim())],
   ['Profile photo', (profile: UserProfile) => Boolean(profile.photoDataUrl)],
   ['Social link', (profile: UserProfile) => Object.values(profile.socialLinks).some(Boolean)],
 ] as const;
 
 function getProfileCompletion(profile: UserProfile) {
-  const completed = completionFields.filter(([, isComplete]) => isComplete(profile)).length;
   const missing = completionFields
     .filter(([, isComplete]) => !isComplete(profile))
     .map(([label]) => label);
 
   return {
-    score: Math.round((completed / completionFields.length) * 100),
+    score: calculateProfileCompletion(profile).percentage,
     missing,
   };
 }
@@ -319,7 +434,6 @@ const roleTheme: Record<WorkspaceRole, string> = {
   Guest: 'border-slate-300/40 bg-slate-300/15 text-slate-100',
   Sponsor: 'border-violet-300/40 bg-violet-300/15 text-violet-100',
   Mentor: 'border-cyan-300/40 bg-cyan-300/15 text-cyan-100',
-  Admin: 'border-indigo-300/40 bg-indigo-300/15 text-indigo-100',
   'Super Admin': 'border-fuchsia-300/40 bg-fuchsia-300/15 text-fuchsia-100',
 };
 
@@ -493,6 +607,8 @@ export function UserProfilePage({
   profile,
   events,
   loginHistory,
+  approvalLogs = [],
+  activityLogs = [],
   blockedUntil,
   passwordResetRequired,
   hasPasswordCredential,
@@ -567,12 +683,31 @@ export function UserProfilePage({
   ).length;
   const activityScore = Math.min(100, recentActivityCount * 12);
   const engagementScore = Math.round((completion.score + activityScore) / 2);
+  const ownApprovalLogs = approvalLogs
+    .filter((entry) => entry.userId === profile.userId)
+    .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
+    .slice(0, 6);
+  const ownActivityLogs = activityLogs
+    .filter((entry) => entry.userId === profile.userId)
+    .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
+    .slice(0, 8);
+  const effectiveApprovalStatus =
+    profile.approvalStatus ??
+    (profile.accountStatus === 'Pending Approval'
+      ? 'Pending'
+      : profile.accountStatus === 'Rejected'
+        ? 'Rejected'
+        : 'Approved');
   const accountHealthScore = blockedUntil
     ? 0
     : profile.accountStatus === 'Active'
-      ? profile.verified ? 100 : 85
+      ? effectiveApprovalStatus === 'Approved'
+        ? profile.verified
+          ? 100
+          : 90
+        : 75
       : profile.accountStatus === 'Pending Approval'
-        ? 65
+        ? 75
         : profile.accountStatus === 'Suspended'
           ? 20
           : 35;
@@ -588,7 +723,7 @@ export function UserProfilePage({
     ['password-changed', 'password-reset', 'account-suspended', 'account-reactivated'].includes(event.action)
   );
   const recommendations = [
-    ...(passwordResetRequired ? ['Choose a new password after the administrator reset.'] : []),
+    ...(passwordResetRequired ? ['Choose a new password after the organizer or super admin reset.'] : []),
     ...(!hasPasswordCredential ? ['Set a personal password instead of using demo sign-in.'] : []),
     ...(!profile.verified ? ['Complete account verification with your event organizer.'] : []),
     ...(completion.missing.length ? [`Add ${completion.missing.slice(0, 2).join(' and ').toLowerCase()} to improve your profile.`] : []),
@@ -640,7 +775,7 @@ export function UserProfilePage({
       {passwordResetRequired && (
         <div role="alert" className="flex items-start gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/40 dark:text-amber-200">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>Your password was reset by an administrator. Update it now to secure your account.</span>
+          <span>Your password was reset by an organizer or super admin. Update it now to secure your account.</span>
         </div>
       )}
 
@@ -688,6 +823,11 @@ export function UserProfilePage({
           <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-semibold ${profile.verified ? 'bg-emerald-300/15 text-emerald-100' : 'bg-amber-300/15 text-amber-100'}`}>
             {profile.verified ? <BadgeCheck className="h-3.5 w-3.5" /> : <AlertTriangle className="h-3.5 w-3.5" />}
             {profile.verified ? 'Verified account' : 'Verification pending'}
+          </span>
+          <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-semibold ${effectiveApprovalStatus === 'Approved' ? 'bg-emerald-300/15 text-emerald-100' : 'bg-amber-300/15 text-amber-100'}`}>
+            <ShieldCheck className="h-3.5 w-3.5" />
+            Approval: {effectiveApprovalStatus}
+            {profile.requestedRole && profile.requestedRole !== profile.role ? ` (Requested ${profile.requestedRole})` : ''}
           </span>
           <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-semibold ${blockedUntil ? 'bg-rose-300/15 text-rose-100' : 'bg-white/10 text-emerald-50'}`}>
             {blockedUntil ? <ShieldAlert className="h-3.5 w-3.5" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
@@ -808,14 +948,30 @@ export function UserProfilePage({
         </section>
 
         <section className="min-w-0 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm dark:border-emerald-900/70 dark:bg-[#071D16]">
-          <SectionHeading eyebrow="Account timeline" title="Recent updates" icon={Activity} />
-          {ownEvents.length ? (
+          <SectionHeading eyebrow="Account timeline" title="Recent updates &amp; approval history" icon={Activity} />
+          {ownApprovalLogs.length > 0 || ownActivityLogs.length > 0 || ownEvents.length > 0 ? (
             <ol className="space-y-3">
-              {ownEvents.slice(0, 5).map((event) => (
+              {ownApprovalLogs.slice(0, 3).map((entry) => (
+                <ActivityEntry
+                  key={`ap-${entry.id}`}
+                  title={`Role review (${entry.action.replace(/_/g, ' ')}): ${entry.previousStatus} → ${entry.newStatus}`}
+                  detail={`${entry.actorName} · ${formatTime(entry.createdAt)}`}
+                  icon={ShieldCheck}
+                />
+              ))}
+              {ownActivityLogs.slice(0, 3).map((entry) => (
+                <ActivityEntry
+                  key={`act-${entry.id}`}
+                  title={entry.details || entry.action.replace(/_/g, ' ')}
+                  detail={formatTime(entry.createdAt)}
+                  icon={Activity}
+                />
+              ))}
+              {ownEvents.slice(0, 3).map((event) => (
                 <ActivityEntry key={event.id} title={event.summary} detail={`${event.actorName} · ${formatTime(event.occurredAt)}`} icon={event.action === 'password-changed' || event.action === 'password-reset' ? KeyRound : Activity} />
               ))}
             </ol>
-          ) : <p className="text-xs text-slate-500 dark:text-emerald-300/65">Profile changes and administrative actions will appear here.</p>}
+          ) : <p className="text-xs text-slate-500 dark:text-emerald-300/65">Profile changes, approval history, and organizer actions will appear here.</p>}
         </section>
 
         <section className="min-w-0 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm dark:border-emerald-900/70 dark:bg-[#071D16]">
@@ -876,7 +1032,7 @@ export function UserProfilePage({
         <section className="min-w-0 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm dark:border-emerald-900/70 dark:bg-[#071D16]">
           <SectionHeading eyebrow="Account assistance" title="Help & support" icon={CircleHelp} />
           <p className="text-xs leading-5 text-slate-600 dark:text-emerald-200/65">
-            For access, profile, or notification issues, contact your event organizer or system administrator. Include your registered name and account role, but never share your password or verification codes.
+            For access, profile, or notification issues, contact your event organizer or super admin. Include your registered name and account role, but never share your password or verification codes.
           </p>
           <button
             type="button"

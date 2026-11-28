@@ -1,7 +1,12 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, X } from 'lucide-react';
 import { Sidebar, type OrganizerRoute } from './components/Sidebar';
-import { TopHeader, type WorkspaceMode } from './components/TopHeader';
+import { PendingApprovalDashboard } from './components/PendingApprovalDashboard';
+import {
+  TopHeader,
+  type AttendeeRoute,
+  type WorkspaceMode,
+} from './components/TopHeader';
 import {
   createDefaultPreferencesForRole,
   DEMO_ACCESS_ROLES,
@@ -32,6 +37,7 @@ import type {
   ActivityFeedEntry,
   Announcement,
   ApprovalLog,
+  ApprovalStatus,
   DeliveryStatus,
   NotificationDelivery,
   OrganizerProfile,
@@ -91,15 +97,18 @@ import {
 import {
   deleteCloudAnnouncement,
   extractFunctionsInvokeError,
+  fetchCloudActivityLogs,
   fetchCloudAnnouncements,
   fetchCloudApprovalLogs,
   fetchCloudNotificationActions,
   fetchCloudProfile,
   fetchCloudProfiles,
   fetchCloudRoleChangeLogs,
+  fetchCloudRolePermissions,
   fetchCloudVerificationLogs,
   isSupabaseConfigured,
   mapCloudProfile,
+  rpcLogUserActivity,
   rpcRecommendRegistration,
   rpcRecordMyLastLogin,
   rpcReviewUserRegistration,
@@ -107,6 +116,7 @@ import {
   rpcStaffUpdateVerification,
   rpcSuperAdminAssignRole,
   rpcSuperAdminBulkAssignRoles,
+  rpcSuperAdminPromoteToOrganizer,
   rpcSuperAdminSetOrganizerPermission,
   saveCloudAnnouncements,
   saveCloudNotificationAction,
@@ -119,8 +129,16 @@ const DEMO_PASSWORD = 'demo1234';
 const ORGANIZER_PROFILE_STORAGE_KEY = 'baust_organizer_profile';
 const ACCOUNT_IDENTITY_SWAP_KEY = 'baust_organizer_superadmin_swap_v1';
 
-function canAccessOrganizerWorkspace(role: WorkspaceRole) {
-  return role === 'Organizer' || role === 'Super Admin';
+type AppRoute = OrganizerRoute | AttendeeRoute;
+
+function canAccessOrganizerWorkspace(
+  role: WorkspaceRole,
+  approvalStatus: ApprovalStatus = 'Approved'
+) {
+  return (
+    (role === 'Organizer' || role === 'Super Admin') &&
+    approvalStatus === 'Approved'
+  );
 }
 
 function createDefaultOrganizerProfile(): OrganizerProfile {
@@ -188,17 +206,24 @@ function createDefaultUserProfile(
   accountStatus: ProfileAccountStatus = 'Active',
   createdAt = new Date().toISOString()
 ): UserProfile {
-  const isAdministrator =
-    user.role === 'Organizer' ||
-    user.role === 'Admin' ||
-    user.role === 'Super Admin';
+  const isStaffRole = user.role === 'Organizer' || user.role === 'Super Admin';
   const isMahathir = user.id === DEMO_USERS['Super Admin'].id;
+  const normalizedAccountStatus: ProfileAccountStatus =
+    accountStatus === 'Pending Approval' ? 'Active' : accountStatus;
+  const approvalStatus: ApprovalStatus =
+    accountStatus === 'Pending Approval'
+      ? 'Pending'
+      : accountStatus === 'Rejected'
+        ? 'Rejected'
+        : 'Approved';
   return {
     userId: user.id,
     role: user.role,
-    requestedRole: isAdministrator
+    assignedRole: user.role,
+    requestedRole: isStaffRole
       ? 'Participant'
       : (user.role as RegistrableRole),
+    approvalStatus,
     fullName: user.fullName,
     email: user.email,
     phone: user.phone,
@@ -208,6 +233,14 @@ function createDefaultUserProfile(
         : '',
     institution:
       user.role === 'Organizer' || isMahathir ? 'BAUST' : user.affiliation,
+    address: '',
+    personalInfo: {
+      studentId: '',
+      batch: '',
+      tshirtSize: '',
+      emergencyContact: '',
+      dietaryNotes: '',
+    },
     biography: '',
     photoDataUrl: '',
     socialLinks: { website: '', linkedIn: '', github: '' },
@@ -217,10 +250,12 @@ function createDefaultUserProfile(
       inApp: true,
       securityAlerts: true,
     },
-    accountStatus,
-    verified: isAdministrator || accountStatus === 'Active',
+    accountStatus: normalizedAccountStatus,
+    verified: isStaffRole || (normalizedAccountStatus === 'Active' && approvalStatus === 'Approved'),
     verificationStatus:
-      isAdministrator || accountStatus === 'Active' ? 'Verified' : 'Pending',
+      isStaffRole || (normalizedAccountStatus === 'Active' && approvalStatus === 'Approved')
+        ? 'Verified'
+        : 'Pending',
     createdAt,
     lastLoginAt: null,
     canManageApprovals: user.role === 'Super Admin',
@@ -387,13 +422,6 @@ function getSupabaseFailureMessage(error: unknown): string {
   return `${message}${details}${hint}`;
 }
 
-function getAuthEmailErrorMessage(message: string): string {
-  if (/rate.?limit|too many requests|over_email_send_rate_limit|429/i.test(message)) {
-    return 'Supabase rate-limited confirmation emails (built-in SMTP allows 2/hour). Wait 60s before retrying, or in Supabase Dashboard → Authentication → Providers → Email turn Confirm email OFF (accounts still require Organizer approval) or configure Custom SMTP.';
-  }
-  return message;
-}
-
 function cloudProfilesToRegistrationRequests(
   profiles: CloudProfile[]
 ): RegistrationRequest[] {
@@ -407,8 +435,20 @@ function cloudProfilesToRegistrationRequests(
   ];
   return profiles.flatMap((profile) => {
     if (profile.role === 'Super Admin') return [];
+    const approvalStatus: ApprovalStatus =
+      profile.approval_status === 'Pending' ||
+      profile.approval_status === 'Approved' ||
+      profile.approval_status === 'Rejected'
+        ? profile.approval_status
+        : profile.account_status === 'Pending Approval'
+          ? 'Pending'
+          : profile.account_status === 'Rejected'
+            ? 'Rejected'
+            : 'Approved';
+
     const isStaffActive =
-      ['Organizer', 'Admin'].includes(profile.role) &&
+      profile.role === 'Organizer' &&
+      approvalStatus === 'Approved' &&
       profile.account_status === 'Active';
     if (isStaffActive) return [];
 
@@ -435,19 +475,24 @@ function cloudProfilesToRegistrationRequests(
       email: profile.email,
       phone: profile.phone,
       role: requestedRole,
-      assignedRole: profile.role,
+      assignedRole: profile.role === 'Admin' ? 'Organizer' : profile.role,
+      approvalStatus,
       affiliation: profile.institution || profile.department,
       registeredAt: profile.created_at,
       status:
-        profile.account_status === 'Rejected'
+        approvalStatus === 'Rejected' || profile.account_status === 'Rejected'
           ? 'Rejected'
-          : profile.account_status === 'Pending Approval'
+          : approvalStatus === 'Pending' ||
+              profile.account_status === 'Pending Approval'
             ? 'Pending Approval'
             : 'Approved',
       verificationStatus,
       lastLoginAt: profile.last_login_at ?? undefined,
       recommendedAction: profile.recommended_action ?? null,
-      recommendedRole: profile.recommended_role ?? null,
+      recommendedRole:
+        profile.recommended_role === 'Admin'
+          ? 'Organizer'
+          : (profile.recommended_role ?? null),
       recommendedById: profile.recommended_by ?? null,
       recommendedByName: profile.recommended_by_name ?? null,
       recommendationNotes: profile.recommendation_notes ?? null,
@@ -488,7 +533,7 @@ export default function App() {
     useState<NotificationActionStore>(loadNotificationActionStore);
   const [lastAttendeeRole, setLastAttendeeRole] =
     useState<WorkspaceRole>('Participant');
-  const [activeRoute, setActiveRoute] = useState<OrganizerRoute>('dashboard');
+  const [activeRoute, setActiveRoute] = useState<AppRoute>('dashboard');
   const mainContentRef = useRef<HTMLElement>(null);
   const [settingsSection, setSettingsSection] =
     useState<SettingsSection>('account');
@@ -586,28 +631,50 @@ export default function App() {
     try {
       const currentRow = await fetchCloudProfile(userId);
       if (!isLatestRequest()) return null;
-      if (currentRow.account_status !== 'Active') {
+      if (
+        currentRow.account_status === 'Rejected' ||
+        currentRow.account_status === 'Suspended' ||
+        currentRow.approval_status === 'Rejected'
+      ) {
         await supabase?.auth.signOut();
-        return currentRow.account_status === 'Pending Approval'
-          ? 'Your registration is awaiting organizer approval.'
-          : currentRow.account_status === 'Rejected'
-            ? 'This registration was not approved. Contact the organizer for help.'
-            : 'This account is currently suspended. Contact the organizer.';
+        return currentRow.account_status === 'Rejected' ||
+          currentRow.approval_status === 'Rejected'
+          ? 'This registration was not approved. Contact the organizer for help.'
+          : 'This account is currently suspended. Contact the organizer.';
       }
 
       void rpcRecordMyLastLogin();
-      const isStaff = ['Organizer', 'Admin', 'Super Admin'].includes(
-        currentRow.role
+      void rpcLogUserActivity(
+        'login',
+        'auth',
+        'Signed in to BAUST CSE Fest Portal'
       );
-      const [profileRows, roleChangeLogs, approvalLogs, verificationLogs] =
-        isStaff
-          ? await Promise.all([
-              fetchCloudProfiles(),
-              fetchCloudRoleChangeLogs(),
-              fetchCloudApprovalLogs(),
-              fetchCloudVerificationLogs(),
-            ])
-          : [[currentRow], [], [], []];
+      const effectiveApprovalStatus: ApprovalStatus =
+        currentRow.approval_status === 'Pending' ||
+        currentRow.approval_status === 'Approved' ||
+        currentRow.approval_status === 'Rejected'
+          ? currentRow.approval_status
+          : currentRow.account_status === 'Pending Approval'
+            ? 'Pending'
+            : 'Approved';
+      const isStaff =
+        ['Organizer', 'Super Admin'].includes(currentRow.role) &&
+        effectiveApprovalStatus === 'Approved';
+      const [
+        profileRows,
+        roleChangeLogs,
+        approvalLogs,
+        verificationLogs,
+        activityLogs,
+        rolePermissions,
+      ] = await Promise.all([
+        isStaff ? fetchCloudProfiles() : Promise.resolve([currentRow]),
+        isStaff ? fetchCloudRoleChangeLogs() : Promise.resolve([]),
+        fetchCloudApprovalLogs(),
+        isStaff ? fetchCloudVerificationLogs() : Promise.resolve([]),
+        fetchCloudActivityLogs(),
+        fetchCloudRolePermissions(),
+      ]);
       if (!isLatestRequest()) return null;
       const currentProfile = mapCloudProfile(currentRow);
       setProfileState((previous) => ({
@@ -618,6 +685,8 @@ export default function App() {
         roleChangeLogs,
         approvalLogs,
         verificationLogs,
+        activityLogs,
+        rolePermissions,
       }));
       setRegistrationRequests(cloudProfilesToRegistrationRequests(profileRows));
       const authAccount: SystemUser = {
@@ -631,7 +700,14 @@ export default function App() {
       };
       setRegisteredUser(authAccount);
       setActiveRole(currentProfile.role);
-      setMode(canAccessOrganizerWorkspace(currentProfile.role) ? 'organizer' : 'inbox');
+      setMode(
+        canAccessOrganizerWorkspace(
+          currentProfile.role,
+          currentProfile.approvalStatus
+        )
+          ? 'organizer'
+          : 'inbox'
+      );
       setLastAttendeeRole(currentProfile.role);
       setActiveRoute('dashboard');
       setMobileMenuOpen(false);
@@ -801,7 +877,9 @@ export default function App() {
     if (!supabase || !cloudUserId || cloudAnnouncementsReadyFor !== cloudUserId) {
       return;
     }
-    if (!['Organizer', 'Admin', 'Super Admin'].includes(activeRole)) return;
+    if (!['Organizer', 'Super Admin'].includes(activeRole) || mode !== 'organizer') {
+      return;
+    }
     if (skipNextAnnouncementSyncRef.current) {
       skipNextAnnouncementSyncRef.current = false;
       return;
@@ -896,7 +974,8 @@ export default function App() {
           .filter(
             (profile) =>
               !profile.trashedAt &&
-              ['Organizer', 'Admin', 'Super Admin'].includes(profile.role)
+              ['Organizer', 'Super Admin'].includes(profile.role) &&
+              (profile.approvalStatus ?? 'Approved') === 'Approved'
           )
           .map((profile) => ({
             id: profile.userId,
@@ -1029,7 +1108,12 @@ export default function App() {
   ]);
 
   const handleChangeMode = (nextMode: WorkspaceMode) => {
-    if (nextMode === 'organizer' && !canAccessOrganizerWorkspace(activeRole)) return;
+    if (
+      nextMode === 'organizer' &&
+      !canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)
+    ) {
+      return;
+    }
     setMode(nextMode);
     setMobileMenuOpen(false);
     setActiveRoute('dashboard');
@@ -1037,25 +1121,31 @@ export default function App() {
 
   const handleNavigateProfile = () => {
     setSettingsSection('account');
-    setMode(canAccessOrganizerWorkspace(activeRole) ? 'organizer' : 'inbox');
+    setMode(
+      canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)
+        ? 'organizer'
+        : 'inbox'
+    );
     setActiveRoute('profile');
     setMobileMenuOpen(false);
   };
 
   const handleNavigateSettings = (section: SettingsSection) => {
     setSettingsSection(section);
-    setMode(canAccessOrganizerWorkspace(activeRole) ? 'organizer' : 'inbox');
+    setMode(
+      canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)
+        ? 'organizer'
+        : 'inbox'
+    );
     setActiveRoute('settings');
     setMobileMenuOpen(false);
   };
 
   const handleNavigateProfileManagement = () => {
-    if (
-      activeRole !== 'Organizer' &&
-      activeRole !== 'Admin' &&
-      activeRole !== 'Super Admin'
-    ) return;
-    setMode(canAccessOrganizerWorkspace(activeRole) ? 'organizer' : 'inbox');
+    if (!canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)) {
+      return;
+    }
+    setMode('organizer');
     setActiveRoute('profiles');
     setMobileMenuOpen(false);
   };
@@ -1100,19 +1190,29 @@ export default function App() {
       return 'Supabase is not configured.';
     }
     try {
-      const [cloudProfiles, roleChangeLogs, approvalLogs, verificationLogs] =
-        await Promise.all([
-          fetchCloudProfiles(),
-          fetchCloudRoleChangeLogs(),
-          fetchCloudApprovalLogs(),
-          fetchCloudVerificationLogs(),
-        ]);
+      const [
+        cloudProfiles,
+        roleChangeLogs,
+        approvalLogs,
+        verificationLogs,
+        activityLogs,
+        rolePermissions,
+      ] = await Promise.all([
+        fetchCloudProfiles(),
+        fetchCloudRoleChangeLogs(),
+        fetchCloudApprovalLogs(),
+        fetchCloudVerificationLogs(),
+        fetchCloudActivityLogs(),
+        fetchCloudRolePermissions(),
+      ]);
       setProfileState((previous) => ({
         ...previous,
         profiles: cloudProfiles.map(mapCloudProfile),
         roleChangeLogs,
         approvalLogs,
         verificationLogs,
+        activityLogs,
+        rolePermissions,
       }));
       setRegistrationRequests(
         cloudProfilesToRegistrationRequests(cloudProfiles)
@@ -1125,8 +1225,10 @@ export default function App() {
 
   const handleSaveUserProfile = (profile: UserProfile) => {
     const isSelf = profile.userId === getCurrentProfileUserId();
-    const canEditOtherProfiles =
-      activeRole === 'Organizer' || activeRole === 'Super Admin';
+    const canEditOtherProfiles = canAccessOrganizerWorkspace(
+      activeRole,
+      activeProfile.approvalStatus
+    );
     if (!isSelf && !canEditOtherProfiles) {
       showToast('You can only edit your own profile.');
       return;
@@ -1166,6 +1268,13 @@ export default function App() {
           error instanceof Error ? error.message : 'Unexpected Supabase error.';
         showToast(`Could not sync your profile with Supabase: ${message}`);
       });
+      if (isSelf) {
+        void rpcLogUserActivity(
+          'profile_updated',
+          'profile',
+          'Updated personal profile details'
+        );
+      }
     }
     if (profile.userId === DEMO_USERS.Organizer.id) {
       setOrganizerProfile((current) => ({
@@ -1211,19 +1320,22 @@ export default function App() {
             `Could not sync notification preferences with Supabase: ${message}`
           );
         });
+        void rpcLogUserActivity(
+          'notifications_updated',
+          'notifications',
+          'Updated notification preferences'
+        );
       }
       showToast('Notification preferences saved.');
     }
   };
 
   const handleSetProfileVerification = async (userId: string, verified: boolean) => {
-    const canVerify =
-      activeRole === 'Organizer' ||
-      activeRole === 'Admin' ||
-      activeRole === 'Super Admin';
-    const canUnverify =
-      activeRole === 'Organizer' || activeRole === 'Super Admin';
-    if (!canVerify || (!verified && !canUnverify)) return;
+    const canVerify = canAccessOrganizerWorkspace(
+      activeRole,
+      activeProfile.approvalStatus
+    );
+    if (!canVerify) return;
     const profile = managedProfiles.find((item) => item.userId === userId);
     if (
       !profile ||
@@ -1318,11 +1430,11 @@ export default function App() {
     }
   };
 
-  const handlePromoteUserToAdmin = async (
+  const handlePromoteUserToOrganizer = async (
     userId: string
   ): Promise<string | null> => {
     if (activeRole !== 'Super Admin' || !isSupabaseConfigured || !supabase) {
-      return 'Only a signed-in Super Admin can promote users to Admin.';
+      return 'Only a signed-in Super Admin can promote users to Organizer.';
     }
     const profile = managedProfiles.find((item) => item.userId === userId);
     if (
@@ -1335,18 +1447,19 @@ export default function App() {
     }
 
     try {
-      const { error } = await supabase.rpc(
-        'super_admin_promote_user_to_admin',
-        { target_user_id: userId }
-      );
-      if (error) {
-        return `Could not promote the user in Supabase: ${error.message}`;
-      }
+      await rpcSuperAdminPromoteToOrganizer(userId);
     } catch (error) {
       return `Could not promote the user in Supabase: ${getSupabaseFailureMessage(error)}`;
     }
 
-    const promotedProfile = { ...profile, role: 'Admin' as const, verified: true };
+    const promotedProfile = {
+      ...profile,
+      role: 'Organizer' as const,
+      assignedRole: 'Organizer' as const,
+      approvalStatus: 'Approved' as const,
+      verified: true,
+      verificationStatus: 'Verified' as const,
+    };
     setProfileState((previous) => ({
       ...previous,
       profiles: previous.profiles.map((item) =>
@@ -1366,11 +1479,11 @@ export default function App() {
     } catch (error) {
       const message = getSupabaseFailureMessage(error);
       showToast(
-        `User promoted to Admin, but the directory refresh failed: ${message}`
+        `User promoted to Organizer, but the directory refresh failed: ${message}`
       );
       return null;
     }
-    showToast(`${profile.fullName} was promoted to Admin.`);
+    showToast(`${profile.fullName} was promoted to Organizer.`);
     return null;
   };
 
@@ -1614,7 +1727,7 @@ export default function App() {
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
         redirectTo: window.location.origin,
       });
-      return error ? getAuthEmailErrorMessage(error.message) : null;
+      return error ? error.message : null;
     } catch (error) {
       return `Could not send the password reset email: ${getSupabaseFailureMessage(error)}`;
     }
@@ -1678,8 +1791,9 @@ export default function App() {
     if (!isSupabaseConfigured || !supabase) {
       return 'Supabase authentication is not configured. Contact the system administrator.';
     }
-    const { error } = await supabase.auth.signUp({
-      email: input.email.trim().toLowerCase(),
+    const normalizedEmail = input.email.trim().toLowerCase();
+    const { data, error } = await supabase.auth.signUp({
+      email: normalizedEmail,
       password: input.password,
       options: {
         data: {
@@ -1691,10 +1805,29 @@ export default function App() {
         },
       },
     });
-    if (error) return getAuthEmailErrorMessage(error.message);
-    showToast(
-      'Registration submitted to Supabase. An organizer must approve your account before sign-in.'
-    );
+    if (error) return error.message;
+
+    if (data.session && data.user) {
+      return activateSupabaseUser(
+        data.user.id,
+        data.user.email ?? normalizedEmail
+      );
+    }
+
+    if (data.user) {
+      const { data: signInData } = await supabase.auth.signInWithPassword({
+        email: normalizedEmail,
+        password: input.password,
+      });
+      if (signInData.session && signInData.user) {
+        return activateSupabaseUser(
+          signInData.user.id,
+          signInData.user.email ?? normalizedEmail
+        );
+      }
+    }
+
+    showToast('Account created. You can sign in now with your credentials.');
     return null;
   };
 
@@ -1723,10 +1856,10 @@ export default function App() {
     const requestedAssignedRole = options?.assignedRole;
     if (
       requestedAssignedRole &&
-      ['Organizer', 'Admin', 'Super Admin'].includes(requestedAssignedRole) &&
+      ['Organizer', 'Super Admin'].includes(requestedAssignedRole) &&
       activeRole !== 'Super Admin'
     ) {
-      showToast('Only a Super Admin can assign Organizer, Admin, or Super Admin roles.');
+      showToast('Only a Super Admin can assign Organizer or Super Admin roles.');
       return;
     }
 
@@ -2048,8 +2181,8 @@ export default function App() {
     newStatus: VerificationStatus,
     notes: string
   ): Promise<string | null> => {
-    if (!['Organizer', 'Admin', 'Super Admin'].includes(activeRole)) {
-      return 'Only Organizers, Admins, or Super Admins can verify user information.';
+    if (!canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)) {
+      return 'Only approved Organizers or Super Admins can verify user information.';
     }
     if (userId === activeProfileUserId) {
       return 'You cannot change your own verification status.';
@@ -2125,7 +2258,7 @@ export default function App() {
     newStatus: VerificationStatus,
     notes: string
   ): Promise<string | null> => {
-    if (!['Organizer', 'Admin', 'Super Admin'].includes(activeRole)) {
+    if (!canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)) {
       return 'Only staff can bulk verify users.';
     }
     const eligibleIds = userIds.filter((id) => id !== activeProfileUserId);
@@ -2164,7 +2297,7 @@ export default function App() {
     suggestedRole?: RegistrableRole,
     notes = ''
   ): Promise<string | null> => {
-    if (!['Organizer', 'Admin', 'Super Admin'].includes(activeRole)) {
+    if (!canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)) {
       return 'Only Organizers or Super Admins can submit recommendations.';
     }
     if (requestId === activeProfileUserId) {
@@ -2579,10 +2712,9 @@ export default function App() {
 
   const handleDeleteUser = (userId: string) => {
     if (
-      !canAccessOrganizerWorkspace(activeRole) ||
+      !canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus) ||
       userId === DEMO_USERS.Organizer.id ||
-      userId === DEMO_USERS['Super Admin'].id ||
-      userId === DEMO_USERS.Admin.id
+      userId === DEMO_USERS['Super Admin'].id
     ) {
       return;
     }
@@ -2870,7 +3002,10 @@ export default function App() {
   const pendingRequestCount = useMemo(
     () =>
       registrationRequests.filter(
-        (request) => !request.trashedAt && request.status === 'Pending Approval'
+        (request) =>
+          !request.trashedAt &&
+          (request.approvalStatus === 'Pending' ||
+            request.status === 'Pending Approval')
       ).length,
     [registrationRequests]
   );
@@ -2953,12 +3088,30 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)) {
+      return;
+    }
+    if (mode !== 'inbox') {
+      setMode('inbox');
+    }
+    if (!['dashboard', 'inbox', 'profile', 'settings'].includes(activeRoute)) {
+      setActiveRoute('dashboard');
+    }
+  }, [activeProfile.approvalStatus, activeRole, activeRoute, mode]);
+
+  useEffect(() => {
     if (isSupabaseConfigured) {
       if (!cloudUserId) return;
       const currentProfile = managedProfiles.find(
         (profile) => profile.userId === cloudUserId
       );
-      if (currentProfile?.accountStatus === 'Active') return;
+      if (
+        currentProfile &&
+        currentProfile.accountStatus === 'Active' &&
+        currentProfile.approvalStatus !== 'Rejected'
+      ) {
+        return;
+      }
 
       authActivationRequestRef.current += 1;
       void supabase?.auth.signOut().then(({ error }) => {
@@ -2996,7 +3149,7 @@ export default function App() {
         ? registrationRequests.some(
             (request) =>
               request.id === registeredUser.id &&
-              request.status === 'Approved'
+              request.status !== 'Rejected'
           )
         : !deletedDemoUserIds.includes(userId));
     const isSuspended = currentProfile?.accountStatus === 'Suspended';
@@ -3028,8 +3181,17 @@ export default function App() {
   const unreadCount = useMemo(() => {
     const userNotifications =
       notificationActionStore.byUserId[inboxUser.id] ?? {};
+    const isPending = (activeProfile.approvalStatus ?? 'Approved') === 'Pending';
     return activeAnnouncements.filter((a) => {
-      if (!isAnnouncementVisibleToRole(a, inboxRole)) {
+      if (isPending) {
+        if (
+          a.status !== 'Delivered' ||
+          (!a.targeting.everyoneAttending &&
+            !a.targeting.roles.includes('Participant'))
+        ) {
+          return false;
+        }
+      } else if (!isAnnouncementVisibleToRole(a, inboxRole)) {
         return false;
       }
       const isRead =
@@ -3039,7 +3201,13 @@ export default function App() {
         false;
       return !isRead;
     }).length;
-  }, [activeAnnouncements, inboxRole, inboxUser.id, notificationActionStore]);
+  }, [
+    activeAnnouncements,
+    activeProfile.approvalStatus,
+    inboxRole,
+    inboxUser.id,
+    notificationActionStore,
+  ]);
 
   const selectedAnnouncement = useMemo(
     () =>
@@ -3055,16 +3223,25 @@ export default function App() {
   };
 
   const handleCreateNew = () => {
+    if (!canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)) {
+      return;
+    }
     setEditingAnnouncement(null);
     setActiveRoute('composer');
   };
 
   const handleEditAnnouncement = (ann: Announcement) => {
+    if (!canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)) {
+      return;
+    }
     setEditingAnnouncement(ann);
     setActiveRoute('composer');
   };
 
   const handleDuplicateAnnouncement = (ann: Announcement) => {
+    if (!canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)) {
+      return;
+    }
     const duplicate: Announcement = {
       ...ann,
       id: `ann-${Math.floor(200 + Math.random() * 790)}`,
@@ -3086,6 +3263,9 @@ export default function App() {
   };
 
   const handleDeleteAnnouncement = (id: string) => {
+    if (!canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)) {
+      return;
+    }
     const actor = getProfileActor();
     const trashedAt = new Date().toISOString();
     setAnnouncements((prev) =>
@@ -3101,6 +3281,9 @@ export default function App() {
   };
 
   const handleRestoreAnnouncement = (id: string) => {
+    if (!canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)) {
+      return;
+    }
     setAnnouncements((prev) =>
       prev.map((a) =>
         a.id === id ? { ...a, trashedAt: undefined, trashedBy: undefined } : a
@@ -3110,6 +3293,9 @@ export default function App() {
   };
 
   const handlePermanentDeleteAnnouncement = (id: string) => {
+    if (!canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)) {
+      return;
+    }
     setAnnouncements((prev) => prev.filter((a) => a.id !== id));
     setDeliveries((prev) => prev.filter((d) => d.announcementId !== id));
     setActivityFeed((prev) => prev.filter((entry) => entry.announcementId !== id));
@@ -3128,6 +3314,9 @@ export default function App() {
   };
 
   const handleEmptyAnnouncementTrash = () => {
+    if (!canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)) {
+      return;
+    }
     const trashedIds = announcements
       .filter((a) => Boolean(a.trashedAt))
       .map((a) => a.id);
@@ -3156,6 +3345,9 @@ export default function App() {
     saved: Announcement,
     targetStatus: DeliveryStatus
   ) => {
+    if (!canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)) {
+      return;
+    }
     setAnnouncements((prev) => {
       const exists = prev.some((a) => a.id === saved.id);
       if (exists) {
@@ -3761,12 +3953,15 @@ export default function App() {
       <TopHeader
         mode={mode}
         activeRole={activeRole}
+        approvalStatus={activeProfile.approvalStatus ?? 'Approved'}
+        activeAttendeeRoute={activeRoute}
         unreadCount={unreadCount}
         isDark={darkMode}
         userName={activeProfile.fullName}
         avatarUrl={activeProfile.photoDataUrl || undefined}
         onToggleTheme={() => setDarkMode((prev) => !prev)}
         onChangeMode={handleChangeMode}
+        onNavigateAttendeeRoute={(route) => setActiveRoute(route)}
         onOpenLogin={handleSignOut}
         onOpenMobileMenu={() => setMobileMenuOpen(true)}
         onNavigateProfile={handleNavigateProfile}
@@ -3775,21 +3970,25 @@ export default function App() {
       />
 
       <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
-        {mode === 'organizer' && (
-          <Sidebar
-            activeRole={activeRole}
-            activeRoute={activeRoute}
-            failedDeliveryCount={failedDeliveryCount}
-            trashedNoticeCount={trashedNoticeCount}
-            pendingRequestCount={pendingRequestCount}
-            blockedUserCount={blockedUserCount}
-            trashedRejectedCount={trashedRejectedCount}
-            mobileOpen={mobileMenuOpen}
-            onCloseMobile={() => setMobileMenuOpen(false)}
-            onNavigate={(route) => setActiveRoute(route)}
-            onNavigateSettings={handleNavigateSettings}
-          />
-        )}
+        {mode === 'organizer' &&
+          canAccessOrganizerWorkspace(
+            activeRole,
+            activeProfile.approvalStatus
+          ) && (
+            <Sidebar
+              activeRole={activeRole}
+              activeRoute={activeRoute === 'inbox' ? 'dashboard' : activeRoute}
+              failedDeliveryCount={failedDeliveryCount}
+              trashedNoticeCount={trashedNoticeCount}
+              pendingRequestCount={pendingRequestCount}
+              blockedUserCount={blockedUserCount}
+              trashedRejectedCount={trashedRejectedCount}
+              mobileOpen={mobileMenuOpen}
+              onCloseMobile={() => setMobileMenuOpen(false)}
+              onNavigate={(route) => setActiveRoute(route)}
+              onNavigateSettings={handleNavigateSettings}
+            />
+          )}
 
         <main
           ref={mainContentRef}
@@ -3802,6 +4001,8 @@ export default function App() {
                   profile={activeProfile}
                   events={profileState.events}
                   loginHistory={profileState.loginHistory}
+                  approvalLogs={profileState.approvalLogs ?? []}
+                  activityLogs={profileState.activityLogs ?? []}
                   blockedUntil={
                     activeProfileBlock
                       ? activeProfileBlock.expiresAt
@@ -3837,7 +4038,11 @@ export default function App() {
                   onToggleTheme={() => setDarkMode((prev) => !prev)}
                 />
               ) : activeRoute === 'settings' ? (
-                activeRole === 'Organizer' ? (
+                activeRole === 'Organizer' &&
+                canAccessOrganizerWorkspace(
+                  activeRole,
+                  activeProfile.approvalStatus
+                ) ? (
                   <SettingsPage
                     profile={organizerProfile}
                     settings={organizerSettings}
@@ -3877,7 +4082,11 @@ export default function App() {
                     onToggleTheme={() => setDarkMode((prev) => !prev)}
                   />
                 )
-              ) : mode === 'organizer' ? (
+              ) : mode === 'organizer' &&
+                canAccessOrganizerWorkspace(
+                  activeRole,
+                  activeProfile.approvalStatus
+                ) ? (
                 <>
                   {activeRoute === 'dashboard' && (
                     <DashboardPage
@@ -3992,7 +4201,10 @@ export default function App() {
                   )}
 
                   {activeRoute === 'user-approvals' &&
-                    canAccessOrganizerWorkspace(activeRole) && (
+                    canAccessOrganizerWorkspace(
+                      activeRole,
+                      activeProfile.approvalStatus
+                    ) && (
                       <UserApprovalsPage
                         requests={registrationRequests}
                         existingAccountCount={availableDemoUsers.length}
@@ -4021,13 +4233,16 @@ export default function App() {
                     )}
 
                   {activeRoute === 'super-admin-users' &&
-                    activeRole === 'Super Admin' && (
+                    activeRole === 'Super Admin' &&
+                    activeProfile.approvalStatus === 'Approved' && (
                       <SuperAdminUsersPage
                         profiles={managedProfiles}
                         currentUserId={activeProfileUserId}
                         roleChangeLogs={profileState.roleChangeLogs ?? []}
                         approvalLogs={profileState.approvalLogs ?? []}
                         verificationLogs={profileState.verificationLogs ?? []}
+                        activityLogs={profileState.activityLogs ?? []}
+                        rolePermissions={profileState.rolePermissions ?? []}
                         onAssignRole={handleAssignUserRole}
                         onBulkAssignRoles={handleBulkAssignUserRoles}
                         onReviewRegistration={async (
@@ -4093,7 +4308,10 @@ export default function App() {
                     )}
 
                   {activeRoute === 'users' &&
-                    canAccessOrganizerWorkspace(activeRole) && (
+                    canAccessOrganizerWorkspace(
+                      activeRole,
+                      activeProfile.approvalStatus
+                    ) && (
                     <UsersPage
                       currentUser={{
                         id: activeProfile.userId,
@@ -4131,7 +4349,10 @@ export default function App() {
                   )}
 
                   {activeRoute === 'blocked-users' &&
-                    canAccessOrganizerWorkspace(activeRole) && (
+                    canAccessOrganizerWorkspace(
+                      activeRole,
+                      activeProfile.approvalStatus
+                    ) && (
                       <BlockedUsersPage
                         users={availableDemoUsers}
                         requests={registrationRequests}
@@ -4143,12 +4364,18 @@ export default function App() {
                     )}
 
                   {activeRoute === 'profiles' &&
-                    canAccessOrganizerWorkspace(activeRole) && (
+                    canAccessOrganizerWorkspace(
+                      activeRole,
+                      activeProfile.approvalStatus
+                    ) && (
                     <ProfileManagementPage
                       profiles={managedProfiles}
                       blocks={userBlockState.records}
                       events={profileState.events}
-                      canManage={canAccessOrganizerWorkspace(activeRole)}
+                      canManage={canAccessOrganizerWorkspace(
+                        activeRole,
+                        activeProfile.approvalStatus
+                      )}
                       canVerify
                       currentUserRole={activeRole}
                       onSaveProfile={handleSaveUserProfile}
@@ -4168,16 +4395,19 @@ export default function App() {
                           : undefined
                       }
                       onNotify={showToast}
-                      canPromoteToAdmin={
+                      canPromoteToOrganizer={
                         isSupabaseConfigured && activeRole === 'Super Admin'
                       }
                       currentUserId={activeProfileUserId}
-                      onPromoteToAdmin={handlePromoteUserToAdmin}
+                      onPromoteToOrganizer={handlePromoteUserToOrganizer}
                     />
                   )}
 
                   {activeRoute === 'system-health' &&
-                    canAccessOrganizerWorkspace(activeRole) && (
+                    canAccessOrganizerWorkspace(
+                      activeRole,
+                      activeProfile.approvalStatus
+                    ) && (
                       <SystemHealthPage
                         activeRole={activeRole}
                         profiles={managedProfiles}
@@ -4189,41 +4419,22 @@ export default function App() {
                     )}
 
                 </>
-              ) : activeRoute === 'profiles' &&
-                (activeRole === 'Admin' || activeRole === 'Super Admin') ? (
-                <ProfileManagementPage
-                  profiles={managedProfiles}
-                  blocks={userBlockState.records}
-                  events={profileState.events}
-                  canManage={activeRole === 'Super Admin'}
-                  canVerify
-                  currentUserRole={activeRole}
-                  onSaveProfile={handleSaveUserProfile}
-                  onSetVerified={handleSetProfileVerification}
-                  onSetStatus={handleSetProfileStatus}
-                  onBlock={handleBlockUser}
-                  onUnblock={handleUnblockUser}
-                  onResetPassword={handleResetUserPassword}
-                  onSendResetEmail={
-                    isSupabaseConfigured
-                      ? handleSendPasswordResetEmail
-                      : undefined
+              ) : activeRoute === 'dashboard' ? (
+                <PendingApprovalDashboard
+                  profile={activeProfile}
+                  announcements={activeAnnouncements}
+                  notificationStates={
+                    notificationActionStore.byUserId[inboxUser.id] ?? {}
                   }
-                  onRefreshProfiles={
-                    isSupabaseConfigured
-                      ? handleRefreshCloudProfiles
-                      : undefined
-                  }
-                  onNotify={showToast}
-                  canPromoteToAdmin={
-                    isSupabaseConfigured && activeRole === 'Super Admin'
-                  }
-                  currentUserId={activeProfileUserId}
-                  onPromoteToAdmin={handlePromoteUserToAdmin}
+                  approvalLogs={profileState.approvalLogs ?? []}
+                  activityLogs={profileState.activityLogs ?? []}
+                  onNavigate={(route) => setActiveRoute(route)}
+                  onOpenNotification={() => setActiveRoute('inbox')}
                 />
               ) : (
                 <UserInboxPage
                   activeRole={inboxRole}
+                  approvalStatus={activeProfile.approvalStatus ?? 'Approved'}
                   activeUser={inboxUser}
                   announcements={activeAnnouncements}
                   preferences={preferencesByRole[inboxRole]}

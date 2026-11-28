@@ -151,18 +151,26 @@ function getUserFromRequest(
   profile?: UserProfile,
   block?: UserBlockRecord
 ): ManagedUser {
+  const isPendingApproval =
+    profile?.approvalStatus === 'Pending' ||
+    request.approvalStatus === 'Pending' ||
+    request.status === 'Pending Approval';
   const accountStatus: ProfileAccountStatus =
     profile?.accountStatus === 'Suspended'
       ? 'Suspended'
-      : request.status === 'Approved'
-        ? 'Active'
-        : request.status;
+      : isPendingApproval
+        ? 'Pending Approval'
+        : request.status === 'Approved'
+          ? 'Active'
+          : request.status;
   const status: UserStatus =
     block && !block.endedAt
       ? 'Blocked'
       : accountStatus === 'Suspended'
         ? 'Suspended'
-        : request.status;
+        : isPendingApproval
+          ? 'Pending Approval'
+          : request.status;
 
   return {
     id: request.id,
@@ -188,7 +196,6 @@ function getUserFromSystemUser(
 ): ManagedUser {
   const isAdministrator =
     user.role === 'Organizer' ||
-    user.role === 'Admin' ||
     user.role === 'Super Admin';
   const accountStatus: ProfileAccountStatus =
     profile?.accountStatus === 'Suspended' ? 'Suspended' : 'Active';
@@ -581,7 +588,7 @@ export function UsersPage({
         <StatCard
           label="Total Users"
           value={counts.total.toLocaleString()}
-          sublabel="Including the current administrator"
+          sublabel="Including the current organizer"
           icon={UsersRound}
         />
         <StatCard
@@ -648,7 +655,6 @@ export function UsersPage({
                       'Guest',
                       'Sponsor',
                       'Mentor',
-                      'Admin',
                       'Super Admin',
                     ].includes(role)
                   ) {
@@ -665,7 +671,6 @@ export function UsersPage({
                 <option value="Guest">Guest</option>
                 <option value="Sponsor">Sponsor</option>
                 <option value="Mentor">Mentor</option>
-                <option value="Admin">Admin</option>
                 <option value="Super Admin">Super Admin</option>
               </select>
             </label>
@@ -1198,7 +1203,7 @@ export function UsersPage({
             )}
 
             <label className="block text-xs font-semibold text-emerald-950 dark:text-emerald-50">
-              Admin note{' '}
+              Organizer note{' '}
               <span className="font-normal text-emerald-900/55 dark:text-emerald-300/55">
                 (optional)
               </span>

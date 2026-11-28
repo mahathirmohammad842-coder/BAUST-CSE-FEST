@@ -20,7 +20,6 @@ export const WORKSPACE_ROLES: WorkspaceRole[] = [
   'Guest',
   'Sponsor',
   'Mentor',
-  'Admin',
   'Super Admin',
 ];
 
@@ -32,7 +31,6 @@ export const DEMO_ACCESS_ROLES: WorkspaceRole[] = [
   'Guest',
   'Sponsor',
   'Mentor',
-  'Admin',
   'Super Admin',
 ];
 
@@ -44,7 +42,6 @@ export const ALL_ROLES: UserRole[] = [
   'Guest',
   'Sponsor',
   'Mentor',
-  'Admin',
   'Super Admin',
 ];
 
@@ -206,15 +203,6 @@ export const DEMO_USERS: Record<WorkspaceRole, SystemUser> = {
     assignedRoom: 'Central Auditorium',
     teamOrGroup: 'Team Leaders & Coaches',
   },
-  Admin: {
-    id: 'usr-admin-01',
-    fullName: 'Nusrat Jahan',
-    email: 'admin@baust-csefest.local',
-    phone: '+880 1700-000101',
-    role: 'Admin',
-    affiliation: 'BAUST CSE Fest Administration',
-    badgeCode: 'ADM-001',
-  },
   'Super Admin': {
     id: 'usr-org-01',
     fullName: 'Mahathir Mohammad',
@@ -225,6 +213,74 @@ export const DEMO_USERS: Record<WorkspaceRole, SystemUser> = {
     badgeCode: 'SADM-001',
   },
 };
+
+export interface PublicEventScheduleItem {
+  id: string;
+  session: string;
+  timeWindow: string;
+  venue: string;
+  category: string;
+  audience: string;
+}
+
+export const PUBLIC_EVENT_SCHEDULE: PublicEventScheduleItem[] = [
+  {
+    id: 'sched-1',
+    session: 'Kit Collection, Registration Desk & Morning Tea',
+    timeWindow: '08:00 AM – 09:00 AM BST',
+    venue: 'Main Gate & Reception Desk',
+    category: 'Logistics & Hospitality',
+    audience: 'All Registered Attendees',
+  },
+  {
+    id: 'sched-2',
+    session: 'Opening Ceremony & Keynote Address',
+    timeWindow: '09:15 AM – 10:15 AM BST',
+    venue: 'Central Auditorium',
+    category: 'Ceremony',
+    audience: 'Open to All Attendees & Guests',
+  },
+  {
+    id: 'sched-3',
+    session: 'Inter-University Programming Contest (IUPC)',
+    timeWindow: '10:30 AM – 03:30 PM BST',
+    venue: 'Academic Building 1 - Lab 302 & 305',
+    category: 'Programming Contest',
+    audience: 'Contest Teams & Floor Volunteers',
+  },
+  {
+    id: 'sched-4',
+    session: '24-Hour Smart Campus Hackathon Kickoff',
+    timeWindow: '11:00 AM Onwards',
+    venue: 'Multipurpose Hall',
+    category: 'Hackathon',
+    audience: 'Hackathon Teams & Mentors',
+  },
+  {
+    id: 'sched-5',
+    session: 'Line Follower & Robo Soccer Heats',
+    timeWindow: '11:30 AM – 04:00 PM BST',
+    venue: 'Robotics Arena - Ground Floor',
+    category: 'Robotics Challenge',
+    audience: 'Public Spectator Access',
+  },
+  {
+    id: 'sched-6',
+    session: 'Industry Career & Applied AI Tech Seminar',
+    timeWindow: '02:30 PM – 04:00 PM BST',
+    venue: 'CSE Seminar Room',
+    category: 'Tech Seminar',
+    audience: 'Open to All Participants',
+  },
+  {
+    id: 'sched-7',
+    session: 'Prize Giving & Closing Gala',
+    timeWindow: '05:00 PM – 06:30 PM BST',
+    venue: 'Central Auditorium',
+    category: 'Ceremony',
+    audience: 'All Fest Attendees',
+  },
+];
 
 export const INITIAL_ANNOUNCEMENTS: Announcement[] = [
   {
@@ -281,7 +337,6 @@ export const INITIAL_ANNOUNCEMENTS: Announcement[] = [
       { channel: 'Web Notification', targetedCount: 340, deliveredCount: 340, pendingCount: 0, failedCount: 0, readCount: 284, clickCount: 16 },
     ],
     isReadByCurrentRole: {
-      Admin: true,
       Organizer: true,
       Participant: false,
       Volunteer: false,
@@ -345,7 +400,6 @@ export const INITIAL_ANNOUNCEMENTS: Announcement[] = [
       { channel: 'SMS', targetedCount: 310, deliveredCount: 310, pendingCount: 0, failedCount: 0, readCount: 260, clickCount: 8 },
     ],
     isReadByCurrentRole: {
-      Admin: true,
       Organizer: true,
       Participant: false,
       Volunteer: true,
@@ -408,7 +462,6 @@ export const INITIAL_ANNOUNCEMENTS: Announcement[] = [
       { channel: 'Web Notification', targetedCount: 720, deliveredCount: 720, pendingCount: 0, failedCount: 0, readCount: 510, clickCount: 61 },
     ],
     isReadByCurrentRole: {
-      Admin: true,
       Organizer: true,
       Participant: true,
       Volunteer: false,
@@ -472,7 +525,6 @@ export const INITIAL_ANNOUNCEMENTS: Announcement[] = [
       { channel: 'Push Notification', targetedCount: 210, deliveredCount: 210, pendingCount: 0, failedCount: 0, readCount: 175, clickCount: 11 },
     ],
     isReadByCurrentRole: {
-      Admin: true,
       Organizer: true,
       Participant: false,
       Volunteer: true,
@@ -535,7 +587,6 @@ export const INITIAL_ANNOUNCEMENTS: Announcement[] = [
       { channel: 'SMS', targetedCount: 64, deliveredCount: 0, pendingCount: 64, failedCount: 0, readCount: 0, clickCount: 0 },
     ],
     isReadByCurrentRole: {
-      Admin: true,
       Organizer: true,
       Participant: true,
       Volunteer: true,
@@ -585,7 +636,6 @@ export const INITIAL_ANNOUNCEMENTS: Announcement[] = [
       { channel: 'SMS', targetedCount: 95, deliveredCount: 94, pendingCount: 0, failedCount: 1, readCount: 85, clickCount: 4 },
     ],
     isReadByCurrentRole: {
-      Admin: true,
       Organizer: true,
       Participant: true,
       Volunteer: false,
@@ -646,7 +696,6 @@ export const INITIAL_ANNOUNCEMENTS: Announcement[] = [
       { channel: 'Web Notification', targetedCount: 132, deliveredCount: 132, pendingCount: 0, failedCount: 0, readCount: 108, clickCount: 10 },
     ],
     isReadByCurrentRole: {
-      Admin: true,
       Organizer: true,
       Participant: true,
       Volunteer: true,
@@ -690,7 +739,6 @@ export const INITIAL_ANNOUNCEMENTS: Announcement[] = [
     clickCount: 0,
     channelBreakdown: [],
     isReadByCurrentRole: {
-      Admin: true,
       Organizer: true,
       Participant: true,
       Volunteer: true,
@@ -954,6 +1002,5 @@ export const INITIAL_USER_PREFERENCES: Record<WorkspaceRole, UserPreferenceMatri
   Guest: createDefaultPreferencesForRole('Guest'),
   Sponsor: createDefaultPreferencesForRole('Sponsor'),
   Mentor: createDefaultPreferencesForRole('Mentor'),
-  Admin: createDefaultPreferencesForRole('Admin'),
   'Super Admin': createDefaultPreferencesForRole('Super Admin'),
 };

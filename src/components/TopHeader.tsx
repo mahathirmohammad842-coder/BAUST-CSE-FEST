@@ -16,19 +16,23 @@ import {
   UserRound,
 } from 'lucide-react';
 import { Modal } from './Modal';
-import type { SettingsSection, WorkspaceRole } from '../types';
+import type { ApprovalStatus, SettingsSection, WorkspaceRole } from '../types';
 
 export type WorkspaceMode = 'organizer' | 'inbox';
+export type AttendeeRoute = 'dashboard' | 'inbox' | 'profile' | 'settings';
 
 interface TopHeaderProps {
   mode: WorkspaceMode;
   activeRole: WorkspaceRole;
+  approvalStatus?: ApprovalStatus;
+  activeAttendeeRoute?: string;
   unreadCount: number;
   isDark: boolean;
   userName: string;
   avatarUrl?: string;
   onToggleTheme: () => void;
   onChangeMode: (mode: WorkspaceMode) => void;
+  onNavigateAttendeeRoute?: (route: AttendeeRoute) => void;
   onOpenLogin: () => void;
   onOpenMobileMenu: () => void;
   onNavigateProfile: () => void;
@@ -39,12 +43,15 @@ interface TopHeaderProps {
 export function TopHeader({
   mode,
   activeRole,
+  approvalStatus = 'Approved',
+  activeAttendeeRoute = 'dashboard',
   unreadCount,
   isDark,
   userName,
   avatarUrl,
   onToggleTheme,
   onChangeMode,
+  onNavigateAttendeeRoute,
   onOpenLogin,
   onOpenMobileMenu,
   onNavigateProfile,
@@ -94,11 +101,27 @@ export function TopHeader({
     onNavigateSettings(section);
   };
   const canOpenOrganizerWorkspace =
-    activeRole === 'Organizer' || activeRole === 'Super Admin';
+    (activeRole === 'Organizer' || activeRole === 'Super Admin') &&
+    approvalStatus === 'Approved';
   const workspaceButtonLabel =
     activeRole === 'Super Admin' ? 'Super Admin View' : 'Organizer View';
   const workspaceButtonShortLabel =
-    activeRole === 'Super Admin' ? 'Admin' : 'Organizer';
+    activeRole === 'Super Admin' ? 'Super Admin' : 'Organizer';
+
+  const attendeeNavItems: {
+    id: AttendeeRoute;
+    label: string;
+    badge?: number;
+  }[] = [
+    { id: 'dashboard', label: 'Dashboard' },
+    {
+      id: 'inbox',
+      label: 'Notifications',
+      badge: unreadCount > 0 ? unreadCount : undefined,
+    },
+    { id: 'profile', label: 'My Profile' },
+    { id: 'settings', label: 'Settings' },
+  ];
 
   return (
     <header className="relative z-30 w-full shrink-0 border-b border-emerald-900/70 bg-[#042419] text-white transition-colors duration-150 dark:border-emerald-800/50 dark:bg-[#031A12]">
@@ -110,7 +133,7 @@ export function TopHeader({
               onClick={onOpenMobileMenu}
               aria-label={
                 activeRole === 'Super Admin'
-                  ? 'Open admin workspace menu'
+                  ? 'Open super admin workspace menu'
                   : 'Open organizer menu'
               }
               className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-emerald-800/80 text-emerald-100 hover:bg-emerald-900/50 lg:hidden"
@@ -130,15 +153,45 @@ export function TopHeader({
               BAUST
             </span>
           </div>
+
+          {mode === 'inbox' && onNavigateAttendeeRoute && (
+            <nav
+              aria-label="Member portal navigation"
+              className="ml-3 hidden items-center gap-1 md:flex"
+            >
+              {attendeeNavItems.map((item) => {
+                const isActive = activeAttendeeRoute === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => onNavigateAttendeeRoute(item.id)}
+                    className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+                      isActive
+                        ? 'bg-[#073827] text-white'
+                        : 'text-emerald-100/75 hover:bg-emerald-900/45 hover:text-white'
+                    }`}
+                  >
+                    <span>{item.label}</span>
+                    {item.badge !== undefined && (
+                      <span className="rounded bg-emerald-400 px-1.5 py-0.2 font-mono text-[10px] font-bold tabular-nums text-emerald-950">
+                        {item.badge}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </nav>
+          )}
         </div>
 
         <div className="flex shrink-0 items-center gap-1.5 sm:gap-2.5">
-          <div
-            role="group"
-            aria-label="Workspace View Toggle"
-            className="inline-flex items-center rounded-lg border border-emerald-800/80 bg-[#073626] p-1"
-          >
-            {canOpenOrganizerWorkspace && (
+          {canOpenOrganizerWorkspace && (
+            <div
+              role="group"
+              aria-label="Workspace View Toggle"
+              className="inline-flex items-center rounded-lg border border-emerald-800/80 bg-[#073626] p-1"
+            >
               <button
                 type="button"
                 aria-label={workspaceButtonLabel}
@@ -155,38 +208,38 @@ export function TopHeader({
                   {workspaceButtonShortLabel}
                 </span>
               </button>
-            )}
 
-            <button
-              type="button"
-              aria-label={
-                unreadCount > 0
-                  ? `Attendee Inbox, ${unreadCount} unread`
-                  : 'Attendee Inbox'
-              }
-              onClick={() => onChangeMode('inbox')}
-              className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-1.5 text-xs font-semibold transition-colors sm:gap-1.5 sm:px-3 ${
-                mode === 'inbox'
-                  ? 'bg-emerald-400 text-emerald-950'
-                  : 'text-emerald-100/80 hover:text-white'
-              }`}
-            >
-              <Inbox className="h-3.5 w-3.5" aria-hidden="true" />
-              <span className="hidden sm:inline">Attendee Inbox</span>
-              <span className="hidden min-[420px]:inline sm:hidden">Inbox</span>
-              {unreadCount > 0 && (
-                <span
-                  className={`rounded px-1.5 py-0.2 font-mono text-[10px] font-bold tabular-nums ${
-                    mode === 'inbox'
-                      ? 'bg-emerald-950 text-emerald-300'
-                      : 'bg-emerald-900 text-emerald-200'
-                  }`}
-                >
-                  {unreadCount}
-                </span>
-              )}
-            </button>
-          </div>
+              <button
+                type="button"
+                aria-label={
+                  unreadCount > 0
+                    ? `Member Portal, ${unreadCount} unread`
+                    : 'Member Portal'
+                }
+                onClick={() => onChangeMode('inbox')}
+                className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-1.5 text-xs font-semibold transition-colors sm:gap-1.5 sm:px-3 ${
+                  mode === 'inbox'
+                    ? 'bg-emerald-400 text-emerald-950'
+                    : 'text-emerald-100/80 hover:text-white'
+                }`}
+              >
+                <Inbox className="h-3.5 w-3.5" aria-hidden="true" />
+                <span className="hidden sm:inline">Member Portal</span>
+                <span className="hidden min-[420px]:inline sm:hidden">Portal</span>
+                {unreadCount > 0 && (
+                  <span
+                    className={`rounded px-1.5 py-0.2 font-mono text-[10px] font-bold tabular-nums ${
+                      mode === 'inbox'
+                        ? 'bg-emerald-950 text-emerald-300'
+                        : 'bg-emerald-900 text-emerald-200'
+                    }`}
+                  >
+                    {unreadCount}
+                  </span>
+                )}
+              </button>
+            </div>
+          )}
 
           <div className="relative" ref={accountMenuRef}>
             <button
@@ -267,14 +320,14 @@ export function TopHeader({
                       Account Settings
                     </button>
                   </div>
-                  {(activeRole === 'Admin' || activeRole === 'Super Admin') && (
+                  {canOpenOrganizerWorkspace && (
                     <div
                       role="group"
                       aria-label="Administration"
                       className="border-b border-slate-100 py-1 dark:border-emerald-900/70"
                     >
                       <p className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400 dark:text-emerald-300/50">
-                        Administration
+                        Governance
                       </p>
                       <button
                         type="button"
@@ -389,6 +442,41 @@ export function TopHeader({
           </div>
         </div>
       </div>
+      {mode === 'inbox' && onNavigateAttendeeRoute && (
+        <nav
+          aria-label="Mobile member portal navigation"
+          className="flex items-center gap-1 overflow-x-auto border-t border-emerald-900/70 bg-[#031E15] px-3 py-1.5 md:hidden"
+        >
+          {attendeeNavItems.map((item) => {
+            const isActive = activeAttendeeRoute === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => onNavigateAttendeeRoute(item.id)}
+                className={`inline-flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-semibold transition-colors whitespace-nowrap ${
+                  isActive
+                    ? 'bg-emerald-400 text-emerald-950'
+                    : 'text-emerald-100/80 hover:bg-emerald-900/45 hover:text-white'
+                }`}
+              >
+                <span>{item.label}</span>
+                {item.badge !== undefined && (
+                  <span
+                    className={`rounded px-1.5 py-0.2 font-mono text-[10px] font-bold tabular-nums ${
+                      isActive
+                        ? 'bg-emerald-950 text-emerald-300'
+                        : 'bg-emerald-900 text-emerald-200'
+                    }`}
+                  >
+                    {item.badge}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </nav>
+      )}
       <Modal
         open={logoutConfirmOpen}
         onClose={() => setLogoutConfirmOpen(false)}

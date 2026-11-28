@@ -56,7 +56,7 @@ Deno.serve(async (request) => {
     });
     const { data: actorProfile, error: actorProfileError } = await adminClient
       .from('user_profiles')
-      .select('role, account_status')
+      .select('role, account_status, approval_status')
       .eq('id', actor.id)
       .maybeSingle();
     if (actorProfileError) {
@@ -65,10 +65,11 @@ Deno.serve(async (request) => {
     if (
       !actorProfile ||
       actorProfile.account_status !== 'Active' ||
+      (actorProfile.approval_status && actorProfile.approval_status !== 'Approved') ||
       !['Organizer', 'Super Admin'].includes(actorProfile.role)
     ) {
       return respond(403, {
-        error: 'Only an active Organizer or Super Admin can reset passwords.',
+        error: 'Only an approved active Organizer or Super Admin can reset passwords.',
       });
     }
 
