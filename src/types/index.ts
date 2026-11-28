@@ -51,7 +51,8 @@ export interface RegistrationInput {
   email: string;
   phone: string;
   role: RegistrableRole;
-  affiliation: string;
+  department: string;
+  institution: string;
   password: string;
 }
 
@@ -88,7 +89,9 @@ export type ProfileAccountStatus =
   | 'Active'
   | 'Pending Approval'
   | 'Rejected'
-  | 'Suspended';
+  | 'Suspended'
+  | 'Archived'
+  | 'Deleted';
 
 export type ProfileSection = 'overview' | 'security' | 'notifications' | 'activity';
 
@@ -143,6 +146,17 @@ export interface UserProfile {
   recommendationNotes?: string | null;
   recommendedAt?: string | null;
   trashedAt?: string;
+  isDeleted?: boolean;
+  deletedAt?: string | null;
+  deletedBy?: string | null;
+  deletedByName?: string;
+  isArchived?: boolean;
+  archivedAt?: string | null;
+  archivedBy?: string | null;
+  archivedByName?: string;
+  restoredAt?: string | null;
+  restoredBy?: string | null;
+  restoredByName?: string;
 }
 
 export type ProfileAuditAction =
@@ -240,6 +254,31 @@ export interface ActivityLogEntry {
   createdAt: string;
 }
 
+export type UserDeletionAuditAction =
+  | 'soft_deleted'
+  | 'archived'
+  | 'restored'
+  | 'unarchived'
+  | 'permanently_deleted';
+
+export interface UserDeletionAuditLog {
+  id: string;
+  targetUserId: string;
+  targetUserEmail: string;
+  targetUserName: string;
+  targetUserRole: string;
+  action: UserDeletionAuditAction;
+  actorId: string;
+  actorName: string;
+  notes: string;
+  deletedAt?: string | null;
+  restoredAt?: string | null;
+  restoredBy?: string | null;
+  restoredByName?: string;
+  permanentlyDeletedAt?: string | null;
+  createdAt: string;
+}
+
 export interface RolePermissionEntry {
   role: WorkspaceRole;
   hierarchyLevel: number;
@@ -255,6 +294,10 @@ export interface RolePermissionEntry {
   canAccessSuperAdminPanel: boolean;
   canAccessJudgeFeatures: boolean;
   canManageEvents: boolean;
+  canArchiveUsers?: boolean;
+  canSoftDeleteUsers?: boolean;
+  canRestoreUsers?: boolean;
+  canPermanentlyDeleteUsers?: boolean;
 }
 
 export interface ProfileState {
@@ -267,6 +310,7 @@ export interface ProfileState {
   approvalLogs?: ApprovalLog[];
   verificationLogs?: VerificationLog[];
   activityLogs?: ActivityLogEntry[];
+  deletionAuditLogs?: UserDeletionAuditLog[];
   rolePermissions?: RolePermissionEntry[];
 }
 

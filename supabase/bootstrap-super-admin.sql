@@ -1,3 +1,6 @@
+-- Run manually in the Supabase SQL Editor after creating the Super Admin user in Authentication.
+-- Replace '<SUPER_ADMIN_EMAIL>' and '<SUPER_ADMIN_NAME>' with your administrator's account details.
+
 insert into public.user_profiles (
   id,
   full_name,
@@ -15,9 +18,9 @@ insert into public.user_profiles (
 )
 select
   users.id,
-  'Mahathir Mohammad',
+  coalesce(nullif(btrim(users.raw_user_meta_data ->> 'full_name'), ''), 'Platform Super Admin'),
   users.email,
-  '+8801792102548',
+  coalesce(btrim(users.raw_user_meta_data ->> 'phone'), ''),
   'Super Admin',
   'Super Admin',
   'Participant',
@@ -28,16 +31,10 @@ select
   'Verified',
   true
 from auth.users as users
-where lower(users.email) = lower('mahathirmohammad842@gmail.com')
+where lower(users.email) = lower('<SUPER_ADMIN_EMAIL>')
 on conflict (id) do update
-set full_name = excluded.full_name,
-    email = excluded.email,
-    phone = excluded.phone,
-    role = excluded.role,
+set role = excluded.role,
     assigned_role = excluded.assigned_role,
-    requested_role = excluded.requested_role,
-    department = excluded.department,
-    institution = excluded.institution,
     account_status = excluded.account_status,
     approval_status = excluded.approval_status,
     verification_status = excluded.verification_status,

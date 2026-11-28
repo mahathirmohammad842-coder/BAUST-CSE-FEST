@@ -16,6 +16,7 @@ import {
   UserRound,
 } from 'lucide-react';
 import type { RegistrationInput, RegistrableRole } from '../types';
+import { isEmailLikeValue } from '../utils/profileStore';
 
 interface LoginPageProps {
   canRegister: boolean;
@@ -185,7 +186,8 @@ export function LoginPage({
     email: '',
     phone: '',
     role: 'Participant',
-    affiliation: '',
+    department: '',
+    institution: '',
     password: '',
   });
 
@@ -253,7 +255,8 @@ export function LoginPage({
 
     const trimmedName = registration.fullName.trim();
     const trimmedEmail = registration.email.trim();
-    const trimmedAffiliation = registration.affiliation.trim();
+    const trimmedDepartment = registration.department.trim();
+    const trimmedInstitution = registration.institution.trim();
     const digits = registration.phone.replace(/\D/g, '');
 
     if (trimmedName.length < 2) {
@@ -271,9 +274,18 @@ export function LoginPage({
       setErrorMessage('Enter a valid mobile number (at least 8 digits).');
       return;
     }
-    if (trimmedAffiliation.length < 2) {
-      setInvalidField('reg-affiliation');
-      setErrorMessage('Enter your department or organization.');
+    if (trimmedDepartment && isEmailLikeValue(trimmedDepartment)) {
+      setInvalidField('reg-department');
+      setErrorMessage(
+        'Department must be a text name (e.g., CSE), not an email address.'
+      );
+      return;
+    }
+    if (trimmedInstitution && isEmailLikeValue(trimmedInstitution)) {
+      setInvalidField('reg-institution');
+      setErrorMessage(
+        'Institution must be a text name (e.g., BAUST), not an email address.'
+      );
       return;
     }
     if (registration.password.length < 8) {
@@ -294,7 +306,8 @@ export function LoginPage({
         fullName: trimmedName,
         email: trimmedEmail,
         phone: registration.phone.trim(),
-        affiliation: trimmedAffiliation,
+        department: trimmedDepartment,
+        institution: trimmedInstitution,
       });
       if (error) {
         setErrorMessage(error);
@@ -303,10 +316,15 @@ export function LoginPage({
       setEmail(trimmedEmail);
       setPassword('');
       setConfirmRegPassword('');
-      setRegistration((previous) => ({
-        ...previous,
+      setRegistration({
+        fullName: '',
+        email: '',
+        phone: '',
+        role: 'Participant',
+        department: '',
+        institution: '',
         password: '',
-      }));
+      });
       setSuccessMessage(
         'Your account is registered with instant Participant access while your requested role is under Organizer or Super Admin review.'
       );
@@ -631,6 +649,8 @@ export function LoginPage({
                         />
                         <input
                           id="reg-name"
+                          name="fullName"
+                          type="text"
                           required
                           autoComplete="name"
                           aria-invalid={invalidField === 'reg-name'}
@@ -662,6 +682,7 @@ export function LoginPage({
                         />
                         <input
                           id="reg-email"
+                          name="email"
                           required
                           type="email"
                           autoComplete="email"
@@ -694,6 +715,7 @@ export function LoginPage({
                         />
                         <input
                           id="reg-phone"
+                          name="phone"
                           required
                           type="tel"
                           autoComplete="tel"
@@ -712,7 +734,7 @@ export function LoginPage({
                       </div>
                     </div>
 
-                    <div>
+                    <div className="sm:col-span-2">
                       <label
                         htmlFor="reg-role"
                         className="block text-[13px] font-medium text-slate-800 dark:text-emerald-100"
@@ -722,6 +744,7 @@ export function LoginPage({
                       <div className="mt-1.5">
                         <select
                           id="reg-role"
+                          name="requestedRole"
                           required
                           value={registration.role}
                           onChange={(event) => {
@@ -746,10 +769,10 @@ export function LoginPage({
 
                     <div>
                       <label
-                        htmlFor="reg-affiliation"
+                        htmlFor="reg-department"
                         className="block text-[13px] font-medium text-slate-800 dark:text-emerald-100"
                       >
-                        Department / Organization
+                        Department
                       </label>
                       <div className="relative mt-1.5">
                         <Building2
@@ -757,20 +780,59 @@ export function LoginPage({
                           aria-hidden="true"
                         />
                         <input
-                          id="reg-affiliation"
-                          required
-                          aria-invalid={invalidField === 'reg-affiliation'}
-                          placeholder="e.g., CSE, BAUST"
-                          value={registration.affiliation}
+                          id="reg-department"
+                          name="department"
+                          type="text"
+                          autoComplete="organization-title"
+                          maxLength={100}
+                          aria-invalid={invalidField === 'reg-department'}
+                          placeholder="e.g., CSE"
+                          value={registration.department}
                           onChange={(event) =>
                             updateRegistration(
-                              'affiliation',
+                              'department',
                               event.target.value,
-                              'reg-affiliation'
+                              'reg-department'
                             )
                           }
                           className={getFieldClass(
-                            'reg-affiliation',
+                            'reg-department',
+                            'pl-10 pr-3.5'
+                          )}
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label
+                        htmlFor="reg-institution"
+                        className="block text-[13px] font-medium text-slate-800 dark:text-emerald-100"
+                      >
+                        Institution
+                      </label>
+                      <div className="relative mt-1.5">
+                        <Building2
+                          className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-emerald-400/70"
+                          aria-hidden="true"
+                        />
+                        <input
+                          id="reg-institution"
+                          name="institution"
+                          type="text"
+                          autoComplete="organization"
+                          maxLength={120}
+                          aria-invalid={invalidField === 'reg-institution'}
+                          placeholder="e.g., BAUST"
+                          value={registration.institution}
+                          onChange={(event) =>
+                            updateRegistration(
+                              'institution',
+                              event.target.value,
+                              'reg-institution'
+                            )
+                          }
+                          className={getFieldClass(
+                            'reg-institution',
                             'pl-10 pr-3.5'
                           )}
                         />
@@ -791,6 +853,7 @@ export function LoginPage({
                         />
                         <input
                           id="reg-password"
+                          name="newPassword"
                           required
                           type={showRegPassword ? 'text' : 'password'}
                           autoComplete="new-password"

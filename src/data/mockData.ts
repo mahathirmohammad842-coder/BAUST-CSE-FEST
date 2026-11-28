@@ -205,9 +205,9 @@ export const DEMO_USERS: Record<WorkspaceRole, SystemUser> = {
   },
   'Super Admin': {
     id: 'usr-org-01',
-    fullName: 'Mahathir Mohammad',
-    email: 'mahathirmohammad842@gmail.com',
-    phone: '01792102548',
+    fullName: 'Platform Super Admin',
+    email: 'superadmin-root@baust-csefest.local',
+    phone: '+880 1700-000001',
     role: 'Super Admin',
     affiliation: 'BAUST CSE Fest Platform Administration',
     badgeCode: 'SADM-001',

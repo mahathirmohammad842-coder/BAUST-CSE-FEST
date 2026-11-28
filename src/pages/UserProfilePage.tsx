@@ -36,6 +36,8 @@ import type {
 import {
   calculateProfileCompletion,
   DEFAULT_PERSONAL_INFO,
+  isEmailLikeValue,
+  sanitizeProfileTextField,
 } from '../utils/profileStore';
 
 interface UserProfilePageProps {
@@ -97,6 +99,8 @@ export function ProfileFieldsEditor({
 }: ProfileFieldsEditorProps) {
   const [draft, setDraft] = useState<UserProfile>(() => ({
     ...profile,
+    department: sanitizeProfileTextField(profile.department),
+    institution: sanitizeProfileTextField(profile.institution),
     address: profile.address ?? '',
     personalInfo: {
       ...DEFAULT_PERSONAL_INFO,
@@ -104,11 +108,15 @@ export function ProfileFieldsEditor({
     },
   }));
   const [photoError, setPhotoError] = useState<string | null>(null);
+  const [fieldError, setFieldError] = useState<string | null>(null);
 
   const update = <K extends keyof UserProfile>(
     key: K,
     value: UserProfile[K]
-  ) => setDraft((current) => ({ ...current, [key]: value }));
+  ) => {
+    setFieldError(null);
+    setDraft((current) => ({ ...current, [key]: value }));
+  };
 
   const updateSocialLink = (
     key: keyof UserProfile['socialLinks'],
@@ -152,13 +160,29 @@ export function ProfileFieldsEditor({
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    setFieldError(null);
+    const trimmedDepartment = draft.department.trim();
+    const trimmedInstitution = draft.institution.trim();
+    if (trimmedDepartment && isEmailLikeValue(trimmedDepartment)) {
+      setFieldError(
+        'Department must be a text name (e.g., Computer Science & Engineering), not an email address.'
+      );
+      return;
+    }
+    if (trimmedInstitution && isEmailLikeValue(trimmedInstitution)) {
+      setFieldError(
+        'Institution must be a text name (e.g., BAUST), not an email address.'
+      );
+      return;
+    }
+
     const info = draft.personalInfo ?? DEFAULT_PERSONAL_INFO;
     onSave({
       ...draft,
       fullName: draft.fullName.trim(),
       phone: draft.phone.trim(),
-      department: draft.department.trim(),
-      institution: draft.institution.trim(),
+      department: trimmedDepartment,
+      institution: trimmedInstitution,
       address: (draft.address ?? '').trim(),
       biography: draft.biography.trim(),
       personalInfo: {
@@ -203,10 +227,22 @@ export function ProfileFieldsEditor({
       </div>
       {photoError && <p role="alert" className="text-xs text-red-700 dark:text-red-300">{photoError}</p>}
 
+      {fieldError && (
+        <p
+          role="alert"
+          className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700 dark:border-red-800/70 dark:bg-red-950/40 dark:text-red-300"
+        >
+          {fieldError}
+        </p>
+      )}
+
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="text-xs font-semibold text-slate-700 dark:text-emerald-100">
           Full name
           <input
+            id="profile-full-name"
+            name="fullName"
+            type="text"
             required
             maxLength={100}
             autoComplete="name"
@@ -218,6 +254,8 @@ export function ProfileFieldsEditor({
         <label className="text-xs font-semibold text-slate-700 dark:text-emerald-100">
           Phone number
           <input
+            id="profile-phone"
+            name="phone"
             type="tel"
             autoComplete="tel"
             maxLength={32}
@@ -229,7 +267,12 @@ export function ProfileFieldsEditor({
         <label className="text-xs font-semibold text-slate-700 dark:text-emerald-100">
           Department
           <input
+            id="profile-department"
+            name="department"
+            type="text"
+            autoComplete="organization-title"
             maxLength={100}
+            placeholder="e.g., Computer Science & Engineering"
             className={fieldClass}
             value={draft.department}
             onChange={(event) => update('department', event.target.value)}
@@ -238,7 +281,12 @@ export function ProfileFieldsEditor({
         <label className="text-xs font-semibold text-slate-700 dark:text-emerald-100">
           Institution / organization
           <input
+            id="profile-institution"
+            name="institution"
+            type="text"
+            autoComplete="organization"
             maxLength={120}
+            placeholder="e.g., BAUST"
             className={fieldClass}
             value={draft.institution}
             onChange={(event) => update('institution', event.target.value)}
@@ -247,6 +295,9 @@ export function ProfileFieldsEditor({
         <label className="text-xs font-semibold text-slate-700 dark:text-emerald-100 sm:col-span-2">
           Home / campus address
           <input
+            id="profile-address"
+            name="address"
+            type="text"
             maxLength={200}
             autoComplete="street-address"
             className={fieldClass}

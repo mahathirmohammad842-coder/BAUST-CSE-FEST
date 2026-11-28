@@ -8,11 +8,46 @@ import type {
   ProfilePersonalInfo,
   ProfileState,
   RoleChangeLog,
+  UserDeletionAuditLog,
   UserProfile,
   VerificationLog,
 } from '../types';
 
 export const PROFILE_STORAGE_KEY = 'baust_user_profiles';
+
+const EMAIL_IN_TEXT_REGEX = /[^\s@]+@[^\s@]+\.[^\s@]+/;
+
+export function isEmailLikeValue(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  return EMAIL_IN_TEXT_REGEX.test(value.trim());
+}
+
+export function sanitizeProfileTextField(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (!trimmed || isEmailLikeValue(trimmed)) return '';
+  return trimmed;
+}
+
+export function clearUserScopedStorageCaches(): void {
+  const keys = [
+    PROFILE_STORAGE_KEY,
+    'baust_organizer_profile',
+    'baust_organizer_superadmin_swap_v1',
+    'baust_registration_requests',
+    'baust_deleted_demo_users',
+    'baust_user_block_state',
+    'baust_temporary_user_blocks',
+    'baust_personal_notification_actions_v1',
+  ];
+  try {
+    for (const key of keys) {
+      window.localStorage.removeItem(key);
+    }
+  } catch {
+    // Ignore storage removal errors in restricted environments
+  }
+}
 
 const PROFILE_ROLES = [
   'Organizer',
@@ -30,6 +65,8 @@ const PROFILE_STATUSES = [
   'Pending Approval',
   'Rejected',
   'Suspended',
+  'Archived',
+  'Deleted',
 ] as const;
 
 const APPROVAL_STATUSES = ['Pending', 'Approved', 'Rejected'] as const;
@@ -53,7 +90,7 @@ export const DEFAULT_PERSONAL_INFO: ProfilePersonalInfo = {
   dietaryNotes: '',
 };
 
-const EMPTY_PROFILE_STATE: ProfileState = {
+export const EMPTY_PROFILE_STATE: ProfileState = {
   profiles: [],
   events: [],
   loginHistory: [],
@@ -63,6 +100,7 @@ const EMPTY_PROFILE_STATE: ProfileState = {
   approvalLogs: [],
   verificationLogs: [],
   activityLogs: [],
+  deletionAuditLogs: [],
   rolePermissions: [],
 };
 
@@ -140,6 +178,8 @@ function normalizeStoredProfile(value: unknown): UserProfile | null {
             ? 'Organizer'
             : raw.assignedRole) as UserProfile['role'])
         : (rawRole as UserProfile['role']),
+    department: sanitizeProfileTextField(raw.department),
+    institution: sanitizeProfileTextField(raw.institution),
     accountStatus: normalizedAccountStatus,
     approvalStatus: normalizedApprovalStatus,
     address: typeof raw.address === 'string' ? raw.address : '',
@@ -236,6 +276,17 @@ function isActivityLog(value: unknown): value is ActivityLogEntry {
   );
 }
 
+function isDeletionAuditLog(value: unknown): value is UserDeletionAuditLog {
+  if (typeof value !== 'object' || value === null) return false;
+  const log = value as Partial<UserDeletionAuditLog>;
+  return (
+    typeof log.id === 'string' &&
+    typeof log.targetUserId === 'string' &&
+    typeof log.action === 'string' &&
+    isValidDate(log.createdAt)
+  );
+}
+
 export function calculateProfileCompletion(profile: UserProfile): {
   percentage: number;
   completedCount: number;
@@ -326,6 +377,9 @@ export function loadProfileState(): ProfileState {
         : [],
       activityLogs: Array.isArray(state.activityLogs)
         ? state.activityLogs.filter(isActivityLog)
+        : [],
+      deletionAuditLogs: Array.isArray(state.deletionAuditLogs)
+        ? state.deletionAuditLogs.filter(isDeletionAuditLog)
         : [],
       rolePermissions: [],
     };

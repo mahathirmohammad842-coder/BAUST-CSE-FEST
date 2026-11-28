@@ -17,6 +17,10 @@ import type {
   OrganizerSettings,
   SettingsSection,
 } from '../types';
+import {
+  isEmailLikeValue,
+  sanitizeProfileTextField,
+} from '../utils/profileStore';
 
 interface SettingsPageProps {
   profile: OrganizerProfile;
@@ -101,7 +105,11 @@ export function SettingsPage({
   onToggleTheme,
   onPasswordUpdated,
 }: SettingsPageProps) {
-  const [profileDraft, setProfileDraft] = useState(profile);
+  const [profileDraft, setProfileDraft] = useState(() => ({
+    ...profile,
+    department: sanitizeProfileTextField(profile.department),
+  }));
+  const [profileError, setProfileError] = useState<string | null>(null);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -114,7 +122,22 @@ export function SettingsPage({
 
   const handleProfileSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    onSaveProfile(profileDraft);
+    setProfileError(null);
+    const trimmedDepartment = profileDraft.department.trim();
+    if (trimmedDepartment && isEmailLikeValue(trimmedDepartment)) {
+      setProfileError(
+        'Department must be a text field and cannot contain an email address.'
+      );
+      return;
+    }
+    onSaveProfile({
+      ...profileDraft,
+      fullName: profileDraft.fullName.trim(),
+      email: profileDraft.email.trim(),
+      phone: profileDraft.phone.trim(),
+      department: trimmedDepartment,
+      designation: profileDraft.designation.trim(),
+    });
   };
 
   const handlePasswordSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -207,10 +230,20 @@ export function SettingsPage({
 
           {section === 'account' && (
             <form onSubmit={handleProfileSubmit} className="space-y-5">
+              {profileError && (
+                <p
+                  role="alert"
+                  className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700 dark:border-red-800/70 dark:bg-red-950/40 dark:text-red-300"
+                >
+                  {profileError}
+                </p>
+              )}
               <div className="grid gap-4 sm:grid-cols-2">
                 <label className="text-xs font-semibold text-slate-700 dark:text-emerald-100">
                   Full name
                   <input
+                    name="fullName"
+                    type="text"
                     className={fieldClass}
                     value={profileDraft.fullName}
                     onChange={(event) =>
@@ -223,6 +256,7 @@ export function SettingsPage({
                 <label className="text-xs font-semibold text-slate-700 dark:text-emerald-100">
                   Email address
                   <input
+                    name="email"
                     className={fieldClass}
                     type="email"
                     value={profileDraft.email}
@@ -236,6 +270,7 @@ export function SettingsPage({
                 <label className="text-xs font-semibold text-slate-700 dark:text-emerald-100">
                   Phone number
                   <input
+                    name="phone"
                     className={fieldClass}
                     type="tel"
                     value={profileDraft.phone}
@@ -249,12 +284,15 @@ export function SettingsPage({
                 <label className="text-xs font-semibold text-slate-700 dark:text-emerald-100">
                   Department
                   <input
+                    name="department"
+                    type="text"
+                    autoComplete="organization-title"
                     className={fieldClass}
                     value={profileDraft.department}
-                    onChange={(event) =>
-                      setProfileDraft({ ...profileDraft, department: event.target.value })
-                    }
-                    required
+                    onChange={(event) => {
+                      setProfileError(null);
+                      setProfileDraft({ ...profileDraft, department: event.target.value });
+                    }}
                   />
                 </label>
                 <label className="text-xs font-semibold text-slate-700 dark:text-emerald-100 sm:col-span-2">

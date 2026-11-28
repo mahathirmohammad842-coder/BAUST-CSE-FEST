@@ -12,11 +12,17 @@ import type {
   RegistrableRole,
   RoleChangeLog,
   RolePermissionEntry,
+  UserDeletionAuditAction,
+  UserDeletionAuditLog,
   UserProfile,
   VerificationLog,
   VerificationStatus,
   WorkspaceRole,
 } from '../types';
+import {
+  isEmailLikeValue,
+  sanitizeProfileTextField,
+} from '../utils/profileStore';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 const supabasePublishableKey = import.meta.env
@@ -101,6 +107,17 @@ export interface CloudProfile {
   recommendation_notes?: string | null;
   recommended_at?: string | null;
   trashed_at: string | null;
+  is_deleted?: boolean;
+  deleted_at?: string | null;
+  deleted_by?: string | null;
+  deleted_by_name?: string | null;
+  is_archived?: boolean;
+  archived_at?: string | null;
+  archived_by?: string | null;
+  archived_by_name?: string | null;
+  restored_at?: string | null;
+  restored_by?: string | null;
+  restored_by_name?: string | null;
 }
 
 export interface ConnectivityCheckItem {
@@ -138,12 +155,21 @@ export function mapCloudProfile(row: CloudProfile): UserProfile {
         ? 'Rejected'
         : 'Pending';
 
-  const accountStatus: UserProfile['accountStatus'] =
-    row.account_status === 'Pending Approval'
-      ? 'Active'
-      : row.account_status === 'Suspended' || row.account_status === 'Rejected'
-        ? row.account_status
-        : 'Active';
+  const isDeleted =
+    Boolean(row.is_deleted) || row.account_status === 'Deleted';
+  const isArchived =
+    !isDeleted &&
+    (Boolean(row.is_archived) || row.account_status === 'Archived');
+
+  const accountStatus: UserProfile['accountStatus'] = isDeleted
+    ? 'Deleted'
+    : isArchived
+      ? 'Archived'
+      : row.account_status === 'Pending Approval'
+        ? 'Active'
+        : row.account_status === 'Suspended' || row.account_status === 'Rejected'
+          ? row.account_status
+          : 'Active';
 
   const approvalStatus: ApprovalStatus = APPROVAL_STATUSES.includes(
     row.approval_status as ApprovalStatus
@@ -165,8 +191,8 @@ export function mapCloudProfile(row: CloudProfile): UserProfile {
     fullName: row.full_name,
     email: row.email,
     phone: row.phone ?? '',
-    department: row.department ?? '',
-    institution: row.institution ?? '',
+    department: sanitizeProfileTextField(row.department),
+    institution: sanitizeProfileTextField(row.institution),
     address: row.address ?? '',
     personalInfo: {
       studentId: typeof info.studentId === 'string' ? info.studentId : '',
@@ -202,17 +228,44 @@ export function mapCloudProfile(row: CloudProfile): UserProfile {
     recommendationNotes: row.recommendation_notes ?? null,
     recommendedAt: row.recommended_at ?? null,
     trashedAt: row.trashed_at ?? undefined,
+    isDeleted,
+    deletedAt: row.deleted_at ?? null,
+    deletedBy: row.deleted_by ?? null,
+    deletedByName: row.deleted_by_name ?? '',
+    isArchived,
+    archivedAt: row.archived_at ?? null,
+    archivedBy: row.archived_by ?? null,
+    archivedByName: row.archived_by_name ?? '',
+    restoredAt: row.restored_at ?? null,
+    restoredBy: row.restored_by ?? null,
+    restoredByName: row.restored_by_name ?? '',
   };
 }
 
-export async function fetchCloudProfile(userId: string): Promise<CloudProfile> {
+export async function fetchCloudProfile(
+  expectedUserId?: string
+): Promise<CloudProfile> {
   if (!supabase) throw new Error('Supabase is not configured.');
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+  if (authError || !user?.id) {
+    throw new Error('Authentication required to load your profile.');
+  }
+  if (expectedUserId && expectedUserId !== user.id) {
+    throw new Error('Profile session mismatch detected. Please sign in again.');
+  }
+
   const { data, error } = await supabase
     .from('user_profiles')
     .select('*')
-    .eq('id', userId)
+    .eq('id', user.id)
     .single();
   if (error) throw error;
+  if (!data || data.id !== user.id) {
+    throw new Error('Authenticated user profile record did not match session ID.');
+  }
   return data as CloudProfile;
 }
 
@@ -373,6 +426,57 @@ export async function fetchCloudRolePermissions(): Promise<
     canAccessSuperAdminPanel: Boolean(row.can_access_super_admin_panel),
     canAccessJudgeFeatures: Boolean(row.can_access_judge_features),
     canManageEvents: Boolean(row.can_manage_events),
+    canArchiveUsers: Boolean(row.can_archive_users),
+    canSoftDeleteUsers: Boolean(row.can_soft_delete_users),
+    canRestoreUsers: Boolean(row.can_restore_users),
+    canPermanentlyDeleteUsers: Boolean(row.can_permanently_delete_users),
+  }));
+}
+
+const DELETION_ACTIONS: UserDeletionAuditAction[] = [
+  'soft_deleted',
+  'archived',
+  'restored',
+  'unarchived',
+  'permanently_deleted',
+];
+
+export async function fetchCloudDeletionAuditLogs(): Promise<
+  UserDeletionAuditLog[]
+> {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from('user_deletion_audit_logs')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(500);
+  if (error) {
+    if (isMissingRelationError(error)) return [];
+    throw error;
+  }
+  return (data ?? []).map((row) => ({
+    id: String(row.id),
+    targetUserId: String(row.target_user_id),
+    targetUserEmail: String(row.target_user_email ?? ''),
+    targetUserName: String(row.target_user_name ?? ''),
+    targetUserRole:
+      row.target_user_role === 'Admin'
+        ? 'Organizer'
+        : String(row.target_user_role ?? 'Participant'),
+    action: (DELETION_ACTIONS.includes(row.action)
+      ? row.action
+      : 'soft_deleted') as UserDeletionAuditAction,
+    actorId: String(row.actor_id ?? ''),
+    actorName: String(row.actor_name ?? 'System'),
+    notes: String(row.notes ?? ''),
+    deletedAt: row.deleted_at ? String(row.deleted_at) : null,
+    restoredAt: row.restored_at ? String(row.restored_at) : null,
+    restoredBy: row.restored_by ? String(row.restored_by) : null,
+    restoredByName: row.restored_by_name ? String(row.restored_by_name) : '',
+    permanentlyDeletedAt: row.permanently_deleted_at
+      ? String(row.permanently_deleted_at)
+      : null,
+    createdAt: String(row.created_at),
   }));
 }
 
@@ -523,6 +627,64 @@ export async function rpcSuperAdminPromoteToOrganizer(
   if (error) throw error;
 }
 
+export async function rpcStaffArchiveUser(
+  targetUserId: string,
+  archiveNotes = ''
+): Promise<void> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { error } = await supabase.rpc('staff_archive_user', {
+    target_user_id: targetUserId,
+    archive_notes: archiveNotes,
+  });
+  if (error) throw error;
+}
+
+export async function rpcStaffSoftDeleteUser(
+  targetUserId: string,
+  deleteNotes = '',
+  isBlockedAccount = false
+): Promise<void> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { error } = await supabase.rpc('staff_soft_delete_user', {
+    target_user_id: targetUserId,
+    delete_notes: deleteNotes,
+    is_blocked_account: isBlockedAccount,
+  });
+  if (error) throw error;
+}
+
+export async function rpcSuperAdminRestoreUser(
+  targetUserId: string,
+  restoreNotes = ''
+): Promise<void> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { error } = await supabase.rpc('super_admin_restore_user', {
+    target_user_id: targetUserId,
+    restore_notes: restoreNotes,
+  });
+  if (error) throw error;
+}
+
+export async function invokeAdminPermanentDeleteUser(
+  userId: string,
+  notes = ''
+): Promise<void> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { data, error } = await supabase.functions.invoke<{
+    deletedUserId?: string;
+    error?: string;
+  }>('admin-delete-user', {
+    body: { userId, notes },
+  });
+  if (error) {
+    const detail = await extractFunctionsInvokeError(error);
+    throw new Error(detail);
+  }
+  if (data?.error) {
+    throw new Error(data.error);
+  }
+}
+
 export async function fetchCloudAnnouncements(): Promise<Announcement[]> {
   if (!supabase) throw new Error('Supabase is not configured.');
   const { data, error } = await supabase
@@ -612,16 +774,33 @@ export async function saveCloudAnnouncements(
 
 export async function saveCloudProfile(profile: UserProfile): Promise<void> {
   if (!supabase) throw new Error('Supabase is not configured.');
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+  if (authError || !user?.id) {
+    throw new Error('Authentication required to update a profile.');
+  }
+
+  const department = profile.department.trim();
+  const institution = profile.institution.trim();
+  if (isEmailLikeValue(department)) {
+    throw new Error('Department must be a text field and cannot contain an email address.');
+  }
+  if (isEmailLikeValue(institution)) {
+    throw new Error('Institution must be a text field and cannot contain an email address.');
+  }
+
   const { error } = await supabase
     .from('user_profiles')
     .update({
-      full_name: profile.fullName,
-      phone: profile.phone,
-      department: profile.department,
-      institution: profile.institution,
-      address: profile.address,
+      full_name: profile.fullName.trim(),
+      phone: profile.phone.trim(),
+      department,
+      institution,
+      address: (profile.address ?? '').trim(),
       personal_info: profile.personalInfo,
-      biography: profile.biography,
+      biography: profile.biography.trim(),
       photo_url: profile.photoDataUrl,
       social_links: profile.socialLinks,
       notification_preferences: profile.notificationPreferences,
