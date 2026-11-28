@@ -46,13 +46,18 @@ import {
   ALL_CHANNELS,
   ALL_NOTIFICATION_TYPES,
   BAUST_ROOMS,
-  DEMO_USERS,
 } from '../data/mockData';
 import type {
   Announcement,
   ApprovalStatus,
+  EventInfoRequest,
+  IncidentReport,
+  IncidentSeverity,
   NotificationChannel,
   NotificationType,
+  OrganizerContact,
+  OrganizerMessageThread,
+  PresenceUserEntry,
   SystemUser,
   UserPreferenceMatrix,
   WorkspaceRole,
@@ -79,6 +84,30 @@ interface UserInboxPageProps {
   preferences: UserPreferenceMatrix;
   notificationStates: Record<string, PersonalNotificationState>;
   notificationEvents: NotificationActionEvent[];
+  organizerContacts?: OrganizerContact[];
+  messageThreads?: OrganizerMessageThread[];
+  incidentReports?: IncidentReport[];
+  infoRequests?: EventInfoRequest[];
+  presenceByUserId?: Record<string, PresenceUserEntry>;
+  onSendOrganizerMessage?: (
+    recipientId: string | null,
+    subject: string,
+    body: string
+  ) => Promise<string | null>;
+  onReplyOrganizerMessage?: (
+    threadId: string,
+    body: string
+  ) => Promise<string | null>;
+  onSubmitIncident?: (
+    category: string,
+    location: string,
+    severity: IncidentSeverity,
+    description: string
+  ) => Promise<string | null>;
+  onSubmitInfoRequest?: (
+    topic: string,
+    question: string
+  ) => Promise<string | null>;
   onUpdatePreferences: (next: UserPreferenceMatrix) => void;
   onResetPreferences: () => void;
   onToggleRead: (
@@ -175,6 +204,15 @@ export function UserInboxPage({
   preferences,
   notificationStates,
   notificationEvents,
+  organizerContacts = [],
+  messageThreads = [],
+  incidentReports = [],
+  infoRequests = [],
+  presenceByUserId = {},
+  onSendOrganizerMessage,
+  onReplyOrganizerMessage,
+  onSubmitIncident,
+  onSubmitInfoRequest,
   onUpdatePreferences,
   onResetPreferences,
   onToggleRead,
@@ -211,19 +249,30 @@ export function UserInboxPage({
 
   const [quickMenuOpen, setQuickMenuOpen] = useState(false);
   const [activeQuickModal, setActiveQuickModal] = useState<
-    'incident' | 'info' | 'organizer' | null
+    'incident' | 'info' | 'organizer' | 'support-history' | null
   >(null);
+  const [supportTab, setSupportTab] = useState<
+    'messages' | 'incidents' | 'info'
+  >('messages');
   const quickMenuRef = useRef<HTMLDivElement>(null);
 
   const [incidentType, setIncidentType] = useState('Lab / Hardware Issue');
   const [incidentRoom, setIncidentRoom] = useState(
     activeUser.assignedRoom || BAUST_ROOMS[0]
   );
+  const [incidentSeverity, setIncidentSeverity] =
+    useState<IncidentSeverity>('Medium');
   const [incidentDetails, setIncidentDetails] = useState('');
   const [infoTopic, setInfoTopic] = useState('Competition Rules & Timing');
   const [infoQuestion, setInfoQuestion] = useState('');
+  const [selectedOrganizerId, setSelectedOrganizerId] = useState<string>('');
   const [organizerSubject, setOrganizerSubject] = useState('');
   const [organizerMessage, setOrganizerMessage] = useState('');
+  const [quickSubmitting, setQuickSubmitting] = useState(false);
+  const [quickError, setQuickError] = useState<string | null>(null);
+  const [threadReplyDrafts, setThreadReplyDrafts] = useState<
+    Record<string, string>
+  >({});
   const readSessionRef = useRef<{ notificationId: string; startedAt: number } | null>(null);
   const onReadTimeRef = useRef(onRecordNotificationReadTime);
   onReadTimeRef.current = onRecordNotificationReadTime;
@@ -2282,13 +2331,14 @@ export function UserInboxPage({
           <div
             role="menu"
             aria-label="Quick Actions Menu"
-            className="w-56 rounded-xl border border-emerald-200 bg-white p-1.5 shadow-xl dark:border-emerald-800/70 dark:bg-[#061D15]"
+            className="w-60 rounded-xl border border-emerald-200 bg-white p-1.5 shadow-xl dark:border-emerald-800/70 dark:bg-[#061D15]"
           >
             <button
               type="button"
               role="menuitem"
               onClick={() => {
                 setQuickMenuOpen(false);
+                setQuickError(null);
                 setActiveQuickModal('incident');
               }}
               className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-emerald-950 hover:bg-red-50 hover:text-red-800 dark:text-emerald-100 dark:hover:bg-red-950/60 dark:hover:text-red-200"
@@ -2303,6 +2353,7 @@ export function UserInboxPage({
               role="menuitem"
               onClick={() => {
                 setQuickMenuOpen(false);
+                setQuickError(null);
                 setActiveQuickModal('info');
               }}
               className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-emerald-950 hover:bg-emerald-50/70 dark:text-emerald-100 dark:hover:bg-[#09291E]"
@@ -2317,6 +2368,7 @@ export function UserInboxPage({
               role="menuitem"
               onClick={() => {
                 setQuickMenuOpen(false);
+                setQuickError(null);
                 setActiveQuickModal('organizer');
               }}
               className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-emerald-950 hover:bg-emerald-50/70 dark:text-emerald-100 dark:hover:bg-[#09291E]"
@@ -2325,6 +2377,31 @@ export function UserInboxPage({
                 <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
               </span>
               <span>Contact Organizer</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setQuickMenuOpen(false);
+                setQuickError(null);
+                setActiveQuickModal('support-history');
+              }}
+              className="flex w-full items-center justify-between gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-emerald-950 hover:bg-emerald-50/70 dark:text-emerald-100 dark:hover:bg-[#09291E]"
+            >
+              <span className="flex items-center gap-2.5">
+                <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-emerald-50 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300 shrink-0">
+                  <History className="h-3.5 w-3.5" aria-hidden="true" />
+                </span>
+                <span>My Support &amp; Replies</span>
+              </span>
+              {messageThreads.length + incidentReports.length + infoRequests.length >
+                0 && (
+                <span className="rounded bg-emerald-100 px-1.5 py-0.5 font-mono text-[10px] font-bold text-emerald-800 dark:bg-emerald-900/70 dark:text-emerald-200 tabular-nums">
+                  {messageThreads.length +
+                    incidentReports.length +
+                    infoRequests.length}
+                </span>
+              )}
             </button>
           </div>
         )}
@@ -2347,13 +2424,14 @@ export function UserInboxPage({
 
       <Modal
         open={activeQuickModal === 'incident'}
-        onClose={() => setActiveQuickModal(null)}
+        onClose={() => !quickSubmitting && setActiveQuickModal(null)}
         title="Report Incident"
-        subtitle="Route an urgent issue directly to Floor Volunteers and Operations."
+        subtitle="Route an urgent campus or contest issue directly to Organizers and Super Admins."
         footer={
           <>
             <button
               type="button"
+              disabled={quickSubmitting}
               onClick={() => setActiveQuickModal(null)}
               className="rounded-lg border border-emerald-200 bg-white px-4 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800 dark:bg-[#061D15] dark:text-emerald-100 dark:hover:bg-[#09291E]"
             >
@@ -2361,42 +2439,87 @@ export function UserInboxPage({
             </button>
             <button
               type="button"
-              disabled={!incidentDetails.trim()}
-              onClick={() => {
-                const ref = `INC-${Math.floor(1000 + Math.random() * 8999)}`;
-                setActiveQuickModal(null);
-                setIncidentDetails('');
-                flashFeedback(
-                  `Simulated incident ${ref} logged for ${incidentRoom} (${incidentType}).`
-                );
+              disabled={quickSubmitting || !incidentDetails.trim()}
+              onClick={async () => {
+                setQuickSubmitting(true);
+                setQuickError(null);
+                try {
+                  if (onSubmitIncident) {
+                    const err = await onSubmitIncident(
+                      incidentType,
+                      incidentRoom,
+                      incidentSeverity,
+                      incidentDetails.trim()
+                    );
+                    if (err) {
+                      setQuickError(err);
+                      return;
+                    }
+                  }
+                  setActiveQuickModal(null);
+                  setIncidentDetails('');
+                  flashFeedback(
+                    `Incident report submitted for ${incidentRoom} (${incidentType}). Organizers have been notified.`
+                  );
+                } finally {
+                  setQuickSubmitting(false);
+                }
               }}
               className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-700 disabled:opacity-45"
             >
               <AlertTriangle className="h-3.5 w-3.5" />
-              Submit Incident
+              {quickSubmitting ? 'Submitting…' : 'Submit Incident'}
             </button>
           </>
         }
       >
         <div className="space-y-3 text-xs">
-          <div>
-            <label
-              htmlFor="incident-type"
-              className="block font-semibold text-emerald-950 dark:text-emerald-100"
-            >
-              Incident Category
-            </label>
-            <select
-              id="incident-type"
-              value={incidentType}
-              onChange={(e) => setIncidentType(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-emerald-200/80 bg-white px-3 py-2 text-sm text-emerald-950 focus:border-emerald-700 focus:outline-none dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50 dark:focus:border-emerald-400"
-            >
-              <option>Lab / Hardware Issue</option>
-              <option>Power / Network Outage</option>
-              <option>Medical / Safety Assistance</option>
-              <option>Lost Badge or Equipment</option>
-            </select>
+          {quickError && (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 font-semibold text-red-800 dark:border-red-800/70 dark:bg-red-950/60 dark:text-red-300">
+              {quickError}
+            </div>
+          )}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <label
+                htmlFor="incident-type"
+                className="block font-semibold text-emerald-950 dark:text-emerald-100"
+              >
+                Incident Category
+              </label>
+              <select
+                id="incident-type"
+                value={incidentType}
+                onChange={(e) => setIncidentType(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-emerald-200/80 bg-white px-3 py-2 text-sm text-emerald-950 focus:border-emerald-700 focus:outline-none dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50 dark:focus:border-emerald-400"
+              >
+                <option>Lab / Hardware Issue</option>
+                <option>Power / Network Outage</option>
+                <option>Medical / Safety Assistance</option>
+                <option>Lost Badge or Equipment</option>
+              </select>
+            </div>
+            <div>
+              <label
+                htmlFor="incident-severity"
+                className="block font-semibold text-emerald-950 dark:text-emerald-100"
+              >
+                Severity
+              </label>
+              <select
+                id="incident-severity"
+                value={incidentSeverity}
+                onChange={(e) =>
+                  setIncidentSeverity(e.target.value as IncidentSeverity)
+                }
+                className="mt-1 w-full rounded-lg border border-emerald-200/80 bg-white px-3 py-2 text-sm text-emerald-950 focus:border-emerald-700 focus:outline-none dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50 dark:focus:border-emerald-400"
+              >
+                <option value="Low">Low</option>
+                <option value="Medium">Medium</option>
+                <option value="High">High</option>
+                <option value="Critical">Critical</option>
+              </select>
+            </div>
           </div>
           <div>
             <label
@@ -2439,13 +2562,14 @@ export function UserInboxPage({
 
       <Modal
         open={activeQuickModal === 'info'}
-        onClose={() => setActiveQuickModal(null)}
+        onClose={() => !quickSubmitting && setActiveQuickModal(null)}
         title="Request Event Information"
-        subtitle="Ask the BAUST CSE Fest Helpdesk about schedules, rules, or meals."
+        subtitle="Ask BAUST CSE Fest Organizers about schedules, rules, or meals."
         footer={
           <>
             <button
               type="button"
+              disabled={quickSubmitting}
               onClick={() => setActiveQuickModal(null)}
               className="rounded-lg border border-emerald-200 bg-white px-4 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800 dark:bg-[#061D15] dark:text-emerald-100 dark:hover:bg-[#09291E]"
             >
@@ -2453,24 +2577,44 @@ export function UserInboxPage({
             </button>
             <button
               type="button"
-              disabled={!infoQuestion.trim()}
-              onClick={() => {
-                const ref = `REQ-${Math.floor(1000 + Math.random() * 8999)}`;
-                setActiveQuickModal(null);
-                setInfoQuestion('');
-                flashFeedback(
-                  `Simulated info request ${ref} sent to Fest Helpdesk (${infoTopic}).`
-                );
+              disabled={quickSubmitting || !infoQuestion.trim()}
+              onClick={async () => {
+                setQuickSubmitting(true);
+                setQuickError(null);
+                try {
+                  if (onSubmitInfoRequest) {
+                    const err = await onSubmitInfoRequest(
+                      infoTopic,
+                      infoQuestion.trim()
+                    );
+                    if (err) {
+                      setQuickError(err);
+                      return;
+                    }
+                  }
+                  setActiveQuickModal(null);
+                  setInfoQuestion('');
+                  flashFeedback(
+                    `Event information request sent to Organizers (${infoTopic}).`
+                  );
+                } finally {
+                  setQuickSubmitting(false);
+                }
               }}
               className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-600 disabled:opacity-45 dark:bg-emerald-600 dark:hover:bg-emerald-500"
             >
               <Send className="h-3.5 w-3.5 text-emerald-200" />
-              Send Request
+              {quickSubmitting ? 'Sending…' : 'Send Request'}
             </button>
           </>
         }
       >
         <div className="space-y-3 text-xs">
+          {quickError && (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 font-semibold text-red-800 dark:border-red-800/70 dark:bg-red-950/60 dark:text-red-300">
+              {quickError}
+            </div>
+          )}
           <div>
             <label
               htmlFor="info-topic"
@@ -2511,13 +2655,14 @@ export function UserInboxPage({
 
       <Modal
         open={activeQuickModal === 'organizer'}
-        onClose={() => setActiveQuickModal(null)}
+        onClose={() => !quickSubmitting && setActiveQuickModal(null)}
         title="Contact Organizer"
-        subtitle="Reach the BAUST CSE Fest Executive Committee."
+        subtitle="Send a real-time message to an active BAUST CSE Fest Organizer."
         footer={
           <>
             <button
               type="button"
+              disabled={quickSubmitting}
               onClick={() => setActiveQuickModal(null)}
               className="rounded-lg border border-emerald-200 bg-white px-4 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800 dark:bg-[#061D15] dark:text-emerald-100 dark:hover:bg-[#09291E]"
             >
@@ -2525,32 +2670,124 @@ export function UserInboxPage({
             </button>
             <button
               type="button"
-              disabled={!organizerSubject.trim() || !organizerMessage.trim()}
-              onClick={() => {
-                setActiveQuickModal(null);
-                setOrganizerSubject('');
-                setOrganizerMessage('');
-                flashFeedback(
-                  `Simulated message dispatched to ${DEMO_USERS.Organizer.fullName}.`
-                );
+              disabled={
+                quickSubmitting ||
+                !organizerSubject.trim() ||
+                !organizerMessage.trim()
+              }
+              onClick={async () => {
+                setQuickSubmitting(true);
+                setQuickError(null);
+                try {
+                  const recipientId = selectedOrganizerId || null;
+                  if (onSendOrganizerMessage) {
+                    const err = await onSendOrganizerMessage(
+                      recipientId,
+                      organizerSubject.trim(),
+                      organizerMessage.trim()
+                    );
+                    if (err) {
+                      setQuickError(err);
+                      return;
+                    }
+                  }
+                  const chosen = organizerContacts.find(
+                    (c) => c.id === selectedOrganizerId
+                  );
+                  setActiveQuickModal(null);
+                  setOrganizerSubject('');
+                  setOrganizerMessage('');
+                  flashFeedback(
+                    `Message delivered to ${chosen ? chosen.fullName : 'Executive Organizing Committee'}.`
+                  );
+                } finally {
+                  setQuickSubmitting(false);
+                }
               }}
               className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-600 disabled:opacity-45 dark:bg-emerald-600 dark:hover:bg-emerald-500"
             >
               <Send className="h-3.5 w-3.5 text-emerald-200" />
-              Send Message
+              {quickSubmitting ? 'Sending…' : 'Send Message'}
             </button>
           </>
         }
       >
         <div className="space-y-3 text-xs">
-          <div className="rounded-lg border border-emerald-200 bg-emerald-50/40 p-3 dark:border-emerald-800/70 dark:bg-[#041811]">
-            <div className="font-semibold text-emerald-950 dark:text-emerald-50">
-              {DEMO_USERS.Organizer.fullName}
+          {quickError && (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 font-semibold text-red-800 dark:border-red-800/70 dark:bg-red-950/60 dark:text-red-300">
+              {quickError}
             </div>
-            <div className="mt-0.5 text-emerald-900/70 dark:text-emerald-200/80">
-              {DEMO_USERS.Organizer.email} · {DEMO_USERS.Organizer.phone}
-            </div>
+          )}
+          <div>
+            <label
+              htmlFor="org-recipient"
+              className="block font-semibold text-emerald-950 dark:text-emerald-100"
+            >
+              Recipient Organizer
+            </label>
+            <select
+              id="org-recipient"
+              value={selectedOrganizerId}
+              onChange={(e) => setSelectedOrganizerId(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-emerald-200/80 bg-white px-3 py-2 text-sm text-emerald-950 focus:border-emerald-700 focus:outline-none dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50 dark:focus:border-emerald-400"
+            >
+              <option value="">
+                Executive Organizing Committee (All Active Organizers)
+              </option>
+              {organizerContacts.map((org) => {
+                const liveStatus =
+                  presenceByUserId[org.id]?.status ?? org.presenceStatus;
+                return (
+                  <option key={org.id} value={org.id}>
+                    {org.fullName} ({org.role}) — {liveStatus}
+                  </option>
+                );
+              })}
+            </select>
           </div>
+
+          {selectedOrganizerId ? (
+            (() => {
+              const chosen = organizerContacts.find(
+                (c) => c.id === selectedOrganizerId
+              );
+              if (!chosen) return null;
+              const liveStatus =
+                presenceByUserId[chosen.id]?.status ?? chosen.presenceStatus;
+              return (
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50/40 p-3 dark:border-emerald-800/70 dark:bg-[#041811]">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-emerald-950 dark:text-emerald-50">
+                      {chosen.fullName} ({chosen.role})
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-800 dark:text-emerald-300">
+                      <span
+                        className={`h-2 w-2 rounded-full ${
+                          liveStatus === 'Online'
+                            ? 'bg-emerald-500'
+                            : liveStatus === 'Away'
+                              ? 'bg-amber-400'
+                              : 'bg-slate-400'
+                        }`}
+                      />
+                      {liveStatus}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 text-emerald-900/70 dark:text-emerald-200/80">
+                    {chosen.email}
+                    {chosen.phone ? ` · ${chosen.phone}` : ''}
+                  </div>
+                </div>
+              );
+            })()
+          ) : (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50/40 p-3 text-emerald-900/80 dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-200/80">
+              {organizerContacts.length > 0
+                ? `${organizerContacts.length} active organizer${organizerContacts.length === 1 ? '' : 's'} will receive an instant in-app alert.`
+                : 'Your message routes directly to all active Organizers and Super Admins.'}
+            </div>
+          )}
+
           <div>
             <label
               htmlFor="org-subject"
@@ -2582,6 +2819,232 @@ export function UserInboxPage({
               placeholder={`Sending as ${activeUser.fullName} (${activeRole})...`}
               className="mt-1 w-full rounded-lg border border-emerald-200/80 bg-white px-3 py-2 text-sm text-emerald-950 placeholder:text-emerald-900/40 focus:border-emerald-700 focus:outline-none dark:border-emerald-800/70 dark:bg-[#041811] dark:text-emerald-50 dark:placeholder:text-emerald-400/45 dark:focus:border-emerald-400"
             />
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={activeQuickModal === 'support-history'}
+        onClose={() => setActiveQuickModal(null)}
+        title="My Support, Messages & Incident Reports"
+        subtitle="Live conversation history, delivery status, and official organizer replies."
+        footer={
+          <button
+            type="button"
+            onClick={() => setActiveQuickModal(null)}
+            className="rounded-lg border border-emerald-200 bg-white px-4 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800 dark:bg-[#061D15] dark:text-emerald-100"
+          >
+            Close
+          </button>
+        }
+      >
+        <div className="space-y-3 text-xs">
+          <div className="flex flex-wrap gap-1.5 border-b border-emerald-100 pb-2 dark:border-emerald-800/60">
+            {(
+              [
+                {
+                  id: 'messages',
+                  label: 'Messages',
+                  count: messageThreads.length,
+                },
+                {
+                  id: 'incidents',
+                  label: 'Incidents',
+                  count: incidentReports.length,
+                },
+                {
+                  id: 'info',
+                  label: 'Info Requests',
+                  count: infoRequests.length,
+                },
+              ] as const
+            ).map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setSupportTab(t.id)}
+                className={`rounded-lg px-2.5 py-1 text-[11px] font-semibold ${
+                  supportTab === t.id
+                    ? 'bg-[#042419] text-white dark:bg-emerald-700'
+                    : 'bg-emerald-50 text-emerald-900 dark:bg-emerald-950/50 dark:text-emerald-200'
+                }`}
+              >
+                {t.label} ({t.count})
+              </button>
+            ))}
+          </div>
+
+          <div className="max-h-[380px] space-y-2.5 overflow-y-auto pr-1">
+            {supportTab === 'messages' &&
+              (messageThreads.length === 0 ? (
+                <p className="py-8 text-center text-emerald-900/60 dark:text-emerald-300/65">
+                  No messages sent yet. Use Quick Actions → Contact Organizer to start a thread.
+                </p>
+              ) : (
+                messageThreads.map((thread) => (
+                  <div
+                    key={thread.id}
+                    className="rounded-xl border border-emerald-200/70 bg-emerald-50/35 p-3 space-y-2 dark:border-emerald-800/60 dark:bg-[#041811]"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-bold text-emerald-950 dark:text-emerald-50">
+                        {thread.subject}
+                      </span>
+                      <span
+                        className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                          thread.status === 'Replied'
+                            ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/70 dark:text-emerald-200'
+                            : 'bg-amber-100 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300'
+                        }`}
+                      >
+                        {thread.status}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-emerald-900/65 dark:text-emerald-300/65">
+                      To: {thread.recipientOrganizerName} ·{' '}
+                      {formatDhakaDateTime(thread.createdAt)}
+                    </div>
+                    <p className="text-emerald-950 dark:text-emerald-100">
+                      {thread.body}
+                    </p>
+                    {thread.replies.map((r) => (
+                      <div
+                        key={r.id}
+                        className={`rounded-lg border p-2 ${
+                          r.isStaffReply
+                            ? 'ml-4 border-emerald-300 bg-white dark:border-emerald-700 dark:bg-emerald-950/40'
+                            : 'border-emerald-200 bg-white/80 dark:border-emerald-800 dark:bg-[#061D15]'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between text-[10px] text-emerald-900/60 dark:text-emerald-300/65">
+                          <span className="font-bold text-emerald-950 dark:text-emerald-100">
+                            {r.authorName} ({r.authorRole})
+                          </span>
+                          <span>{formatDhakaDateTime(r.createdAt)}</span>
+                        </div>
+                        <p className="mt-1 text-emerald-950 dark:text-emerald-50">
+                          {r.body}
+                        </p>
+                      </div>
+                    ))}
+                    {onReplyOrganizerMessage && (
+                      <div className="flex items-center gap-1.5 pt-1">
+                        <input
+                          type="text"
+                          value={threadReplyDrafts[thread.id] ?? ''}
+                          onChange={(e) =>
+                            setThreadReplyDrafts((prev) => ({
+                              ...prev,
+                              [thread.id]: e.target.value,
+                            }))
+                          }
+                          placeholder="Write a follow-up reply..."
+                          className="h-8 flex-1 rounded-lg border border-emerald-200 bg-white px-2.5 text-xs text-emerald-950 dark:border-emerald-800 dark:bg-[#061D15] dark:text-emerald-50"
+                        />
+                        <button
+                          type="button"
+                          disabled={
+                            quickSubmitting ||
+                            !(threadReplyDrafts[thread.id] ?? '').trim()
+                          }
+                          onClick={async () => {
+                            const draft = (
+                              threadReplyDrafts[thread.id] ?? ''
+                            ).trim();
+                            if (!draft) return;
+                            setQuickSubmitting(true);
+                            try {
+                              const err = await onReplyOrganizerMessage(
+                                thread.id,
+                                draft
+                              );
+                              if (!err) {
+                                setThreadReplyDrafts((prev) => ({
+                                  ...prev,
+                                  [thread.id]: '',
+                                }));
+                              } else {
+                                flashFeedback(err);
+                              }
+                            } finally {
+                              setQuickSubmitting(false);
+                            }
+                          }}
+                          className="inline-flex h-8 items-center gap-1 rounded-lg bg-emerald-700 px-2.5 text-[11px] font-bold text-white hover:bg-emerald-600 disabled:opacity-50"
+                        >
+                          <Send className="h-3 w-3" />
+                          Reply
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))
+              ))}
+
+            {supportTab === 'incidents' &&
+              (incidentReports.length === 0 ? (
+                <p className="py-8 text-center text-emerald-900/60 dark:text-emerald-300/65">
+                  No incident reports submitted yet.
+                </p>
+              ) : (
+                incidentReports.map((inc) => (
+                  <div
+                    key={inc.id}
+                    className="rounded-xl border border-emerald-200/70 bg-emerald-50/35 p-3 space-y-1.5 dark:border-emerald-800/60 dark:bg-[#041811]"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-mono font-bold text-emerald-800 dark:text-emerald-300">
+                        {inc.referenceCode} · {inc.category}
+                      </span>
+                      <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800 dark:bg-emerald-900/70 dark:text-emerald-200">
+                        {inc.status}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-emerald-900/65 dark:text-emerald-300/65">
+                      {inc.location} · Severity: {inc.severity}
+                    </div>
+                    <p className="text-emerald-950 dark:text-emerald-100">
+                      {inc.description}
+                    </p>
+                    {inc.resolutionNotes && (
+                      <div className="rounded-lg border border-emerald-200 bg-white p-2 text-[11px] dark:border-emerald-800 dark:bg-[#061D15]">
+                        <strong>Resolution:</strong> {inc.resolutionNotes}
+                      </div>
+                    )}
+                  </div>
+                ))
+              ))}
+
+            {supportTab === 'info' &&
+              (infoRequests.length === 0 ? (
+                <p className="py-8 text-center text-emerald-900/60 dark:text-emerald-300/65">
+                  No event info requests submitted yet.
+                </p>
+              ) : (
+                infoRequests.map((req) => (
+                  <div
+                    key={req.id}
+                    className="rounded-xl border border-emerald-200/70 bg-emerald-50/35 p-3 space-y-1.5 dark:border-emerald-800/60 dark:bg-[#041811]"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-mono font-bold text-emerald-800 dark:text-emerald-300">
+                        {req.referenceCode} · {req.topic}
+                      </span>
+                      <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800 dark:bg-emerald-900/70 dark:text-emerald-200">
+                        {req.status}
+                      </span>
+                    </div>
+                    <p className="text-emerald-950 dark:text-emerald-100">
+                      {req.question}
+                    </p>
+                    {req.responseText && (
+                      <div className="rounded-lg border border-emerald-200 bg-white p-2 text-[11px] dark:border-emerald-800 dark:bg-[#061D15]">
+                        <strong>Organizer Answer:</strong> {req.responseText}
+                      </div>
+                    )}
+                  </div>
+                ))
+              ))}
           </div>
         </div>
       </Modal>

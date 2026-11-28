@@ -13,6 +13,7 @@ import {
 import { StatCard } from '../components/StatCard';
 import type {
   ActivityLogEntry,
+  AnnouncementAuditLog,
   ApprovalLog,
   ProfileAuditEvent,
   RoleChangeLog,
@@ -27,6 +28,7 @@ interface MonitoringLogsPageProps {
   view: 'audit' | 'activity';
   profiles: UserProfile[];
   deletionAuditLogs: UserDeletionAuditLog[];
+  announcementAuditLogs?: AnnouncementAuditLog[];
   roleChangeLogs: RoleChangeLog[];
   approvalLogs: ApprovalLog[];
   verificationLogs: VerificationLog[];
@@ -40,6 +42,7 @@ interface MonitoringLogsPageProps {
 type AuditCategoryFilter =
   | 'All'
   | 'Deletion & Restore'
+  | 'Announcement Trash'
   | 'Role Change'
   | 'Approval'
   | 'Verification'
@@ -61,6 +64,7 @@ export function MonitoringLogsPage({
   view,
   profiles,
   deletionAuditLogs,
+  announcementAuditLogs = [],
   roleChangeLogs,
   approvalLogs,
   verificationLogs,
@@ -139,6 +143,26 @@ export function MonitoringLogsPage({
         summary: `${event.reason}${event.note ? ` · ${event.note}` : ''}`,
         occurredAt: event.occurredAt,
       })),
+      ...announcementAuditLogs.map((log) => ({
+        id: `ann-${log.id}`,
+        category: 'Announcement Trash' as const,
+        action: log.action,
+        actor: `${log.actorName} (${log.actorRole})`,
+        target: log.announcementTitle || log.announcementId,
+        summary: [
+          log.action === 'soft_deleted'
+            ? `Deleted By ${log.actorName} · Deleted Time: ${formatDateTime(log.createdAt)}`
+            : log.action === 'restored'
+              ? `Restored By ${log.actorName} · Restored Time: ${formatDateTime(log.createdAt)}`
+              : log.action === 'permanently_deleted'
+                ? `Permanent Delete By ${log.actorName} · ${formatDateTime(log.createdAt)}`
+                : log.action,
+          log.notes,
+        ]
+          .filter(Boolean)
+          .join(' · '),
+        occurredAt: log.createdAt,
+      })),
       ...profileEvents.map((event) => ({
         id: `prof-${event.id}`,
         category: 'Profile & Security' as const,
@@ -164,6 +188,7 @@ export function MonitoringLogsPage({
         .includes(q);
     });
   }, [
+    announcementAuditLogs,
     approvalLogs,
     auditCategory,
     blockEvents,
@@ -332,6 +357,7 @@ export function MonitoringLogsPage({
                   [
                     'All',
                     'Deletion & Restore',
+                    'Announcement Trash',
                     'Role Change',
                     'Approval',
                     'Verification',

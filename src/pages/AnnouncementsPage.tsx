@@ -28,6 +28,7 @@ import type {
   NotificationChannel,
   NotificationType,
   UserRole,
+  WorkspaceRole,
 } from '../types';
 import {
   formatDhakaDateOnly,
@@ -42,13 +43,15 @@ export type AnnouncementTab = DeliveryStatus | 'All' | 'Trash';
 interface AnnouncementsPageProps {
   announcements: Announcement[];
   initialTab?: AnnouncementTab;
+  activeRole?: WorkspaceRole;
+  currentUserId?: string | null;
   onInspectAnnouncement: (id: string) => void;
   onEditAnnouncement: (announcement: Announcement) => void;
   onDuplicateAnnouncement: (announcement: Announcement) => void;
-  onDeleteAnnouncement: (id: string) => void;
-  onRestoreAnnouncement: (id: string) => void;
-  onPermanentDeleteAnnouncement: (id: string) => void;
-  onEmptyAnnouncementTrash: () => void;
+  onDeleteAnnouncement: (id: string) => Promise<string | null> | string | null | void;
+  onRestoreAnnouncement: (id: string) => Promise<string | null> | string | null | void;
+  onPermanentDeleteAnnouncement: (id: string) => Promise<string | null> | string | null | void;
+  onEmptyAnnouncementTrash: () => Promise<string | null> | string | null | void;
   onCreateNew: () => void;
 }
 
@@ -64,6 +67,8 @@ const STATUS_TABS: AnnouncementTab[] = [
 export function AnnouncementsPage({
   announcements,
   initialTab = 'All',
+  activeRole = 'Organizer',
+  currentUserId,
   onInspectAnnouncement,
   onEditAnnouncement,
   onDuplicateAnnouncement,
@@ -90,6 +95,16 @@ export function AnnouncementsPage({
   const [deleteTarget, setDeleteTarget] = useState<Announcement | null>(null);
   const [permanentTarget, setPermanentTarget] = useState<Announcement | null>(null);
   const [emptyTrashOpen, setEmptyTrashOpen] = useState(false);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const canDeleteNotice = (ann: Announcement) => {
+    if (activeRole === 'Super Admin') return true;
+    if (activeRole === 'Organizer') {
+      return !ann.senderId || !currentUserId || ann.senderId === currentUserId;
+    }
+    return false;
+  };
 
   const statusCounts = useMemo(() => {
     const activeNotices = announcements.filter((a) => !a.trashedAt);
@@ -219,6 +234,22 @@ export function AnnouncementsPage({
           </button>
         </div>
       </div>
+
+      {actionError && (
+        <div
+          role="alert"
+          className="flex items-center justify-between gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-xs font-semibold text-red-800 dark:border-red-800/70 dark:bg-red-950/60 dark:text-red-300"
+        >
+          <span>{actionError}</span>
+          <button
+            type="button"
+            onClick={() => setActionError(null)}
+            className="text-red-700 hover:text-red-900 dark:text-red-300"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
 
       <section className="rounded-xl border border-emerald-200/70 bg-white p-3.5 space-y-3 dark:border-emerald-800/60 dark:bg-[#061D15]">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -515,24 +546,39 @@ export function AnnouncementsPage({
                             <>
                               <button
                                 type="button"
+                                disabled={actionBusy}
                                 title="Restore Announcement"
                                 aria-label={`Restore ${ann.title}`}
-                                onClick={() => onRestoreAnnouncement(ann.id)}
-                                className="inline-flex h-8 items-center gap-1 rounded-lg border border-emerald-200/80 px-2.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-50 hover:text-emerald-950 dark:border-emerald-800/70 dark:text-emerald-200 dark:hover:bg-emerald-900/60 dark:hover:text-emerald-50"
+                                onClick={async () => {
+                                  setActionBusy(true);
+                                  setActionError(null);
+                                  try {
+                                    const err = await onRestoreAnnouncement(ann.id);
+                                    if (typeof err === 'string' && err) {
+                                      setActionError(err);
+                                    }
+                                  } finally {
+                                    setActionBusy(false);
+                                  }
+                                }}
+                                className="inline-flex h-8 items-center gap-1 rounded-lg border border-emerald-200/80 px-2.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-50 hover:text-emerald-950 disabled:opacity-50 dark:border-emerald-800/70 dark:text-emerald-200 dark:hover:bg-emerald-900/60 dark:hover:text-emerald-50"
                               >
                                 <RotateCcw className="h-3.5 w-3.5" />
                                 Restore
                               </button>
-                              <button
-                                type="button"
-                                title="Delete Forever"
-                                aria-label={`Permanently delete ${ann.title}`}
-                                onClick={() => setPermanentTarget(ann)}
-                                className="inline-flex h-8 items-center gap-1 rounded-lg border border-red-200 px-2.5 text-xs font-semibold text-red-700 hover:bg-red-50 dark:border-red-800/70 dark:text-red-300 dark:hover:bg-red-950/60"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                                Delete
-                              </button>
+                              {canDeleteNotice(ann) && (
+                                <button
+                                  type="button"
+                                  disabled={actionBusy}
+                                  title="Delete Forever"
+                                  aria-label={`Permanently delete ${ann.title}`}
+                                  onClick={() => setPermanentTarget(ann)}
+                                  className="inline-flex h-8 items-center gap-1 rounded-lg border border-red-200 px-2.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-800/70 dark:text-red-300 dark:hover:bg-red-950/60"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                  Delete
+                                </button>
+                              )}
                             </>
                           ) : (
                             <>
@@ -554,15 +600,18 @@ export function AnnouncementsPage({
                               >
                                 <Copy className="h-3.5 w-3.5" />
                               </button>
-                              <button
-                                type="button"
-                                title="Move Notice to Trash Bin"
-                                aria-label={`Move ${ann.title} to trash bin`}
-                                onClick={() => setDeleteTarget(ann)}
-                                className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-emerald-200/80 text-red-600 hover:border-red-200 hover:bg-red-50 dark:border-emerald-800/70 dark:text-red-400 dark:hover:border-red-800/70 dark:hover:bg-red-950/60"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </button>
+                              {canDeleteNotice(ann) && (
+                                <button
+                                  type="button"
+                                  disabled={actionBusy}
+                                  title="Move Notice to Trash Bin"
+                                  aria-label={`Move ${ann.title} to trash bin`}
+                                  onClick={() => setDeleteTarget(ann)}
+                                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-emerald-200/80 text-red-600 hover:border-red-200 hover:bg-red-50 disabled:opacity-50 dark:border-emerald-800/70 dark:text-red-400 dark:hover:border-red-800/70 dark:hover:bg-red-950/60"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              )}
                             </>
                           )}
                         </div>
@@ -593,15 +642,25 @@ export function AnnouncementsPage({
             </button>
             <button
               type="button"
-              onClick={() => {
-                if (deleteTarget) {
-                  onDeleteAnnouncement(deleteTarget.id);
-                  setDeleteTarget(null);
+              disabled={actionBusy}
+              onClick={async () => {
+                if (!deleteTarget) return;
+                setActionBusy(true);
+                setActionError(null);
+                try {
+                  const err = await onDeleteAnnouncement(deleteTarget.id);
+                  if (typeof err === 'string' && err) {
+                    setActionError(err);
+                  } else {
+                    setDeleteTarget(null);
+                  }
+                } finally {
+                  setActionBusy(false);
                 }
               }}
-              className="rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-700"
+              className="rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-700 disabled:opacity-50"
             >
-              Move to Trash Bin
+              {actionBusy ? 'Moving…' : 'Move to Trash Bin'}
             </button>
           </>
         }
@@ -633,15 +692,25 @@ export function AnnouncementsPage({
             </button>
             <button
               type="button"
-              onClick={() => {
-                if (permanentTarget) {
-                  onPermanentDeleteAnnouncement(permanentTarget.id);
-                  setPermanentTarget(null);
+              disabled={actionBusy}
+              onClick={async () => {
+                if (!permanentTarget) return;
+                setActionBusy(true);
+                setActionError(null);
+                try {
+                  const err = await onPermanentDeleteAnnouncement(permanentTarget.id);
+                  if (typeof err === 'string' && err) {
+                    setActionError(err);
+                  } else {
+                    setPermanentTarget(null);
+                  }
+                } finally {
+                  setActionBusy(false);
                 }
               }}
-              className="rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-700"
+              className="rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-700 disabled:opacity-50"
             >
-              Delete Forever
+              {actionBusy ? 'Deleting…' : 'Delete Forever'}
             </button>
           </>
         }
@@ -676,13 +745,24 @@ export function AnnouncementsPage({
             </button>
             <button
               type="button"
-              onClick={() => {
-                onEmptyAnnouncementTrash();
-                setEmptyTrashOpen(false);
+              disabled={actionBusy}
+              onClick={async () => {
+                setActionBusy(true);
+                setActionError(null);
+                try {
+                  const err = await onEmptyAnnouncementTrash();
+                  if (typeof err === 'string' && err) {
+                    setActionError(err);
+                  } else {
+                    setEmptyTrashOpen(false);
+                  }
+                } finally {
+                  setActionBusy(false);
+                }
               }}
-              className="rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-700"
+              className="rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-700 disabled:opacity-50"
             >
-              Empty Trash ({statusCounts.Trash ?? 0})
+              {actionBusy ? 'Emptying…' : `Empty Trash (${statusCounts.Trash ?? 0})`}
             </button>
           </>
         }

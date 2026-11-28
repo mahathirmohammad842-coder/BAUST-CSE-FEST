@@ -2,16 +2,28 @@ import { createClient } from '@supabase/supabase-js';
 import type {
   ActivityLogEntry,
   Announcement,
+  AnnouncementAuditAction,
+  AnnouncementAuditLog,
   ApprovalLog,
   ApprovalLogAction,
   ApprovalStatus,
   Attachment,
+  EventInfoRequest,
+  IncidentReport,
+  IncidentSeverity,
+  IncidentStatus,
+  InfoRequestStatus,
+  OrganizerContact,
+  OrganizerMessageReply,
+  OrganizerMessageThread,
+  PresenceStatus,
   ProfileNotificationPreferences,
   ProfilePersonalInfo,
   ProfileSocialLinks,
   RegistrableRole,
   RoleChangeLog,
   RolePermissionEntry,
+  StaffNotificationAlert,
   UserDeletionAuditAction,
   UserDeletionAuditLog,
   UserProfile,
@@ -118,6 +130,8 @@ export interface CloudProfile {
   restored_at?: string | null;
   restored_by?: string | null;
   restored_by_name?: string | null;
+  presence_status?: PresenceStatus | null;
+  last_seen_at?: string | null;
 }
 
 export interface ConnectivityCheckItem {
@@ -239,6 +253,11 @@ export function mapCloudProfile(row: CloudProfile): UserProfile {
     restoredAt: row.restored_at ?? null,
     restoredBy: row.restored_by ?? null,
     restoredByName: row.restored_by_name ?? '',
+    presenceStatus:
+      row.presence_status === 'Online' || row.presence_status === 'Away'
+        ? row.presence_status
+        : 'Offline',
+    lastSeenAt: row.last_seen_at ?? null,
   };
 }
 
@@ -282,7 +301,7 @@ export async function fetchCloudProfiles(): Promise<CloudProfile[]> {
 function isMissingRelationError(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false;
   const code = 'code' in error && typeof error.code === 'string' ? error.code : '';
-  return code === 'PGRST205' || code === '42P01';
+  return code === 'PGRST205' || code === 'PGRST202' || code === '42P01' || code === '42883';
 }
 
 export async function fetchCloudRoleChangeLogs(): Promise<RoleChangeLog[]> {
@@ -650,7 +669,14 @@ export async function rpcStaffSoftDeleteUser(
     delete_notes: deleteNotes,
     is_blocked_account: isBlockedAccount,
   });
-  if (error) throw error;
+  if (error) {
+    if (error.code === 'PGRST202' || error.message.includes('Could not find the function')) {
+      throw new Error(
+        'Database function public.staff_soft_delete_user is missing in Supabase schema cache. Apply migration 20261128000000_realtime_presence_ops_and_fixes.sql (npx supabase db push) and reload schema.'
+      );
+    }
+    throw error;
+  }
 }
 
 export async function rpcSuperAdminRestoreUser(
@@ -943,6 +969,9 @@ export async function runSupabaseConnectivityCheck(): Promise<SupabaseDiagnostic
     { id: 'db-actions', table: 'personal_notification_actions', label: 'Table: personal_notification_actions (RLS)' },
     { id: 'db-permissions', table: 'role_permissions', label: 'Table: role_permissions (RBAC)' },
     { id: 'db-activity', table: 'activity_logs', label: 'Table: activity_logs (Audit)' },
+    { id: 'db-messages', table: 'organizer_messages', label: 'Table: organizer_messages (Ops)' },
+    { id: 'db-incidents', table: 'incident_reports', label: 'Table: incident_reports (Ops)' },
+    { id: 'db-inforeq', table: 'event_info_requests', label: 'Table: event_info_requests (Ops)' },
   ];
   for (const entry of tables) {
     const start = performance.now();
@@ -1016,4 +1045,414 @@ export async function runSupabaseConnectivityCheck(): Promise<SupabaseDiagnostic
     configured: true,
     items,
   };
+}
+
+// ============================================================================
+// PRESENCE, ANNOUNCEMENT AUDIT LOGS & QUICK-ACTION OPERATIONS APIs
+// ============================================================================
+
+export async function rpcUpdateMyPresenceStatus(
+  status: PresenceStatus
+): Promise<void> {
+  if (!supabase) return;
+  const { error } = await supabase.rpc('update_my_presence_status', {
+    new_status: status,
+  });
+  if (error && !isMissingRelationError(error)) {
+    console.warn('Could not update presence status:', error.message);
+  }
+}
+
+const ANNOUNCEMENT_AUDIT_ACTIONS: AnnouncementAuditAction[] = [
+  'created',
+  'updated',
+  'published',
+  'soft_deleted',
+  'restored',
+  'permanently_deleted',
+];
+
+export async function fetchCloudAnnouncementAuditLogs(): Promise<
+  AnnouncementAuditLog[]
+> {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from('announcement_audit_logs')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(500);
+  if (error) {
+    if (isMissingRelationError(error)) return [];
+    throw error;
+  }
+  return (data ?? []).map((row) => ({
+    id: String(row.id),
+    announcementId: String(row.announcement_id),
+    announcementTitle: String(row.announcement_title ?? ''),
+    action: (ANNOUNCEMENT_AUDIT_ACTIONS.includes(row.action)
+      ? row.action
+      : 'updated') as AnnouncementAuditAction,
+    actorId: String(row.actor_id ?? ''),
+    actorName: String(row.actor_name ?? 'System'),
+    actorRole: String(row.actor_role ?? 'Organizer'),
+    notes: String(row.notes ?? ''),
+    createdAt: String(row.created_at),
+  }));
+}
+
+export async function rpcSoftDeleteAnnouncement(
+  announcementId: string,
+  notes = ''
+): Promise<void> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { error } = await supabase.rpc('staff_soft_delete_announcement', {
+    target_announcement_id: announcementId,
+    delete_notes: notes,
+  });
+  if (error) throw error;
+}
+
+export async function rpcRestoreAnnouncement(
+  announcementId: string,
+  notes = ''
+): Promise<void> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { error } = await supabase.rpc('staff_restore_announcement', {
+    target_announcement_id: announcementId,
+    restore_notes: notes,
+  });
+  if (error) throw error;
+}
+
+export async function rpcPermanentDeleteAnnouncement(
+  announcementId: string,
+  notes = ''
+): Promise<void> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { error } = await supabase.rpc('staff_permanent_delete_announcement', {
+    target_announcement_id: announcementId,
+    delete_notes: notes,
+  });
+  if (error) throw error;
+}
+
+export async function rpcLogAnnouncementAudit(
+  announcementId: string,
+  title: string,
+  action: AnnouncementAuditAction,
+  notes = ''
+): Promise<void> {
+  if (!supabase) return;
+  const { error } = await supabase.rpc('log_announcement_audit', {
+    target_announcement_id: announcementId,
+    target_title: title,
+    audit_action: action,
+    audit_notes: notes,
+  });
+  if (error && !isMissingRelationError(error)) {
+    console.warn('Could not log announcement audit:', error.message);
+  }
+}
+
+export async function fetchActiveOrganizerContacts(): Promise<
+  OrganizerContact[]
+> {
+  if (!supabase) return [];
+  const { data, error } = await supabase.rpc('get_active_organizer_contacts');
+  if (error) {
+    if (isMissingRelationError(error)) return [];
+    throw error;
+  }
+  return (Array.isArray(data) ? data : []).map((row) => ({
+    id: String(row.id),
+    fullName: String(row.full_name ?? ''),
+    email: String(row.email ?? ''),
+    phone: String(row.phone ?? ''),
+    role: normalizeWorkspaceRole(row.role),
+    department: sanitizeProfileTextField(row.department),
+    institution: sanitizeProfileTextField(row.institution),
+    photoUrl: String(row.photo_url ?? ''),
+    presenceStatus: (row.presence_status === 'Online' || row.presence_status === 'Away'
+      ? row.presence_status
+      : 'Offline') as PresenceStatus,
+    lastSeenAt: row.last_seen_at ? String(row.last_seen_at) : null,
+  }));
+}
+
+export async function fetchOrganizerMessages(): Promise<
+  OrganizerMessageThread[]
+> {
+  if (!supabase) return [];
+  const [threadsRes, repliesRes] = await Promise.all([
+    supabase
+      .from('organizer_messages')
+      .select('*')
+      .order('last_message_at', { ascending: false })
+      .limit(300),
+    supabase
+      .from('organizer_message_replies')
+      .select('*')
+      .order('created_at', { ascending: true })
+      .limit(1000),
+  ]);
+  if (threadsRes.error) {
+    if (isMissingRelationError(threadsRes.error)) return [];
+    throw threadsRes.error;
+  }
+  if (repliesRes.error && !isMissingRelationError(repliesRes.error)) {
+    throw repliesRes.error;
+  }
+  const repliesByThread = new Map<string, OrganizerMessageReply[]>();
+  for (const row of repliesRes.data ?? []) {
+    const tId = String(row.thread_id);
+    const list = repliesByThread.get(tId) ?? [];
+    list.push({
+      id: String(row.id),
+      threadId: tId,
+      authorId: String(row.author_id),
+      authorName: String(row.author_name ?? ''),
+      authorRole: normalizeWorkspaceRole(row.author_role),
+      body: String(row.body ?? ''),
+      isStaffReply: Boolean(row.is_staff_reply),
+      deliveryStatus: (row.delivery_status === 'Read' ||
+      row.delivery_status === 'Sent'
+        ? row.delivery_status
+        : 'Delivered') as OrganizerMessageReply['deliveryStatus'],
+      readAt: row.read_at ? String(row.read_at) : null,
+      createdAt: String(row.created_at),
+    });
+    repliesByThread.set(tId, list);
+  }
+  return (threadsRes.data ?? []).map((row) => ({
+    id: String(row.id),
+    senderId: String(row.sender_id),
+    senderName: String(row.sender_name ?? ''),
+    senderEmail: String(row.sender_email ?? ''),
+    senderRole: normalizeWorkspaceRole(row.sender_role),
+    recipientOrganizerId: row.recipient_organizer_id
+      ? String(row.recipient_organizer_id)
+      : null,
+    recipientOrganizerName: String(
+      row.recipient_organizer_name ?? 'Executive Organizing Committee'
+    ),
+    subject: String(row.subject ?? ''),
+    body: String(row.body ?? ''),
+    status: (['Sent', 'Delivered', 'Read', 'Replied'].includes(row.status)
+      ? row.status
+      : 'Delivered') as OrganizerMessageThread['status'],
+    readAt: row.read_at ? String(row.read_at) : null,
+    repliedAt: row.replied_at ? String(row.replied_at) : null,
+    replyCount: Number(row.reply_count ?? 0),
+    lastMessageAt: String(row.last_message_at ?? row.created_at),
+    createdAt: String(row.created_at),
+    replies: repliesByThread.get(String(row.id)) ?? [],
+  }));
+}
+
+export async function rpcSubmitOrganizerMessage(
+  recipientId: string | null,
+  subject: string,
+  body: string
+): Promise<string> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { data, error } = await supabase.rpc('submit_organizer_message', {
+    recipient_id: recipientId,
+    subject_text: subject,
+    body_text: body,
+  });
+  if (error) throw error;
+  return String(data);
+}
+
+export async function rpcReplyOrganizerMessage(
+  threadId: string,
+  replyBody: string
+): Promise<string> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { data, error } = await supabase.rpc('reply_organizer_message', {
+    target_thread_id: threadId,
+    reply_body: replyBody,
+  });
+  if (error) throw error;
+  return String(data);
+}
+
+export async function rpcMarkOrganizerThreadRead(
+  threadId: string
+): Promise<void> {
+  if (!supabase) return;
+  const { error } = await supabase.rpc('mark_organizer_thread_read', {
+    target_thread_id: threadId,
+  });
+  if (error && !isMissingRelationError(error)) {
+    console.warn('Could not mark thread read:', error.message);
+  }
+}
+
+export async function fetchIncidentReports(): Promise<IncidentReport[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from('incident_reports')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(300);
+  if (error) {
+    if (isMissingRelationError(error)) return [];
+    throw error;
+  }
+  return (data ?? []).map((row) => ({
+    id: String(row.id),
+    referenceCode: String(row.reference_code ?? ''),
+    reporterId: String(row.reporter_id),
+    reporterName: String(row.reporter_name ?? ''),
+    reporterEmail: String(row.reporter_email ?? ''),
+    reporterRole: normalizeWorkspaceRole(row.reporter_role),
+    category: String(row.category ?? ''),
+    location: String(row.location ?? ''),
+    severity: (['Low', 'Medium', 'High', 'Critical'].includes(row.severity)
+      ? row.severity
+      : 'Medium') as IncidentSeverity,
+    description: String(row.description ?? ''),
+    status: (['Open', 'Investigating', 'Resolved', 'Closed'].includes(row.status)
+      ? row.status
+      : 'Open') as IncidentStatus,
+    assignedToId: row.assigned_to ? String(row.assigned_to) : null,
+    assignedToName: String(row.assigned_to_name ?? ''),
+    resolutionNotes: String(row.resolution_notes ?? ''),
+    resolvedAt: row.resolved_at ? String(row.resolved_at) : null,
+    resolvedByName: String(row.resolved_by_name ?? ''),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at ?? row.created_at),
+  }));
+}
+
+export async function rpcSubmitIncidentReport(
+  category: string,
+  location: string,
+  severity: IncidentSeverity,
+  description: string
+): Promise<string> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { data, error } = await supabase.rpc('submit_incident_report', {
+    category_text: category,
+    location_text: location,
+    severity_text: severity,
+    description_text: description,
+  });
+  if (error) throw error;
+  return String(data);
+}
+
+export async function rpcStaffUpdateIncidentReport(
+  incidentId: string,
+  status: IncidentStatus,
+  resolutionNotes = ''
+): Promise<void> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { error } = await supabase.rpc('staff_update_incident_report', {
+    target_incident_id: incidentId,
+    new_status: status,
+    resolution_text: resolutionNotes,
+  });
+  if (error) throw error;
+}
+
+export async function fetchEventInfoRequests(): Promise<EventInfoRequest[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from('event_info_requests')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(300);
+  if (error) {
+    if (isMissingRelationError(error)) return [];
+    throw error;
+  }
+  return (data ?? []).map((row) => ({
+    id: String(row.id),
+    referenceCode: String(row.reference_code ?? ''),
+    requesterId: String(row.requester_id),
+    requesterName: String(row.requester_name ?? ''),
+    requesterEmail: String(row.requester_email ?? ''),
+    requesterRole: normalizeWorkspaceRole(row.requester_role),
+    topic: String(row.topic ?? ''),
+    question: String(row.question ?? ''),
+    status: (['Pending', 'Answered', 'Closed'].includes(row.status)
+      ? row.status
+      : 'Pending') as InfoRequestStatus,
+    responseText: String(row.response_text ?? ''),
+    respondedById: row.responded_by ? String(row.responded_by) : null,
+    respondedByName: String(row.responded_by_name ?? ''),
+    respondedAt: row.responded_at ? String(row.responded_at) : null,
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at ?? row.created_at),
+  }));
+}
+
+export async function rpcSubmitEventInfoRequest(
+  topic: string,
+  question: string
+): Promise<string> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { data, error } = await supabase.rpc('submit_event_info_request', {
+    topic_text: topic,
+    question_text: question,
+  });
+  if (error) throw error;
+  return String(data);
+}
+
+export async function rpcStaffRespondEventInfoRequest(
+  requestId: string,
+  responseText: string,
+  status: InfoRequestStatus = 'Answered'
+): Promise<void> {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { error } = await supabase.rpc('staff_respond_event_info_request', {
+    target_request_id: requestId,
+    response_body: responseText,
+    new_status: status,
+  });
+  if (error) throw error;
+}
+
+export async function fetchStaffNotificationAlerts(
+  userId: string
+): Promise<StaffNotificationAlert[]> {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from('notifications')
+    .select('*')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(100);
+  if (error) {
+    if (isMissingRelationError(error)) return [];
+    throw error;
+  }
+  return (data ?? []).map((row) => ({
+    id: String(row.id),
+    userId: String(row.user_id),
+    announcementId: String(row.announcement_id ?? ''),
+    title: String(row.title ?? ''),
+    body: String(row.body ?? ''),
+    channel: String(row.channel ?? 'In-App'),
+    priority: String(row.priority ?? 'Normal'),
+    isRead: Boolean(row.is_read),
+    readAt: row.read_at ? String(row.read_at) : null,
+    createdAt: String(row.created_at),
+  }));
+}
+
+export async function markStaffNotificationAlertRead(
+  alertId: string
+): Promise<void> {
+  if (!supabase) return;
+  const { error } = await supabase
+    .from('notifications')
+    .update({ is_read: true, read_at: new Date().toISOString() })
+    .eq('id', alertId);
+  if (error && !isMissingRelationError(error)) {
+    console.warn('Could not mark alert read:', error.message);
+  }
 }

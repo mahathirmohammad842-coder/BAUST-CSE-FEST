@@ -7,7 +7,10 @@ import {
   Eye,
   MousePointerClick,
   PenSquare,
+  Radio,
   Send,
+  ShieldCheck,
+  Users,
   X,
 } from 'lucide-react';
 import { PriorityBadge, StatusBadge } from '../components/Badge';
@@ -30,6 +33,10 @@ interface DashboardPageProps {
   announcements: Announcement[];
   activityFeed: ActivityFeedEntry[];
   failedCount: number;
+  onlineUsersCount?: number;
+  onlineOrganizersCount?: number;
+  onlineParticipantsCount?: number;
+  onViewOnlineUsers?: () => void;
   onCreateAnnouncement: () => void;
   onInspectAnnouncement: (announcementId: string) => void;
   onViewAllAnnouncements: () => void;
@@ -40,6 +47,10 @@ export function DashboardPage({
   announcements,
   activityFeed,
   failedCount,
+  onlineUsersCount = 0,
+  onlineOrganizersCount = 0,
+  onlineParticipantsCount = 0,
+  onViewOnlineUsers,
   onCreateAnnouncement,
   onInspectAnnouncement,
   onViewAllAnnouncements,
@@ -237,6 +248,72 @@ export function DashboardPage({
           tone="default"
         />
       </div>
+
+      <section className="grid grid-cols-1 gap-3.5 sm:grid-cols-3">
+        <button
+          type="button"
+          onClick={onViewOnlineUsers}
+          className="flex items-center justify-between rounded-xl border border-emerald-200/70 bg-white p-4 text-left transition-colors hover:border-emerald-400 hover:bg-emerald-50/40 dark:border-emerald-800/60 dark:bg-[#061D15] dark:hover:bg-[#09291E]"
+        >
+          <div>
+            <div className="flex items-center gap-2 text-xs font-semibold text-emerald-900/65 dark:text-emerald-300/70">
+              <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+              Users Online Now
+            </div>
+            <div className="mt-1 font-display text-2xl font-bold text-emerald-950 dark:text-emerald-50 tabular-nums">
+              {onlineUsersCount.toLocaleString()}
+            </div>
+            <div className="mt-0.5 text-[11px] text-emerald-700 dark:text-emerald-400">
+              View live sessions directory →
+            </div>
+          </div>
+          <span className="inline-flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300">
+            <Radio className="h-5 w-5" />
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={onViewOnlineUsers}
+          className="flex items-center justify-between rounded-xl border border-emerald-200/70 bg-white p-4 text-left transition-colors hover:border-emerald-400 hover:bg-emerald-50/40 dark:border-emerald-800/60 dark:bg-[#061D15] dark:hover:bg-[#09291E]"
+        >
+          <div>
+            <div className="text-xs font-semibold text-emerald-900/65 dark:text-emerald-300/70">
+              Organizers Online
+            </div>
+            <div className="mt-1 font-display text-2xl font-bold text-emerald-950 dark:text-emerald-50 tabular-nums">
+              {onlineOrganizersCount.toLocaleString()}
+            </div>
+            <div className="mt-0.5 text-[11px] text-emerald-900/55 dark:text-emerald-300/60">
+              Organizers &amp; Super Admins active
+            </div>
+          </div>
+          <span className="inline-flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300">
+            <ShieldCheck className="h-5 w-5" />
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={onViewOnlineUsers}
+          className="flex items-center justify-between rounded-xl border border-emerald-200/70 bg-white p-4 text-left transition-colors hover:border-emerald-400 hover:bg-emerald-50/40 dark:border-emerald-800/60 dark:bg-[#061D15] dark:hover:bg-[#09291E]"
+        >
+          <div>
+            <div className="text-xs font-semibold text-emerald-900/65 dark:text-emerald-300/70">
+              Participants Online
+            </div>
+            <div className="mt-1 font-display text-2xl font-bold text-emerald-950 dark:text-emerald-50 tabular-nums">
+              {onlineParticipantsCount.toLocaleString()}
+            </div>
+            <div className="mt-0.5 text-[11px] text-emerald-900/55 dark:text-emerald-300/60">
+              Active attendees in real time
+            </div>
+          </div>
+          <span className="inline-flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300">
+            <Users className="h-5 w-5" />
+          </span>
+        </button>
+      </section>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
         <section className="rounded-xl border border-emerald-200/70 bg-white lg:col-span-6 overflow-hidden dark:border-emerald-800/60 dark:bg-[#061D15]">

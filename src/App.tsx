@@ -24,6 +24,8 @@ import { DashboardPage } from './pages/DashboardPage';
 import { DeliveryDetailPage } from './pages/DeliveryDetailPage';
 import { LoginPage } from './pages/LoginPage';
 import { MonitoringLogsPage } from './pages/MonitoringLogsPage';
+import { OnlineUsersPage } from './pages/OnlineUsersPage';
+import { OperationsInboxPage } from './pages/OperationsInboxPage';
 import { ProfileManagementPage } from './pages/ProfileManagementPage';
 import { RecycleBinPage } from './pages/RecycleBinPage';
 import { SettingsPage } from './pages/SettingsPage';
@@ -37,10 +39,18 @@ import { UsersPage } from './pages/UsersPage';
 import type {
   ActivityFeedEntry,
   Announcement,
+  AnnouncementAuditLog,
   ApprovalLog,
   ApprovalStatus,
   DeliveryStatus,
+  EventInfoRequest,
+  IncidentReport,
+  IncidentSeverity,
+  IncidentStatus,
+  InfoRequestStatus,
   NotificationDelivery,
+  OrganizerContact,
+  OrganizerMessageThread,
   OrganizerProfile,
   OrganizerSettings,
   ProfileAccountStatus,
@@ -101,9 +111,15 @@ import {
   type PersonalNotificationState,
 } from './utils/notificationActions';
 import {
-  deleteCloudAnnouncement,
+  broadcastWorkspaceSync,
+  usePresenceTracker,
+  useRealtimeWorkspaceSync,
+} from './lib/realtimeSync';
+import {
   extractFunctionsInvokeError,
+  fetchActiveOrganizerContacts,
   fetchCloudActivityLogs,
+  fetchCloudAnnouncementAuditLogs,
   fetchCloudAnnouncements,
   fetchCloudApprovalLogs,
   fetchCloudDeletionAuditLogs,
@@ -113,22 +129,37 @@ import {
   fetchCloudRoleChangeLogs,
   fetchCloudRolePermissions,
   fetchCloudVerificationLogs,
+  fetchEventInfoRequests,
+  fetchIncidentReports,
+  fetchOrganizerMessages,
   invokeAdminPermanentDeleteUser,
   isSupabaseConfigured,
   mapCloudProfile,
+  rpcLogAnnouncementAudit,
   rpcLogUserActivity,
+  rpcMarkOrganizerThreadRead,
+  rpcPermanentDeleteAnnouncement,
   rpcRecommendRegistration,
   rpcRecordMyLastLogin,
+  rpcReplyOrganizerMessage,
+  rpcRestoreAnnouncement,
   rpcReviewUserRegistration,
+  rpcSoftDeleteAnnouncement,
   rpcStaffArchiveUser,
   rpcStaffBulkVerifyUsers,
+  rpcStaffRespondEventInfoRequest,
   rpcStaffSoftDeleteUser,
+  rpcStaffUpdateIncidentReport,
   rpcStaffUpdateVerification,
+  rpcSubmitEventInfoRequest,
+  rpcSubmitIncidentReport,
+  rpcSubmitOrganizerMessage,
   rpcSuperAdminAssignRole,
   rpcSuperAdminBulkAssignRoles,
   rpcSuperAdminPromoteToOrganizer,
   rpcSuperAdminRestoreUser,
   rpcSuperAdminSetOrganizerPermission,
+  rpcUpdateMyPresenceStatus,
   saveCloudAnnouncements,
   saveCloudNotificationAction,
   saveCloudProfile,
@@ -557,6 +588,14 @@ export default function App() {
   );
   const [editingAnnouncement, setEditingAnnouncement] =
     useState<Announcement | null>(null);
+  const [organizerContacts, setOrganizerContacts] = useState<
+    OrganizerContact[]
+  >([]);
+  const [organizerMessages, setOrganizerMessages] = useState<
+    OrganizerMessageThread[]
+  >([]);
+  const [incidentReports, setIncidentReports] = useState<IncidentReport[]>([]);
+  const [infoRequests, setInfoRequests] = useState<EventInfoRequest[]>([]);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const showToast = (msg: string) => {
@@ -576,6 +615,10 @@ export default function App() {
     setDeletedDemoUserIds([]);
     setUserBlockState({ records: [], events: [] });
     setNotificationActionStore({ byUserId: {}, events: [] });
+    setOrganizerContacts([]);
+    setOrganizerMessages([]);
+    setIncidentReports([]);
+    setInfoRequests([]);
     setOrganizerProfile(
       isSupabaseConfigured
         ? createEmptyOrganizerProfile()
@@ -661,7 +704,12 @@ export default function App() {
         verificationLogs,
         activityLogs,
         deletionAuditLogs,
+        announcementAuditLogs,
         rolePermissions,
+        contactsList,
+        messagesList,
+        incidentsList,
+        infoReqList,
       ] = await Promise.all([
         isStaff ? fetchCloudProfiles() : Promise.resolve([currentRow]),
         isStaff ? fetchCloudRoleChangeLogs() : Promise.resolve([]),
@@ -669,7 +717,12 @@ export default function App() {
         isStaff ? fetchCloudVerificationLogs() : Promise.resolve([]),
         fetchCloudActivityLogs(),
         isStaff ? fetchCloudDeletionAuditLogs() : Promise.resolve([]),
+        isStaff ? fetchCloudAnnouncementAuditLogs() : Promise.resolve([]),
         fetchCloudRolePermissions(),
+        fetchActiveOrganizerContacts().catch(() => []),
+        fetchOrganizerMessages().catch(() => []),
+        fetchIncidentReports().catch(() => []),
+        fetchEventInfoRequests().catch(() => []),
       ]);
       if (!isLatestRequest()) return null;
       const currentProfile = mapCloudProfile(currentRow);
@@ -683,8 +736,13 @@ export default function App() {
         verificationLogs,
         activityLogs,
         deletionAuditLogs,
+        announcementAuditLogs,
         rolePermissions,
       });
+      setOrganizerContacts(contactsList);
+      setOrganizerMessages(messagesList);
+      setIncidentReports(incidentsList);
+      setInfoRequests(infoReqList);
       setRegistrationRequests(cloudProfilesToRegistrationRequests(profileRows));
       const authAccount: SystemUser = {
         id: verifiedId,
@@ -867,7 +925,10 @@ export default function App() {
     if (!supabase || !cloudUserId || cloudAnnouncementsReadyFor !== cloudUserId) {
       return;
     }
-    if (!['Organizer', 'Super Admin'].includes(activeRole) || mode !== 'organizer') {
+    if (
+      !['Organizer', 'Super Admin'].includes(activeRole) ||
+      mode !== 'organizer'
+    ) {
       return;
     }
     if (skipNextAnnouncementSyncRef.current) {
@@ -879,7 +940,7 @@ export default function App() {
         error instanceof Error ? error.message : 'Unexpected Supabase error.';
       showToast(`Could not sync announcements with Supabase: ${message}`);
     });
-  }, [activeRole, announcements, cloudAnnouncementsReadyFor, cloudUserId]);
+  }, [activeRole, announcements, cloudAnnouncementsReadyFor, cloudUserId, mode]);
 
   useEffect(() => {
     if (isSupabaseConfigured) return;
@@ -1218,6 +1279,7 @@ export default function App() {
         verificationLogs,
         activityLogs,
         deletionAuditLogs,
+        announcementAuditLogs,
         rolePermissions,
       ] = await Promise.all([
         fetchCloudProfiles(),
@@ -1226,6 +1288,7 @@ export default function App() {
         fetchCloudVerificationLogs(),
         fetchCloudActivityLogs(),
         fetchCloudDeletionAuditLogs(),
+        fetchCloudAnnouncementAuditLogs(),
         fetchCloudRolePermissions(),
       ]);
       setProfileState((previous) => ({
@@ -1236,6 +1299,7 @@ export default function App() {
         verificationLogs,
         activityLogs,
         deletionAuditLogs,
+        announcementAuditLogs,
         rolePermissions,
       }));
       setRegistrationRequests(
@@ -1244,6 +1308,79 @@ export default function App() {
       return null;
     } catch (error) {
       return getSupabaseFailureMessage(error);
+    }
+  };
+
+  const loadCloudAnnouncementsState = async (): Promise<void> => {
+    if (!isSupabaseConfigured || !supabase || !cloudUserId) return;
+    try {
+      const [remoteAnnouncements, remoteAuditLogs] = await Promise.all([
+        fetchCloudAnnouncements(),
+        fetchCloudAnnouncementAuditLogs().catch(() => []),
+      ]);
+      skipNextAnnouncementSyncRef.current = true;
+      setAnnouncements(remoteAnnouncements);
+      setProfileState((previous) => ({
+        ...previous,
+        announcementAuditLogs: remoteAuditLogs,
+      }));
+    } catch (error) {
+      console.warn('Could not refresh cloud announcements:', error);
+    }
+  };
+
+  const loadCloudOperationsState = async (): Promise<void> => {
+    if (!isSupabaseConfigured || !supabase || !cloudUserId) return;
+    try {
+      const [contacts, messages, incidents, infoReqs] = await Promise.all([
+        fetchActiveOrganizerContacts().catch(() => []),
+        fetchOrganizerMessages().catch(() => []),
+        fetchIncidentReports().catch(() => []),
+        fetchEventInfoRequests().catch(() => []),
+      ]);
+      setOrganizerContacts(contacts);
+      setOrganizerMessages(messages);
+      setIncidentReports(incidents);
+      setInfoRequests(infoReqs);
+    } catch (error) {
+      console.warn('Could not refresh operations queue:', error);
+    }
+  };
+
+  const loadCloudNotificationActionsState = async (): Promise<void> => {
+    if (!isSupabaseConfigured || !supabase || !cloudUserId) return;
+    try {
+      const remoteActions = await fetchCloudNotificationActions(cloudUserId);
+      const userStates: Record<string, PersonalNotificationState> = {};
+      const userEvents: NotificationActionEvent[] = [];
+      for (const row of remoteActions) {
+        const state = row.state as Partial<PersonalNotificationState>;
+        userStates[row.notification_id] = {
+          ...createDefaultPersonalNotificationState(),
+          ...state,
+        };
+        if (Array.isArray(row.events)) {
+          userEvents.push(
+            ...(row.events as NotificationActionEvent[]).filter(
+              (event) =>
+                event &&
+                typeof event.id === 'string' &&
+                event.userId === cloudUserId &&
+                event.notificationId === row.notification_id
+            )
+          );
+        }
+      }
+      userEvents.sort((left, right) => {
+        const diff = Date.parse(right.occurredAt) - Date.parse(left.occurredAt);
+        return Number.isNaN(diff) ? 0 : diff;
+      });
+      setNotificationActionStore({
+        byUserId: { [cloudUserId]: userStates },
+        events: userEvents.slice(0, 5000),
+      });
+    } catch (error) {
+      console.warn('Could not refresh notification actions:', error);
     }
   };
 
@@ -1302,11 +1439,16 @@ export default function App() {
       return;
     }
     if (isSupabaseConfigured) {
-      void saveCloudProfile(sanitizedProfile).catch((error: unknown) => {
-        const message =
-          error instanceof Error ? error.message : 'Unexpected Supabase error.';
-        showToast(`Could not sync your profile with Supabase: ${message}`);
-      });
+      void saveCloudProfile(sanitizedProfile)
+        .then(() => {
+          broadcastWorkspaceSync('profiles');
+          broadcastWorkspaceSync('ops');
+        })
+        .catch((error: unknown) => {
+          const message =
+            error instanceof Error ? error.message : 'Unexpected Supabase error.';
+          showToast(`Could not sync your profile with Supabase: ${message}`);
+        });
       if (isSelf) {
         void rpcLogUserActivity(
           'profile_updated',
@@ -1413,6 +1555,7 @@ export default function App() {
       events: [event, ...profileState.events].slice(0, 1000),
     };
     if (persistProfileState(nextState, 'Could not update profile verification. Check browser storage.')) {
+      if (isSupabaseConfigured) broadcastWorkspaceSync('profiles');
       showToast(verified ? 'Profile verified.' : 'Profile verification removed.');
     }
   };
@@ -1468,6 +1611,7 @@ export default function App() {
       events: [event, ...profileState.events].slice(0, 1000),
     };
     if (persistProfileState(nextState, 'Could not update account status. Check browser storage.')) {
+      if (isSupabaseConfigured) broadcastWorkspaceSync('profiles');
       showToast(status === 'Suspended' ? 'Account suspended.' : 'Account reactivated.');
     }
   };
@@ -1518,6 +1662,8 @@ export default function App() {
       setRegistrationRequests(
         cloudProfilesToRegistrationRequests(cloudProfiles)
       );
+      broadcastWorkspaceSync('role_promoted', { targetUserId: userId });
+      broadcastWorkspaceSync('ops');
     } catch (error) {
       const message = getSupabaseFailureMessage(error);
       showToast(
@@ -1941,6 +2087,10 @@ export default function App() {
         return;
       }
       const refreshError = await handleRefreshCloudProfiles();
+      broadcastWorkspaceSync('profiles');
+      if (requestedAssignedRole === 'Organizer' || requestedAssignedRole === 'Super Admin') {
+        broadcastWorkspaceSync('role_promoted', { targetUserId: requestId });
+      }
       if (refreshError) {
         showToast(
           `Registration updated, but profiles could not refresh: ${refreshError}`
@@ -2149,6 +2299,12 @@ export default function App() {
         return `Could not assign role: ${getSupabaseFailureMessage(error)}`;
       }
       const refreshError = await handleRefreshCloudProfiles();
+      if (newRole === 'Organizer' || newRole === 'Super Admin') {
+        broadcastWorkspaceSync('role_promoted', { targetUserId: userId });
+        broadcastWorkspaceSync('ops');
+      } else {
+        broadcastWorkspaceSync('profiles');
+      }
       if (refreshError) {
         showToast(`Role assigned, but directory refresh failed: ${refreshError}`);
       } else {
@@ -2220,6 +2376,11 @@ export default function App() {
           notes
         );
         const refreshError = await handleRefreshCloudProfiles();
+        broadcastWorkspaceSync(
+          newRole === 'Organizer' || newRole === 'Super Admin'
+            ? 'role_promoted'
+            : 'profiles'
+        );
         if (refreshError) {
           showToast(
             `Updated ${count} roles, but refresh failed: ${refreshError}`
@@ -2262,6 +2423,7 @@ export default function App() {
         return `Verification update failed: ${getSupabaseFailureMessage(error)}`;
       }
       const refreshError = await handleRefreshCloudProfiles();
+      broadcastWorkspaceSync('profiles');
       if (refreshError) {
         showToast(
           `Verification saved, but refresh failed: ${refreshError}`
@@ -2335,6 +2497,7 @@ export default function App() {
           notes
         );
         const refreshError = await handleRefreshCloudProfiles();
+        broadcastWorkspaceSync('profiles');
         if (refreshError) {
           showToast(
             `Verified ${count} users, but refresh failed: ${refreshError}`
@@ -2468,6 +2631,7 @@ export default function App() {
         return `Could not update permission: ${getSupabaseFailureMessage(error)}`;
       }
       await handleRefreshCloudProfiles();
+      broadcastWorkspaceSync('profiles');
       showToast(
         granted
           ? `Granted direct approval permission to ${target.fullName}.`
@@ -2798,6 +2962,7 @@ export default function App() {
         return `Could not archive user: ${getSupabaseFailureMessage(error)}`;
       }
       const refreshError = await handleRefreshCloudProfiles();
+      broadcastWorkspaceSync('profiles');
       if (refreshError) {
         showToast(`User archived, but directory refresh failed: ${refreshError}`);
       } else {
@@ -2887,6 +3052,7 @@ export default function App() {
         return `Could not delete user: ${getSupabaseFailureMessage(error)}`;
       }
       const refreshError = await handleRefreshCloudProfiles();
+      broadcastWorkspaceSync('profiles');
       if (refreshError) {
         showToast(
           `User moved to Recycle Bin, but directory refresh failed: ${refreshError}`
@@ -2963,6 +3129,7 @@ export default function App() {
         return `Could not restore user: ${getSupabaseFailureMessage(error)}`;
       }
       const refreshError = await handleRefreshCloudProfiles();
+      broadcastWorkspaceSync('profiles');
       if (refreshError) {
         showToast(
           `User restored, but directory refresh failed: ${refreshError}`
@@ -3052,6 +3219,7 @@ export default function App() {
         return `Could not permanently delete user: ${getSupabaseFailureMessage(error)}`;
       }
       const refreshError = await handleRefreshCloudProfiles();
+      broadcastWorkspaceSync('profiles');
       if (refreshError) {
         showToast(
           `User permanently deleted, but directory refresh failed: ${refreshError}`
@@ -3496,7 +3664,189 @@ export default function App() {
     phone: inboxUserProfile?.phone ?? inboxUserBase.phone,
   };
 
+  // Instant Real-Time Sync + Presence Tracker hooks (no polling)
+  const isApprovedStaffSession = canAccessOrganizerWorkspace(
+    activeRole,
+    activeProfile.approvalStatus
+  );
+
+  useRealtimeWorkspaceSync({
+    userId: isSupabaseConfigured ? cloudUserId : null,
+    isStaff: isApprovedStaffSession,
+    onProfilesChanged: () => {
+      void handleRefreshCloudProfiles();
+    },
+    onAnnouncementsChanged: () => {
+      void loadCloudAnnouncementsState();
+    },
+    onNotificationActionsChanged: () => {
+      void loadCloudNotificationActionsState();
+    },
+    onOpsChanged: () => {
+      void loadCloudOperationsState();
+    },
+    onNotificationsChanged: () => {
+      void loadCloudAnnouncementsState();
+      void loadCloudOperationsState();
+    },
+    onRolePromoted: (targetUserId) => {
+      void handleRefreshCloudProfiles();
+      if (targetUserId && targetUserId === cloudUserId) {
+        void loadCloudAnnouncementsState();
+        void loadCloudOperationsState();
+      }
+    },
+  });
+
+  const presenceUser = useMemo(
+    () =>
+      isSupabaseConfigured && cloudUserId && !showLoginPage && activeProfile.userId
+        ? {
+            userId: activeProfile.userId,
+            fullName: activeProfile.fullName || registeredUser?.fullName || 'User',
+            email: activeProfile.email || registeredUser?.email || '',
+            role: activeRole,
+            avatarUrl: activeProfile.photoDataUrl || undefined,
+            department: activeProfile.department || undefined,
+            institution: activeProfile.institution || undefined,
+            lastLoginAt: activeProfile.lastLoginAt ?? null,
+          }
+        : null,
+    [
+      activeProfile.department,
+      activeProfile.email,
+      activeProfile.fullName,
+      activeProfile.institution,
+      activeProfile.lastLoginAt,
+      activeProfile.photoDataUrl,
+      activeProfile.userId,
+      activeRole,
+      cloudUserId,
+      registeredUser?.email,
+      registeredUser?.fullName,
+      showLoginPage,
+    ]
+  );
+
+  const { livePresenceMap, isPresenceConnected } = usePresenceTracker({
+    currentUser: presenceUser,
+    currentRoute: activeRoute,
+  });
+
+  const { onlineUsersCount, onlineOrganizersCount, onlineParticipantsCount } =
+    useMemo(() => {
+      let totalOnline = 0;
+      let organizersOnline = 0;
+      let participantsOnline = 0;
+      if (isSupabaseConfigured) {
+        for (const entry of Object.values(livePresenceMap)) {
+          if (entry.status !== 'Online') continue;
+          totalOnline += 1;
+          if (entry.role === 'Organizer' || entry.role === 'Super Admin') {
+            organizersOnline += 1;
+          } else {
+            participantsOnline += 1;
+          }
+        }
+      }
+      return {
+        onlineUsersCount: totalOnline,
+        onlineOrganizersCount: organizersOnline,
+        onlineParticipantsCount: participantsOnline,
+      };
+    }, [livePresenceMap]);
+
+  const openOpsCount = useMemo(
+    () =>
+      organizerMessages.filter(
+        (m) => m.status === 'Sent' || m.status === 'Delivered'
+      ).length +
+      incidentReports.filter(
+        (i) => i.status === 'Open' || i.status === 'Investigating'
+      ).length +
+      infoRequests.filter((r) => r.status === 'Pending').length,
+    [incidentReports, infoRequests, organizerMessages]
+  );
+
+  // Instant Role Promotion / Demotion Sync without page reload or re-login
   useEffect(() => {
+    if (!isSupabaseConfigured || !cloudUserId || showLoginPage) return;
+    const currentProfile = managedProfiles.find(
+      (profile) => profile.userId === cloudUserId
+    );
+    if (!currentProfile) return;
+    if (
+      currentProfile.accountStatus !== 'Active' ||
+      currentProfile.approvalStatus === 'Rejected'
+    ) {
+      return;
+    }
+
+    const nextRole = currentProfile.role;
+    const roleChanged = nextRole !== activeRole;
+    const isNowStaff = canAccessOrganizerWorkspace(
+      nextRole,
+      currentProfile.approvalStatus
+    );
+
+    if (roleChanged) {
+      setActiveRole(nextRole);
+      setRegisteredUser((prev) =>
+        prev
+          ? {
+              ...prev,
+              role: nextRole,
+              fullName: currentProfile.fullName,
+              phone: currentProfile.phone,
+              affiliation:
+                currentProfile.institution || currentProfile.department,
+            }
+          : prev
+      );
+      if (isNowStaff) {
+        setMode('organizer');
+        setOrganizerProfile({
+          ...createEmptyOrganizerProfile(),
+          fullName: currentProfile.fullName,
+          organizerId: cloudUserId,
+          email: currentProfile.email,
+          phone: currentProfile.phone,
+          department: currentProfile.department,
+          accountStatus: 'Active',
+        });
+        void handleRefreshCloudProfiles();
+        void loadCloudAnnouncementsState();
+        void loadCloudOperationsState();
+        showToast(
+          `Your role was updated to ${nextRole} — staff workspace unlocked!`
+        );
+      } else {
+        setMode('inbox');
+        setOrganizerProfile(createEmptyOrganizerProfile());
+        showToast(`Your account role was updated to ${nextRole}.`);
+      }
+      return;
+    }
+
+    if (!isNowStaff) {
+      if (mode !== 'inbox') {
+        setMode('inbox');
+      }
+      if (!['dashboard', 'inbox', 'profile', 'settings'].includes(activeRoute)) {
+        setActiveRoute('dashboard');
+      }
+    }
+  }, [
+    activeRole,
+    activeRoute,
+    cloudUserId,
+    managedProfiles,
+    mode,
+    showLoginPage,
+  ]);
+
+  useEffect(() => {
+    if (isSupabaseConfigured) return;
     if (canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)) {
       return;
     }
@@ -3676,83 +4026,306 @@ export default function App() {
     setActiveRoute('composer');
   };
 
-  const handleDeleteAnnouncement = (id: string) => {
+  const handleDeleteAnnouncement = async (
+    id: string
+  ): Promise<string | null> => {
     if (!canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)) {
-      return;
+      const msg = 'You do not have permission to delete announcements.';
+      showToast(msg);
+      return msg;
     }
+    const target = announcements.find((a) => a.id === id);
+    if (!target) return 'Announcement not found.';
+    if (
+      activeRole !== 'Super Admin' &&
+      target.senderId &&
+      activeProfileUserId &&
+      target.senderId !== activeProfileUserId
+    ) {
+      const msg =
+        'Organizers can only delete notices they created. Contact a Super Admin to delete another author’s notice.';
+      showToast(msg);
+      return msg;
+    }
+
     const actor = getProfileActor();
     const trashedAt = new Date().toISOString();
+
+    if (isSupabaseConfigured && supabase && cloudUserId) {
+      try {
+        await rpcSoftDeleteAnnouncement(id, '');
+      } catch (error) {
+        const msg = getSupabaseFailureMessage(error);
+        showToast(`Could not delete announcement: ${msg}`);
+        return msg;
+      }
+    }
+
+    skipNextAnnouncementSyncRef.current = true;
     setAnnouncements((prev) =>
       prev.map((a) =>
-        a.id === id ? { ...a, trashedAt, trashedBy: actor.actorName } : a
+        a.id === id
+          ? {
+              ...a,
+              trashedAt,
+              trashedBy: actor.actorName,
+              trashedById: activeProfileUserId || actor.actorId,
+            }
+          : a
       )
     );
+
+    if (!isSupabaseConfigured) {
+      const localAudit: AnnouncementAuditLog = {
+        id: `ann-audit-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        announcementId: target.id,
+        announcementTitle: target.title,
+        action: 'soft_deleted',
+        actorId: actor.actorId,
+        actorName: actor.actorName,
+        actorRole: activeRole,
+        notes: 'Moved to Notification Trash Bin',
+        createdAt: trashedAt,
+      };
+      setProfileState((prev) => ({
+        ...prev,
+        announcementAuditLogs: [
+          localAudit,
+          ...(prev.announcementAuditLogs ?? []),
+        ].slice(0, 500),
+      }));
+    } else {
+      void loadCloudAnnouncementsState();
+      broadcastWorkspaceSync('announcements');
+    }
+
     if (selectedAnnouncementId === id) {
       const next = activeAnnouncements.find((a) => a.id !== id);
       if (next) setSelectedAnnouncementId(next.id);
     }
     showToast('Announcement moved to Notification Trash Bin.');
+    return null;
   };
 
-  const handleRestoreAnnouncement = (id: string) => {
+  const handleRestoreAnnouncement = async (
+    id: string
+  ): Promise<string | null> => {
     if (!canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)) {
-      return;
+      const msg = 'You do not have permission to restore announcements.';
+      showToast(msg);
+      return msg;
     }
+    const target = announcements.find((a) => a.id === id);
+    if (!target) return 'Announcement not found.';
+    if (
+      activeRole !== 'Super Admin' &&
+      target.senderId &&
+      activeProfileUserId &&
+      target.senderId !== activeProfileUserId
+    ) {
+      const msg =
+        'Organizers can only restore notices they created. Contact a Super Admin to restore this notice.';
+      showToast(msg);
+      return msg;
+    }
+
+    const actor = getProfileActor();
+    const restoredAt = new Date().toISOString();
+
+    if (isSupabaseConfigured && supabase && cloudUserId) {
+      try {
+        await rpcRestoreAnnouncement(id, '');
+      } catch (error) {
+        const msg = getSupabaseFailureMessage(error);
+        showToast(`Could not restore announcement: ${msg}`);
+        return msg;
+      }
+    }
+
+    skipNextAnnouncementSyncRef.current = true;
     setAnnouncements((prev) =>
       prev.map((a) =>
-        a.id === id ? { ...a, trashedAt: undefined, trashedBy: undefined } : a
+        a.id === id
+          ? {
+              ...a,
+              trashedAt: undefined,
+              trashedBy: undefined,
+              trashedById: undefined,
+              restoredAt,
+              restoredBy: actor.actorName,
+            }
+          : a
       )
     );
+
+    if (!isSupabaseConfigured) {
+      const localAudit: AnnouncementAuditLog = {
+        id: `ann-audit-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        announcementId: target.id,
+        announcementTitle: target.title,
+        action: 'restored',
+        actorId: actor.actorId,
+        actorName: actor.actorName,
+        actorRole: activeRole,
+        notes: 'Restored from Notification Trash Bin',
+        createdAt: restoredAt,
+      };
+      setProfileState((prev) => ({
+        ...prev,
+        announcementAuditLogs: [
+          localAudit,
+          ...(prev.announcementAuditLogs ?? []),
+        ].slice(0, 500),
+      }));
+    } else {
+      void loadCloudAnnouncementsState();
+      broadcastWorkspaceSync('announcements');
+    }
+
     showToast('Announcement restored from Notification Trash Bin.');
+    return null;
   };
 
-  const handlePermanentDeleteAnnouncement = (id: string) => {
+  const handlePermanentDeleteAnnouncement = async (
+    id: string
+  ): Promise<string | null> => {
     if (!canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)) {
-      return;
+      const msg = 'You do not have permission to permanently delete announcements.';
+      showToast(msg);
+      return msg;
     }
+    const target = announcements.find((a) => a.id === id);
+    if (!target) return 'Announcement not found.';
+    if (
+      activeRole !== 'Super Admin' &&
+      target.senderId &&
+      activeProfileUserId &&
+      target.senderId !== activeProfileUserId
+    ) {
+      const msg =
+        'Organizers can only permanently delete notices they created. Contact a Super Admin to delete another author’s notice.';
+      showToast(msg);
+      return msg;
+    }
+
+    const actor = getProfileActor();
+    const nowIso = new Date().toISOString();
+
+    if (isSupabaseConfigured && supabase && cloudUserId) {
+      try {
+        await rpcPermanentDeleteAnnouncement(id, '');
+      } catch (error) {
+        const msg = getSupabaseFailureMessage(error);
+        showToast(`Could not permanently delete announcement: ${msg}`);
+        return msg;
+      }
+    }
+
+    skipNextAnnouncementSyncRef.current = true;
     setAnnouncements((prev) => prev.filter((a) => a.id !== id));
     setDeliveries((prev) => prev.filter((d) => d.announcementId !== id));
     setActivityFeed((prev) => prev.filter((entry) => entry.announcementId !== id));
-    if (supabase && cloudUserId) {
-      void deleteCloudAnnouncement(id).catch((error: unknown) => {
-        const message =
-          error instanceof Error ? error.message : 'Unexpected Supabase error.';
-        showToast(`Could not delete the announcement from Supabase: ${message}`);
-      });
+
+    if (!isSupabaseConfigured) {
+      const localAudit: AnnouncementAuditLog = {
+        id: `ann-audit-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        announcementId: target.id,
+        announcementTitle: target.title,
+        action: 'permanently_deleted',
+        actorId: actor.actorId,
+        actorName: actor.actorName,
+        actorRole: activeRole,
+        notes: 'Permanently deleted',
+        createdAt: nowIso,
+      };
+      setProfileState((prev) => ({
+        ...prev,
+        announcementAuditLogs: [
+          localAudit,
+          ...(prev.announcementAuditLogs ?? []),
+        ].slice(0, 500),
+      }));
+    } else {
+      void loadCloudAnnouncementsState();
+      broadcastWorkspaceSync('announcements');
     }
+
     if (selectedAnnouncementId === id) {
       const next = activeAnnouncements.find((a) => a.id !== id);
       if (next) setSelectedAnnouncementId(next.id);
     }
     showToast('Announcement permanently deleted.');
+    return null;
   };
 
-  const handleEmptyAnnouncementTrash = () => {
+  const handleEmptyAnnouncementTrash = async (): Promise<string | null> => {
     if (!canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)) {
-      return;
+      const msg = 'You do not have permission to empty announcement trash.';
+      showToast(msg);
+      return msg;
     }
-    const trashedIds = announcements
-      .filter((a) => Boolean(a.trashedAt))
-      .map((a) => a.id);
-    if (trashedIds.length === 0) return;
-    const trashedSet = new Set(trashedIds);
-    setAnnouncements((prev) => prev.filter((a) => !trashedSet.has(a.id)));
-    setDeliveries((prev) => prev.filter((d) => !trashedSet.has(d.announcementId)));
-    setActivityFeed((prev) =>
-      prev.filter((entry) => !trashedSet.has(entry.announcementId))
+    const trashedItems = announcements.filter((a) => Boolean(a.trashedAt));
+    if (trashedItems.length === 0) return null;
+
+    const allowedItems = trashedItems.filter(
+      (a) =>
+        activeRole === 'Super Admin' ||
+        !a.senderId ||
+        !activeProfileUserId ||
+        a.senderId === activeProfileUserId
     );
-    if (supabase && cloudUserId) {
-      for (const id of trashedIds) {
-        void deleteCloudAnnouncement(id).catch((error: unknown) => {
-          const message =
-            error instanceof Error ? error.message : 'Unexpected Supabase error.';
-          showToast(`Could not purge announcement from Supabase: ${message}`);
-        });
+    if (allowedItems.length === 0) {
+      const msg =
+        'No trashed announcements you have permission to permanently delete.';
+      showToast(msg);
+      return msg;
+    }
+
+    const succeededIds = new Set<string>();
+    let firstError: string | null = null;
+
+    if (isSupabaseConfigured && supabase && cloudUserId) {
+      for (const item of allowedItems) {
+        try {
+          await rpcPermanentDeleteAnnouncement(
+            item.id,
+            'Emptied Notification Trash Bin'
+          );
+          succeededIds.add(item.id);
+        } catch (error) {
+          if (!firstError) firstError = getSupabaseFailureMessage(error);
+        }
+      }
+    } else {
+      for (const item of allowedItems) succeededIds.add(item.id);
+    }
+
+    if (succeededIds.size > 0) {
+      skipNextAnnouncementSyncRef.current = true;
+      setAnnouncements((prev) => prev.filter((a) => !succeededIds.has(a.id)));
+      setDeliveries((prev) =>
+        prev.filter((d) => !succeededIds.has(d.announcementId))
+      );
+      setActivityFeed((prev) =>
+        prev.filter((entry) => !succeededIds.has(entry.announcementId))
+      );
+      if (isSupabaseConfigured) {
+        void loadCloudAnnouncementsState();
+        broadcastWorkspaceSync('announcements');
       }
     }
+
+    if (firstError) {
+      showToast(
+        `Deleted ${succeededIds.size}/${allowedItems.length} notices. Error: ${firstError}`
+      );
+      return firstError;
+    }
+
     showToast(
-      `Permanently deleted ${trashedIds.length} trashed announcement${trashedIds.length === 1 ? '' : 's'}.`
+      `Permanently deleted ${succeededIds.size} trashed announcement${succeededIds.size === 1 ? '' : 's'}.`
     );
+    return null;
   };
 
   const handleSaveAnnouncement = (
@@ -3762,27 +4335,61 @@ export default function App() {
     if (!canAccessOrganizerWorkspace(activeRole, activeProfile.approvalStatus)) {
       return;
     }
+    const isEdit = announcements.some((a) => a.id === saved.id);
+    const enrichedSaved: Announcement = {
+      ...saved,
+      senderId: saved.senderId || activeProfileUserId || undefined,
+      senderName: saved.senderName || activeProfile.fullName,
+      senderRole: saved.senderRole || activeRole,
+    };
+
+    skipNextAnnouncementSyncRef.current = true;
     setAnnouncements((prev) => {
-      const exists = prev.some((a) => a.id === saved.id);
+      const exists = prev.some((a) => a.id === enrichedSaved.id);
       if (exists) {
-        return prev.map((a) => (a.id === saved.id ? saved : a));
+        return prev.map((a) => (a.id === enrichedSaved.id ? enrichedSaved : a));
       }
-      return [saved, ...prev];
+      return [enrichedSaved, ...prev];
     });
 
-    if (targetStatus === 'Delivered' && saved.failedCount > 0) {
+    if (isSupabaseConfigured && supabase && cloudUserId) {
+      void saveCloudAnnouncements([enrichedSaved], cloudUserId)
+        .then(async () => {
+          const auditAction =
+            targetStatus === 'Delivered' && !isEdit
+              ? 'published'
+              : isEdit
+                ? 'updated'
+                : 'created';
+          await rpcLogAnnouncementAudit(
+            enrichedSaved.id,
+            enrichedSaved.title,
+            auditAction,
+            `Saved as ${targetStatus}`
+          );
+          broadcastWorkspaceSync('announcements');
+          void loadCloudAnnouncementsState();
+        })
+        .catch((error: unknown) => {
+          showToast(
+            `Could not save announcement to Supabase: ${getSupabaseFailureMessage(error)}`
+          );
+        });
+    }
+
+    if (targetStatus === 'Delivered' && enrichedSaved.failedCount > 0) {
       const simulatedError: NotificationDelivery = {
         id: `del-${Date.now()}`,
-        announcementId: saved.id,
+        announcementId: enrichedSaved.id,
         recipientId: 'rec-sim-01',
         recipientName: 'Sadia Afrin (CUET_ByteRunners)',
-        recipientRole: saved.targeting.roles[0] ?? 'Participant',
+        recipientRole: enrichedSaved.targeting.roles[0] ?? 'Participant',
         recipientContact: '+880 1719-882310',
-        channel: saved.channels.includes('SMS')
+        channel: enrichedSaved.channels.includes('SMS')
           ? 'SMS'
-          : saved.channels[0] ?? 'Push Notification',
+          : enrichedSaved.channels[0] ?? 'Push Notification',
         status: 'Failed',
-        errorCode: saved.channels.includes('SMS')
+        errorCode: enrichedSaved.channels.includes('SMS')
           ? 'SMS_GATEWAY_TIMEOUT'
           : 'INVALID_PUSH_TOKEN',
         errorMessage:
@@ -3796,22 +4403,22 @@ export default function App() {
     if (targetStatus !== 'Draft') {
       const feedEntry: ActivityFeedEntry = {
         id: `act-${Date.now()}`,
-        announcementId: saved.id,
-        announcementTitle: saved.title,
+        announcementId: enrichedSaved.id,
+        announcementTitle: enrichedSaved.title,
         eventDescription:
           targetStatus === 'Scheduled'
-            ? `Scheduled in Asia/Dhaka (GMT+6) for ${saved.totalRecipients} recipients`
-            : `Simulated broadcast completed (${saved.deliveredCount}/${saved.totalRecipients} delivered)`,
-        channel: saved.channels[0] ?? 'In-App',
+            ? `Scheduled in Asia/Dhaka (GMT+6) for ${enrichedSaved.totalRecipients} recipients`
+            : `Simulated broadcast completed (${enrichedSaved.deliveredCount}/${enrichedSaved.totalRecipients} delivered)`,
+        channel: enrichedSaved.channels[0] ?? 'In-App',
         status: targetStatus === 'Scheduled' ? 'Scheduled' : 'Delivered',
         timestamp: formatDhakaTimeOnly(new Date().toISOString()),
-        recipientCount: saved.totalRecipients,
+        recipientCount: enrichedSaved.totalRecipients,
       };
       setActivityFeed((prev) => [feedEntry, ...prev]);
     }
 
     setEditingAnnouncement(null);
-    setSelectedAnnouncementId(saved.id);
+    setSelectedAnnouncementId(enrichedSaved.id);
     setActiveRoute(targetStatus === 'Draft' ? 'announcements' : 'delivery-detail');
 
     const label =
@@ -3819,17 +4426,19 @@ export default function App() {
         ? 'Saved announcement draft.'
         : targetStatus === 'Scheduled'
           ? 'Announcement scheduled (GMT+6).'
-          : 'Simulated broadcast dispatched successfully.';
+          : 'Notice published and synced successfully.';
     showToast(label);
   };
 
   const handlePublishScheduledNow = (announcementId: string) => {
     const nowIso = new Date().toISOString();
+    let updatedAnnouncement: Announcement | null = null;
+    skipNextAnnouncementSyncRef.current = true;
     setAnnouncements((prev) =>
       prev.map((a) => {
         if (a.id !== announcementId) return a;
         const delivered = a.totalRecipients;
-        return {
+        updatedAnnouncement = {
           ...a,
           status: 'Delivered',
           publishedAt: nowIso,
@@ -3845,9 +4454,28 @@ export default function App() {
             clickCount: Math.floor(ch.targetedCount * 0.18),
           })),
         };
+        return updatedAnnouncement;
       })
     );
-    showToast('Simulated immediate dispatch completed.');
+    if (updatedAnnouncement && isSupabaseConfigured && supabase && cloudUserId) {
+      const saved = updatedAnnouncement;
+      void saveCloudAnnouncements([saved], cloudUserId)
+        .then(async () => {
+          await rpcLogAnnouncementAudit(
+            saved.id,
+            saved.title,
+            'published',
+            'Published scheduled announcement immediately'
+          );
+          broadcastWorkspaceSync('announcements');
+        })
+        .catch((error: unknown) => {
+          showToast(
+            `Could not sync published notice with Supabase: ${getSupabaseFailureMessage(error)}`
+          );
+        });
+    }
+    showToast('Notice dispatched and published.');
   };
 
   const handleRetryDelivery = (deliveryId: string) => {
@@ -3871,10 +4499,12 @@ export default function App() {
       )
     );
 
+    let updatedAnnouncement: Announcement | null = null;
+    skipNextAnnouncementSyncRef.current = true;
     setAnnouncements((prev) =>
       prev.map((ann) => {
         if (ann.id !== target.announcementId) return ann;
-        return {
+        updatedAnnouncement = {
           ...ann,
           deliveredCount: Math.min(ann.totalRecipients, ann.deliveredCount + 1),
           failedCount: Math.max(0, ann.failedCount - 1),
@@ -3891,8 +4521,17 @@ export default function App() {
               : ch
           ),
         };
+        return updatedAnnouncement;
       })
     );
+
+    if (updatedAnnouncement && isSupabaseConfigured && supabase && cloudUserId) {
+      void saveCloudAnnouncements([updatedAnnouncement], cloudUserId)
+        .then(() => broadcastWorkspaceSync('announcements'))
+        .catch((error: unknown) => {
+          showToast(`Could not sync retry state: ${getSupabaseFailureMessage(error)}`);
+        });
+    }
 
     setActivityFeed((prev) => [
       {
@@ -3941,10 +4580,12 @@ export default function App() {
       )
     );
 
+    let updatedAnnouncement: Announcement | null = null;
+    skipNextAnnouncementSyncRef.current = true;
     setAnnouncements((prev) =>
       prev.map((ann) => {
         if (ann.id !== announcementId) return ann;
-        return {
+        updatedAnnouncement = {
           ...ann,
           deliveredCount: Math.min(
             ann.totalRecipients,
@@ -3964,8 +4605,17 @@ export default function App() {
             };
           }),
         };
+        return updatedAnnouncement;
       })
     );
+
+    if (updatedAnnouncement && isSupabaseConfigured && supabase && cloudUserId) {
+      void saveCloudAnnouncements([updatedAnnouncement], cloudUserId)
+        .then(() => broadcastWorkspaceSync('announcements'))
+        .catch((error: unknown) => {
+          showToast(`Could not sync batch retry state: ${getSupabaseFailureMessage(error)}`);
+        });
+    }
 
     setActivityFeed((prev) => [
       {
@@ -3982,6 +4632,133 @@ export default function App() {
     ]);
 
     showToast(`Retried and delivered ${targets.length} failed dispatches.`);
+  };
+
+  // Real-time Participant Quick Actions & Staff Operations Handlers
+  const handleSendOrganizerMessage = async (
+    recipientId: string | null,
+    subject: string,
+    body: string
+  ): Promise<string | null> => {
+    if (!isSupabaseConfigured || !supabase) {
+      return 'Connect to Supabase to send messages to organizers.';
+    }
+    try {
+      await rpcSubmitOrganizerMessage(recipientId, subject, body);
+      await loadCloudOperationsState();
+      broadcastWorkspaceSync('ops');
+      showToast('Message delivered to the organizer team.');
+      return null;
+    } catch (error) {
+      return getSupabaseFailureMessage(error);
+    }
+  };
+
+  const handleReplyOrganizerMessage = async (
+    threadId: string,
+    body: string
+  ): Promise<string | null> => {
+    if (!isSupabaseConfigured || !supabase) {
+      return 'Connect to Supabase to reply to messages.';
+    }
+    try {
+      await rpcReplyOrganizerMessage(threadId, body);
+      await loadCloudOperationsState();
+      broadcastWorkspaceSync('ops');
+      showToast('Reply sent.');
+      return null;
+    } catch (error) {
+      return getSupabaseFailureMessage(error);
+    }
+  };
+
+  const handleMarkOrganizerThreadRead = async (
+    threadId: string
+  ): Promise<void> => {
+    if (!isSupabaseConfigured || !supabase) return;
+    try {
+      await rpcMarkOrganizerThreadRead(threadId);
+      await loadCloudOperationsState();
+      broadcastWorkspaceSync('ops');
+    } catch (error) {
+      console.warn('Could not mark thread read:', error);
+    }
+  };
+
+  const handleSubmitIncidentReport = async (
+    category: string,
+    location: string,
+    severity: IncidentSeverity,
+    description: string
+  ): Promise<string | null> => {
+    if (!isSupabaseConfigured || !supabase) {
+      return 'Connect to Supabase to submit incident reports.';
+    }
+    try {
+      await rpcSubmitIncidentReport(category, location, severity, description);
+      await loadCloudOperationsState();
+      broadcastWorkspaceSync('ops');
+      showToast('Incident report logged for the organizing desk.');
+      return null;
+    } catch (error) {
+      return getSupabaseFailureMessage(error);
+    }
+  };
+
+  const handleUpdateIncidentReport = async (
+    incidentId: string,
+    status: IncidentStatus,
+    resolutionNotes: string
+  ): Promise<string | null> => {
+    if (!isSupabaseConfigured || !supabase) {
+      return 'Connect to Supabase to update incident reports.';
+    }
+    try {
+      await rpcStaffUpdateIncidentReport(incidentId, status, resolutionNotes);
+      await loadCloudOperationsState();
+      broadcastWorkspaceSync('ops');
+      showToast(`Incident updated to ${status}.`);
+      return null;
+    } catch (error) {
+      return getSupabaseFailureMessage(error);
+    }
+  };
+
+  const handleSubmitInfoRequest = async (
+    topic: string,
+    question: string
+  ): Promise<string | null> => {
+    if (!isSupabaseConfigured || !supabase) {
+      return 'Connect to Supabase to submit event info requests.';
+    }
+    try {
+      await rpcSubmitEventInfoRequest(topic, question);
+      await loadCloudOperationsState();
+      broadcastWorkspaceSync('ops');
+      showToast('Event info request submitted.');
+      return null;
+    } catch (error) {
+      return getSupabaseFailureMessage(error);
+    }
+  };
+
+  const handleRespondEventInfoRequest = async (
+    requestId: string,
+    responseText: string,
+    status: InfoRequestStatus
+  ): Promise<string | null> => {
+    if (!isSupabaseConfigured || !supabase) {
+      return 'Connect to Supabase to respond to event info requests.';
+    }
+    try {
+      await rpcStaffRespondEventInfoRequest(requestId, responseText, status);
+      await loadCloudOperationsState();
+      broadcastWorkspaceSync('ops');
+      showToast('Official response published to requester.');
+      return null;
+    } catch (error) {
+      return getSupabaseFailureMessage(error);
+    }
   };
 
   const persistCloudNotificationActions = (
@@ -4335,6 +5112,7 @@ export default function App() {
   const handleSignOut = async () => {
     authActivationRequestRef.current += 1;
     if (supabase) {
+      await rpcUpdateMyPresenceStatus('Offline').catch(() => {});
       const { error } = await supabase.auth.signOut();
       if (error) {
         showToast(`Could not sign out of Supabase: ${error.message}`);
@@ -4404,6 +5182,8 @@ export default function App() {
               pendingRequestCount={pendingRequestCount}
               blockedUserCount={blockedUserCount}
               trashItemCount={trashItemCount}
+              onlineUserCount={onlineUsersCount}
+              openOpsCount={openOpsCount}
               mobileOpen={mobileMenuOpen}
               onCloseMobile={() => setMobileMenuOpen(false)}
               onNavigate={(route) => {
@@ -4553,6 +5333,10 @@ export default function App() {
                       announcements={activeAnnouncements}
                       activityFeed={activityFeed}
                       failedCount={failedDeliveryCount}
+                      onlineUsersCount={onlineUsersCount}
+                      onlineOrganizersCount={onlineOrganizersCount}
+                      onlineParticipantsCount={onlineParticipantsCount}
+                      onViewOnlineUsers={() => setActiveRoute('online-users')}
                       onCreateAnnouncement={handleCreateNew}
                       onInspectAnnouncement={handleInspectAnnouncement}
                       onViewAllAnnouncements={() =>
@@ -4566,6 +5350,8 @@ export default function App() {
                       key={activeRoute}
                       announcements={announcements}
                       initialTab="All"
+                      activeRole={activeRole}
+                      currentUserId={activeProfileUserId}
                       onInspectAnnouncement={handleInspectAnnouncement}
                       onEditAnnouncement={handleEditAnnouncement}
                       onDuplicateAnnouncement={handleDuplicateAnnouncement}
@@ -4592,6 +5378,15 @@ export default function App() {
                       notificationEvents={notificationActionStore.events.filter(
                         (event) => event.userId === inboxUser.id
                       )}
+                      organizerContacts={organizerContacts}
+                      messageThreads={organizerMessages}
+                      incidentReports={incidentReports}
+                      infoRequests={infoRequests}
+                      presenceByUserId={livePresenceMap}
+                      onSendOrganizerMessage={handleSendOrganizerMessage}
+                      onReplyOrganizerMessage={handleReplyOrganizerMessage}
+                      onSubmitIncident={handleSubmitIncidentReport}
+                      onSubmitInfoRequest={handleSubmitInfoRequest}
                       onUpdatePreferences={(next) => {
                         setPreferencesByRole((prev) => ({
                           ...prev,
@@ -4644,10 +5439,36 @@ export default function App() {
                     />
                   )}
 
+                  {activeRoute === 'operations-inbox' && (
+                    <OperationsInboxPage
+                      messageThreads={organizerMessages}
+                      incidentReports={incidentReports}
+                      infoRequests={infoRequests}
+                      onReplyMessage={handleReplyOrganizerMessage}
+                      onMarkThreadRead={handleMarkOrganizerThreadRead}
+                      onUpdateIncident={handleUpdateIncidentReport}
+                      onRespondInfoRequest={handleRespondEventInfoRequest}
+                      onRefresh={loadCloudOperationsState}
+                      onNotify={showToast}
+                    />
+                  )}
+
+                  {activeRoute === 'online-users' && (
+                    <OnlineUsersPage
+                      profiles={managedProfiles}
+                      livePresenceMap={livePresenceMap}
+                      isPresenceConnected={isPresenceConnected}
+                      currentUserId={activeProfileUserId}
+                    />
+                  )}
+
                   {activeRoute === 'composer' && (
                     <ComposerPage
                       key={editingAnnouncement?.id ?? 'new-notice'}
                       editingAnnouncement={editingAnnouncement}
+                      senderId={activeProfileUserId}
+                      senderName={activeProfile.fullName}
+                      senderRole={activeRole}
                       onSaveAnnouncement={handleSaveAnnouncement}
                       onCancel={() => {
                         setEditingAnnouncement(null);
@@ -4662,11 +5483,18 @@ export default function App() {
                         announcements={activeAnnouncements}
                         selectedAnnouncement={selectedAnnouncement}
                         deliveries={deliveries}
+                        activeRole={activeRole}
+                        currentUserId={activeProfileUserId}
                         onSelectAnnouncement={(id) =>
                           setSelectedAnnouncementId(id)
                         }
                         onBackToList={() => setActiveRoute('announcements')}
                         onEditAnnouncement={handleEditAnnouncement}
+                        onDeleteAnnouncement={handleDeleteAnnouncement}
+                        onRestoreAnnouncement={handleRestoreAnnouncement}
+                        onPermanentDeleteAnnouncement={
+                          handlePermanentDeleteAnnouncement
+                        }
                         onRetryDelivery={handleRetryDelivery}
                         onRetryAllFailedForAnnouncement={
                           handleRetryAllFailedForAnnouncement
@@ -4723,6 +5551,9 @@ export default function App() {
                       view={activeRoute === 'audit-logs' ? 'audit' : 'activity'}
                       profiles={managedProfiles}
                       deletionAuditLogs={profileState.deletionAuditLogs ?? []}
+                      announcementAuditLogs={
+                        profileState.announcementAuditLogs ?? []
+                      }
                       roleChangeLogs={profileState.roleChangeLogs ?? []}
                       approvalLogs={profileState.approvalLogs ?? []}
                       verificationLogs={profileState.verificationLogs ?? []}
@@ -5025,6 +5856,15 @@ export default function App() {
                   notificationEvents={notificationActionStore.events.filter(
                     (event) => event.userId === inboxUser.id
                   )}
+                  organizerContacts={organizerContacts}
+                  messageThreads={organizerMessages}
+                  incidentReports={incidentReports}
+                  infoRequests={infoRequests}
+                  presenceByUserId={livePresenceMap}
+                  onSendOrganizerMessage={handleSendOrganizerMessage}
+                  onReplyOrganizerMessage={handleReplyOrganizerMessage}
+                  onSubmitIncident={handleSubmitIncidentReport}
+                  onSubmitInfoRequest={handleSubmitInfoRequest}
                   onUpdatePreferences={(next) => {
                     setPreferencesByRole((prev) => ({
                       ...prev,

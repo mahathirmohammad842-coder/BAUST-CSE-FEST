@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import {
   Archive,
   AlertTriangle,
@@ -13,6 +14,7 @@ import {
   Pin,
   Printer,
   RefreshCw,
+  RotateCcw,
   Share2,
   Send,
   Star,
@@ -21,7 +23,12 @@ import {
 import { PriorityBadge, RoleBadge, StatusBadge } from '../components/Badge';
 import { ChannelPill } from '../components/ChannelPill';
 import { EmptyState } from '../components/EmptyState';
-import type { Announcement, NotificationDelivery } from '../types';
+import { Modal } from '../components/Modal';
+import type {
+  Announcement,
+  NotificationDelivery,
+  WorkspaceRole,
+} from '../types';
 import type {
   NotificationActionName,
   PersonalNotificationState,
@@ -35,9 +42,20 @@ interface DeliveryDetailPageProps {
   announcements: Announcement[];
   selectedAnnouncement: Announcement;
   deliveries: NotificationDelivery[];
+  activeRole?: WorkspaceRole;
+  currentUserId?: string | null;
   onSelectAnnouncement: (id: string) => void;
   onBackToList: () => void;
   onEditAnnouncement: (announcement: Announcement) => void;
+  onDeleteAnnouncement?: (
+    announcementId: string
+  ) => Promise<string | null> | string | null | void;
+  onRestoreAnnouncement?: (
+    announcementId: string
+  ) => Promise<string | null> | string | null | void;
+  onPermanentDeleteAnnouncement?: (
+    announcementId: string
+  ) => Promise<string | null> | string | null | void;
   onRetryDelivery: (deliveryId: string) => void;
   onRetryAllFailedForAnnouncement: (announcementId: string) => void;
   onPublishScheduledNow: (announcementId: string) => void;
@@ -54,9 +72,14 @@ export function DeliveryDetailPage({
   announcements,
   selectedAnnouncement,
   deliveries,
+  activeRole = 'Organizer',
+  currentUserId,
   onSelectAnnouncement,
   onBackToList,
   onEditAnnouncement,
+  onDeleteAnnouncement,
+  onRestoreAnnouncement,
+  onPermanentDeleteAnnouncement,
   onRetryDelivery,
   onRetryAllFailedForAnnouncement,
   onPublishScheduledNow,
@@ -65,6 +88,17 @@ export function DeliveryDetailPage({
   onUpdatePersonalStatus,
   onNotify,
 }: DeliveryDetailPageProps) {
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [confirmPermanentOpen, setConfirmPermanentOpen] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const canManageAnnouncementDelete =
+    activeRole === 'Super Admin' ||
+    (activeRole === 'Organizer' &&
+      (!selectedAnnouncement.senderId ||
+        !currentUserId ||
+        selectedAnnouncement.senderId === currentUserId));
   const announcementDeliveries = deliveries.filter(
     (d) => d.announcementId === selectedAnnouncement.id
   );
@@ -156,8 +190,80 @@ export function DeliveryDetailPage({
             <Edit3 className="h-3.5 w-3.5" aria-hidden="true" />
             Edit Notice
           </button>
+          {selectedAnnouncement.trashedAt ? (
+            <>
+              {onRestoreAnnouncement && (
+                <button
+                  type="button"
+                  disabled={deleteBusy}
+                  onClick={async () => {
+                    setDeleteBusy(true);
+                    setDeleteError(null);
+                    try {
+                      const err = await onRestoreAnnouncement(selectedAnnouncement.id);
+                      if (typeof err === 'string' && err) {
+                        setDeleteError(err);
+                      }
+                    } finally {
+                      setDeleteBusy(false);
+                    }
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-3.5 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-800/70 dark:bg-[#061D15] dark:text-emerald-200 whitespace-nowrap"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                  Restore Notice
+                </button>
+              )}
+              {canManageAnnouncementDelete && onPermanentDeleteAnnouncement && (
+                <button
+                  type="button"
+                  disabled={deleteBusy}
+                  onClick={() => {
+                    setDeleteError(null);
+                    setConfirmPermanentOpen(true);
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3.5 py-2 text-xs font-bold text-white hover:bg-red-700 disabled:opacity-50 whitespace-nowrap"
+                >
+                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                  Delete Forever
+                </button>
+              )}
+            </>
+          ) : (
+            canManageAnnouncementDelete &&
+            onDeleteAnnouncement && (
+              <button
+                type="button"
+                disabled={deleteBusy}
+                onClick={() => {
+                  setDeleteError(null);
+                  setConfirmDeleteOpen(true);
+                }}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-3.5 py-2 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-900/60 dark:bg-[#061D15] dark:text-red-300 dark:hover:bg-red-950/30 whitespace-nowrap"
+              >
+                <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                Delete Announcement
+              </button>
+            )
+          )}
         </div>
       </div>
+
+      {deleteError && (
+        <div
+          role="alert"
+          className="rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-xs font-semibold text-red-800 dark:border-red-800/70 dark:bg-red-950/60 dark:text-red-300"
+        >
+          {deleteError}
+        </div>
+      )}
+
+      {selectedAnnouncement.trashedAt && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs font-medium text-amber-900 dark:border-amber-800/60 dark:bg-amber-950/40 dark:text-amber-200">
+          This announcement is in the Recycle Bin (soft-deleted {formatDhakaDateTime(selectedAnnouncement.trashedAt)}
+          {selectedAnnouncement.trashedBy ? ` by ${selectedAnnouncement.trashedBy}` : ''}).
+        </div>
+      )}
 
       <section className="rounded-xl border border-emerald-200/70 bg-white p-6 dark:border-emerald-800/60 dark:bg-[#061D15]">
         <div className="flex flex-wrap items-center gap-2.5">
@@ -313,16 +419,45 @@ export function DeliveryDetailPage({
             <Archive className="h-3.5 w-3.5" aria-hidden="true" />
             {personalStatus.archived ? 'Unarchive' : 'Archive'}
           </button>
-          <button
-            type="button"
-            onClick={() =>
-              onUpdatePersonalStatus({ deleted: true }, 'deleted')
-            }
-            className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-50 dark:border-red-900/60 dark:text-red-300 dark:hover:bg-red-950/30"
-          >
-            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-            Delete
-          </button>
+          {selectedAnnouncement.trashedAt ? (
+            <>
+              {onRestoreAnnouncement && (
+                <button
+                  type="button"
+                  disabled={deleteBusy}
+                  onClick={async () => {
+                    setDeleteBusy(true);
+                    setDeleteError(null);
+                    try {
+                      const err = await onRestoreAnnouncement(selectedAnnouncement.id);
+                      if (typeof err === 'string' && err) {
+                        setDeleteError(err);
+                      }
+                    } finally {
+                      setDeleteBusy(false);
+                    }
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 px-3 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-50 dark:border-emerald-800/70 dark:text-emerald-200 dark:hover:bg-[#09291E]"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                  Restore
+                </button>
+              )}
+            </>
+          ) : canManageAnnouncementDelete && onDeleteAnnouncement ? (
+            <button
+              type="button"
+              disabled={deleteBusy}
+              onClick={() => {
+                setDeleteError(null);
+                setConfirmDeleteOpen(true);
+              }}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-900/60 dark:text-red-300 dark:hover:bg-red-950/30"
+            >
+              <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+              Delete
+            </button>
+          ) : null}
           <span className="mx-1 hidden h-5 w-px bg-emerald-200 sm:block dark:bg-emerald-800/70" />
           <button
             type="button"
@@ -597,6 +732,115 @@ export function DeliveryDetailPage({
           </div>
         )}
       </section>
+
+      <Modal
+        open={confirmDeleteOpen}
+        onClose={() => !deleteBusy && setConfirmDeleteOpen(false)}
+        title="Move Announcement to Recycle Bin"
+        subtitle="Soft-delete removes this notice from active attendee inboxes and records an audit log."
+        dangerHeader
+        footer={
+          <>
+            <button
+              type="button"
+              disabled={deleteBusy}
+              onClick={() => setConfirmDeleteOpen(false)}
+              className="rounded-lg border border-emerald-200 bg-white px-4 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800 dark:bg-[#061D15] dark:text-emerald-100"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={deleteBusy}
+              onClick={async () => {
+                if (!onDeleteAnnouncement) return;
+                setDeleteBusy(true);
+                setDeleteError(null);
+                try {
+                  const err = await onDeleteAnnouncement(selectedAnnouncement.id);
+                  if (typeof err === 'string' && err) {
+                    setDeleteError(err);
+                    setConfirmDeleteOpen(false);
+                  } else {
+                    setConfirmDeleteOpen(false);
+                    onBackToList();
+                  }
+                } finally {
+                  setDeleteBusy(false);
+                }
+              }}
+              className="rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-700 disabled:opacity-50"
+            >
+              {deleteBusy ? 'Moving to Recycle Bin…' : 'Confirm Soft Delete'}
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-2 text-xs text-emerald-900/80 dark:text-emerald-200/80">
+          <p className="font-semibold text-emerald-950 dark:text-emerald-50">
+            {selectedAnnouncement.title}
+          </p>
+          <p className="text-emerald-900/65 dark:text-emerald-300/65">
+            This announcement will be soft-deleted and placed into the Recycle Bin. You can restore it or permanently purge it at any time.
+          </p>
+        </div>
+      </Modal>
+
+      <Modal
+        open={confirmPermanentOpen}
+        onClose={() => !deleteBusy && setConfirmPermanentOpen(false)}
+        title="Permanently Delete Announcement"
+        subtitle="This action cannot be undone and purges the notice from the database."
+        dangerHeader
+        footer={
+          <>
+            <button
+              type="button"
+              disabled={deleteBusy}
+              onClick={() => setConfirmPermanentOpen(false)}
+              className="rounded-lg border border-emerald-200 bg-white px-4 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800 dark:bg-[#061D15] dark:text-emerald-100"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={deleteBusy}
+              onClick={async () => {
+                if (!onPermanentDeleteAnnouncement) return;
+                setDeleteBusy(true);
+                setDeleteError(null);
+                try {
+                  const err = await onPermanentDeleteAnnouncement(
+                    selectedAnnouncement.id
+                  );
+                  if (typeof err === 'string' && err) {
+                    setDeleteError(err);
+                    setConfirmPermanentOpen(false);
+                  } else {
+                    setConfirmPermanentOpen(false);
+                    onBackToList();
+                  }
+                } finally {
+                  setDeleteBusy(false);
+                }
+              }}
+              className="rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-700 disabled:opacity-50"
+            >
+              {deleteBusy ? 'Deleting Forever…' : 'Permanently Delete'}
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-2 text-xs text-emerald-900/80 dark:text-emerald-200/80">
+          <p className="flex items-center gap-2 font-semibold text-red-700 dark:text-red-300">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            {selectedAnnouncement.title}
+          </p>
+          <p className="text-emerald-900/65 dark:text-emerald-300/65">
+            An immutable Permanent Delete audit log entry will be recorded before purging.
+          </p>
+        </div>
+      </Modal>
     </div>
   );
 }

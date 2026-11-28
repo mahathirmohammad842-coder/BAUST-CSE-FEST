@@ -1,5 +1,6 @@
 import type {
   ActivityLogEntry,
+  AnnouncementAuditLog,
   ApprovalLog,
   ApprovalStatus,
   ProfileAuditEvent,
@@ -101,6 +102,7 @@ export const EMPTY_PROFILE_STATE: ProfileState = {
   verificationLogs: [],
   activityLogs: [],
   deletionAuditLogs: [],
+  announcementAuditLogs: [],
   rolePermissions: [],
 };
 
@@ -287,6 +289,17 @@ function isDeletionAuditLog(value: unknown): value is UserDeletionAuditLog {
   );
 }
 
+function isAnnouncementAuditLog(value: unknown): value is AnnouncementAuditLog {
+  if (typeof value !== 'object' || value === null) return false;
+  const log = value as Partial<AnnouncementAuditLog>;
+  return (
+    typeof log.id === 'string' &&
+    typeof log.announcementId === 'string' &&
+    typeof log.action === 'string' &&
+    isValidDate(log.createdAt)
+  );
+}
+
 export function calculateProfileCompletion(profile: UserProfile): {
   percentage: number;
   completedCount: number;
@@ -380,6 +393,9 @@ export function loadProfileState(): ProfileState {
         : [],
       deletionAuditLogs: Array.isArray(state.deletionAuditLogs)
         ? state.deletionAuditLogs.filter(isDeletionAuditLog)
+        : [],
+      announcementAuditLogs: Array.isArray(state.announcementAuditLogs)
+        ? state.announcementAuditLogs.filter(isAnnouncementAuditLog)
         : [],
       rolePermissions: [],
     };

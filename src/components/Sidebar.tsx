@@ -8,6 +8,7 @@ import {
   FileSearch,
   History,
   LayoutDashboard,
+  LifeBuoy,
   LockKeyhole,
   Megaphone,
   MessageSquare,
@@ -15,6 +16,7 @@ import {
   PanelLeftOpen,
   PenSquare,
   Plug,
+  Radio,
   Search,
   Server,
   Settings,
@@ -34,8 +36,10 @@ export type OrganizerRoute =
   | 'announcements'
   | 'inbox'
   | 'composer'
+  | 'operations-inbox'
   | 'delivery-detail'
   | 'analytics'
+  | 'online-users'
   | 'audit-logs'
   | 'activity-logs'
   | 'user-approvals'
@@ -87,6 +91,8 @@ interface SidebarProps {
   pendingRequestCount: number;
   blockedUserCount: number;
   trashItemCount: number;
+  onlineUserCount?: number;
+  openOpsCount?: number;
   mobileOpen: boolean;
   onCloseMobile: () => void;
   onNavigate: (route: OrganizerRoute) => void;
@@ -103,6 +109,8 @@ export function Sidebar({
   pendingRequestCount,
   blockedUserCount,
   trashItemCount,
+  onlineUserCount = 0,
+  openOpsCount = 0,
   mobileOpen,
   onCloseMobile,
   onNavigate,
@@ -155,6 +163,18 @@ export function Sidebar({
             label: 'Create Notice',
             icon: PenSquare,
             keywords: ['compose', 'send', 'publish', 'schedule'],
+          },
+          {
+            id: 'operations-inbox',
+            label: 'Support & Incidents',
+            icon: LifeBuoy,
+            badge: openOpsCount > 0 ? openOpsCount : undefined,
+            badgeTitle:
+              openOpsCount > 0
+                ? `${openOpsCount} open message, incident, or info request${openOpsCount === 1 ? '' : 's'}`
+                : undefined,
+            badgeTone: 'amber',
+            keywords: ['messages', 'incidents', 'helpdesk', 'info requests'],
           },
         ],
       },
@@ -230,6 +250,18 @@ export function Sidebar({
         icon: Activity,
         items: [
           {
+            id: 'online-users',
+            label: 'Online Users',
+            icon: Radio,
+            badge: onlineUserCount > 0 ? onlineUserCount : undefined,
+            badgeTitle:
+              onlineUserCount > 0
+                ? `${onlineUserCount} user${onlineUserCount === 1 ? '' : 's'} online now`
+                : undefined,
+            badgeTone: 'subtle',
+            keywords: ['presence', 'active', 'live', 'sessions'],
+          },
+          {
             id: 'analytics',
             label: 'Analytics',
             icon: BarChart3,
@@ -283,6 +315,8 @@ export function Sidebar({
       activeRole,
       blockedUserCount,
       failedDeliveryCount,
+      onlineUserCount,
+      openOpsCount,
       pendingRequestCount,
       unreadNotificationCount,
     ]

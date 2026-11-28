@@ -157,6 +157,26 @@ export interface UserProfile {
   restoredAt?: string | null;
   restoredBy?: string | null;
   restoredByName?: string;
+  presenceStatus?: PresenceStatus;
+  lastSeenAt?: string | null;
+}
+
+export type PresenceStatus = 'Online' | 'Away' | 'Offline';
+
+export interface PresenceUserEntry {
+  userId: string;
+  fullName: string;
+  email: string;
+  role: WorkspaceRole;
+  avatarUrl?: string;
+  department?: string;
+  institution?: string;
+  status: PresenceStatus;
+  lastSeenAt: string | null;
+  lastLoginAt: string | null;
+  currentSessionId?: string;
+  currentRoute?: string;
+  activeSessionsCount?: number;
 }
 
 export type ProfileAuditAction =
@@ -300,6 +320,26 @@ export interface RolePermissionEntry {
   canPermanentlyDeleteUsers?: boolean;
 }
 
+export type AnnouncementAuditAction =
+  | 'created'
+  | 'updated'
+  | 'published'
+  | 'soft_deleted'
+  | 'restored'
+  | 'permanently_deleted';
+
+export interface AnnouncementAuditLog {
+  id: string;
+  announcementId: string;
+  announcementTitle: string;
+  action: AnnouncementAuditAction;
+  actorId: string;
+  actorName: string;
+  actorRole: string;
+  notes: string;
+  createdAt: string;
+}
+
 export interface ProfileState {
   profiles: UserProfile[];
   events: ProfileAuditEvent[];
@@ -311,6 +351,7 @@ export interface ProfileState {
   verificationLogs?: VerificationLog[];
   activityLogs?: ActivityLogEntry[];
   deletionAuditLogs?: UserDeletionAuditLog[];
+  announcementAuditLogs?: AnnouncementAuditLog[];
   rolePermissions?: RolePermissionEntry[];
 }
 
@@ -437,6 +478,7 @@ export interface Announcement {
   status: DeliveryStatus;
   channels: NotificationChannel[];
   targeting: TargetingCriteria;
+  senderId?: string;
   senderName: string;
   senderRole: UserRole;
   createdAt: string;
@@ -460,6 +502,7 @@ export interface Announcement {
   isReadByUserId?: Record<string, boolean>;
   trashedAt?: string;
   trashedBy?: string;
+  trashedById?: string;
 }
 
 export interface UserPreferenceMatrix {
@@ -503,4 +546,106 @@ export interface DailyEngagementPoint {
   delivered: number;
   opened: number;
   clicked: number;
+}
+
+export interface OrganizerContact {
+  id: string;
+  fullName: string;
+  email: string;
+  phone: string;
+  role: WorkspaceRole;
+  department: string;
+  institution: string;
+  photoUrl: string;
+  presenceStatus: PresenceStatus;
+  lastSeenAt: string | null;
+}
+
+export interface OrganizerMessageReply {
+  id: string;
+  threadId: string;
+  authorId: string;
+  authorName: string;
+  authorRole: WorkspaceRole;
+  body: string;
+  isStaffReply: boolean;
+  deliveryStatus: 'Sent' | 'Delivered' | 'Read';
+  readAt?: string | null;
+  createdAt: string;
+}
+
+export interface OrganizerMessageThread {
+  id: string;
+  senderId: string;
+  senderName: string;
+  senderEmail: string;
+  senderRole: WorkspaceRole;
+  recipientOrganizerId: string | null;
+  recipientOrganizerName: string;
+  subject: string;
+  body: string;
+  status: 'Sent' | 'Delivered' | 'Read' | 'Replied';
+  readAt?: string | null;
+  repliedAt?: string | null;
+  replyCount: number;
+  lastMessageAt: string;
+  createdAt: string;
+  replies: OrganizerMessageReply[];
+}
+
+export type IncidentSeverity = 'Low' | 'Medium' | 'High' | 'Critical';
+export type IncidentStatus = 'Open' | 'Investigating' | 'Resolved' | 'Closed';
+
+export interface IncidentReport {
+  id: string;
+  referenceCode: string;
+  reporterId: string;
+  reporterName: string;
+  reporterEmail: string;
+  reporterRole: WorkspaceRole;
+  category: string;
+  location: string;
+  severity: IncidentSeverity;
+  description: string;
+  status: IncidentStatus;
+  assignedToId?: string | null;
+  assignedToName?: string;
+  resolutionNotes: string;
+  resolvedAt?: string | null;
+  resolvedByName?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type InfoRequestStatus = 'Pending' | 'Answered' | 'Closed';
+
+export interface EventInfoRequest {
+  id: string;
+  referenceCode: string;
+  requesterId: string;
+  requesterName: string;
+  requesterEmail: string;
+  requesterRole: WorkspaceRole;
+  topic: string;
+  question: string;
+  status: InfoRequestStatus;
+  responseText: string;
+  respondedById?: string | null;
+  respondedByName?: string;
+  respondedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StaffNotificationAlert {
+  id: string;
+  userId: string;
+  announcementId: string;
+  title: string;
+  body: string;
+  channel: string;
+  priority: string;
+  isRead: boolean;
+  readAt?: string | null;
+  createdAt: string;
 }

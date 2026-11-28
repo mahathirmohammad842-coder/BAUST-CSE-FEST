@@ -32,15 +32,19 @@ import type {
   NotificationType,
   TargetingCriteria,
   UserRole,
+  WorkspaceRole,
 } from '../types';
 import { formatDhakaDateTime } from '../utils/formatters';
 
 interface ComposerPageProps {
   editingAnnouncement: Announcement | null;
+  senderId?: string | null;
+  senderName?: string;
+  senderRole?: WorkspaceRole;
   onSaveAnnouncement: (
     announcement: Announcement,
     targetStatus: DeliveryStatus
-  ) => void;
+  ) => void | Promise<void>;
   onCancel: () => void;
 }
 
@@ -130,6 +134,9 @@ function mapTypeToAnnouncementCategory(
 
 export function ComposerPage({
   editingAnnouncement,
+  senderId,
+  senderName,
+  senderRole,
   onSaveAnnouncement,
   onCancel,
 }: ComposerPageProps) {
@@ -340,8 +347,16 @@ export function ComposerPage({
         ...targeting,
         categories: [category],
       },
-      senderName: 'Rafiqul Islam Chowdhury',
-      senderRole: 'Organizer',
+      senderId:
+        editingAnnouncement?.senderId ??
+        (senderId ? senderId : undefined),
+      senderName:
+        editingAnnouncement?.senderName ??
+        (senderName?.trim() || 'Organizing Committee'),
+      senderRole:
+        editingAnnouncement?.senderRole ??
+        senderRole ??
+        'Organizer',
       createdAt: editingAnnouncement?.createdAt ?? nowIso,
       updatedAt: nowIso,
       publishedAt: isSent ? nowIso : undefined,
